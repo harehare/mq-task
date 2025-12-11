@@ -235,15 +235,6 @@ install_mq_task() {
     mv "$temp_file" "$MQ_TASK_BIN_DIR/$binary_name"
     chmod +x "$MQ_TASK_BIN_DIR/$binary_name"
 
-    # Create mq-task symlink to mq-task
-    local symlink_name="mq-task"
-    if [[ "$os" == "windows" ]]; then
-        symlink_name="mq-task.exe"
-    fi
-
-    ln -sf "$MQ_TASK_BIN_DIR/$binary_name" "$MQ_TASK_BIN_DIR/$symlink_name"
-    log "Created symlink: $MQ_TASK_BIN_DIR/$symlink_name -> $MQ_TASK_BIN_DIR/$binary_name"
-
     log "mq-task installed successfully to $MQ_TASK_BIN_DIR/$binary_name"
 }
 
@@ -303,13 +294,6 @@ verify_installation() {
         log "✓ mq-task installation verified"
     else
         error "mq-task installation verification failed"
-    fi
-
-    # Check mq-task symlink
-    if [[ -L "$MQ_TASK_BIN_DIR/mq-task" ]] || [[ -L "$MQ_TASK_BIN_DIR/mq-task.exe" ]]; then
-        log "✓ mq-task symlink verified"
-    else
-        error "mq-task symlink verification failed"
     fi
 
     log "Installation verification successful!"

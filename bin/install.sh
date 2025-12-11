@@ -5,7 +5,7 @@ set -e
 # mq-task installation script
 
 readonly MQ_TASK_REPO="harehare/mq-task"
-readonly MQ_TASK_INSTALL_DIR="$HOME/.mq-task"
+readonly MQ_TASK_INSTALL_DIR="$HOME/.mq"
 readonly MQ_TASK_BIN_DIR="$MQ_TASK_INSTALL_DIR/bin"
 
 

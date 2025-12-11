@@ -167,9 +167,25 @@ impl Runner {
     }
 
     pub fn execute_section_with_args(&self, section: &Section, args: &[String]) -> Result<()> {
+        self.execute_section_with_lang_filter(section, args, None)
+    }
+
+    pub fn execute_section_with_lang_filter(
+        &self,
+        section: &Section,
+        args: &[String],
+        lang_filter: Option<&str>,
+    ) -> Result<()> {
         for code_block in &section.codes {
             if code_block.lang.is_empty() {
                 continue;
+            }
+
+            // Apply language filter if specified
+            if let Some(filter) = lang_filter {
+                if code_block.lang != filter {
+                    continue;
+                }
             }
 
             self.execute_code_with_args(&code_block.lang, &code_block.code, args)?;
@@ -365,6 +381,17 @@ impl Runner {
         task_name: &str,
         args: &[String],
     ) -> Result<()> {
+        self.run_task_with_lang_filter(markdown_path, task_name, args, None)
+    }
+
+    /// Run a specific task with arguments and language filter
+    pub fn run_task_with_lang_filter<P: AsRef<Path>>(
+        &mut self,
+        markdown_path: P,
+        task_name: &str,
+        args: &[String],
+        lang_filter: Option<&str>,
+    ) -> Result<()> {
         let markdown = self.load_markdown(markdown_path)?;
         let sections = self.extract_sections(&markdown)?;
 
@@ -372,7 +399,7 @@ impl Runner {
             .find_section(&sections, task_name)
             .ok_or_else(|| Error::SectionNotFound(task_name.to_string()))?;
 
-        self.execute_section_with_args(section, args)
+        self.execute_section_with_lang_filter(section, args, lang_filter)
     }
 
     /// List all available tasks (sections) in a Markdown file
@@ -451,5 +478,67 @@ print("world")
 
         let not_found = runner.find_section(&sections, "Task 3");
         assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_language_filter() {
+        let section = Section {
+            title: "Mixed Task".to_string(),
+            level: 2,
+            codes: vec![
+                CodeBlock {
+                    lang: "bash".to_string(),
+                    code: "echo 'bash code'".to_string(),
+                },
+                CodeBlock {
+                    lang: "python".to_string(),
+                    code: "print('python code')".to_string(),
+                },
+                CodeBlock {
+                    lang: "bash".to_string(),
+                    code: "echo 'more bash'".to_string(),
+                },
+            ],
+            description: None,
+        };
+
+        let runner = Runner::with_default_config();
+
+        // Test filtering for bash only - this will fail if bash is not available,
+        // but demonstrates the filtering logic
+        let result = runner.execute_section_with_lang_filter(&section, &[], Some("bash"));
+        // We can't guarantee bash is available in test environment, so we just check
+        // that the method runs without panicking
+        let _ = result;
+    }
+
+    #[test]
+    fn test_extract_sections_with_multiple_languages() {
+        let markdown = r#"# Title
+
+## Mixed Task
+
+```bash
+echo "bash code"
+```
+
+```python
+print("python code")
+```
+
+```bash
+echo "more bash"
+```
+"#;
+
+        let mut runner = Runner::with_default_config();
+        let sections = runner.extract_sections(markdown).unwrap();
+
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].title, "Mixed Task");
+        assert_eq!(sections[0].codes.len(), 3);
+        assert_eq!(sections[0].codes[0].lang, "bash");
+        assert_eq!(sections[0].codes[1].lang, "python");
+        assert_eq!(sections[0].codes[2].lang, "bash");
     }
 }

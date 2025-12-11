@@ -1,4 +1,4 @@
-//! Configuration for mx task runner
+//! Configuration for mq_task task runner
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -74,7 +74,7 @@ impl RuntimeConfig {
     }
 }
 
-/// Configuration for mx task runner
+/// Configuration for mq_task task runner
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Runtime mappings: language -> command or detailed config
@@ -177,32 +177,59 @@ fn default_runtimes() -> HashMap<String, RuntimeConfig> {
     let mut runtimes = HashMap::new();
 
     // Languages with stdin execution mode (default)
-    runtimes.insert("bash".to_string(), RuntimeConfig::Simple("bash".to_string()));
+    runtimes.insert(
+        "bash".to_string(),
+        RuntimeConfig::Simple("bash".to_string()),
+    );
     runtimes.insert("sh".to_string(), RuntimeConfig::Simple("sh".to_string()));
-    runtimes.insert("python".to_string(), RuntimeConfig::Simple("python3".to_string()));
-    runtimes.insert("ruby".to_string(), RuntimeConfig::Simple("ruby".to_string()));
-    runtimes.insert("node".to_string(), RuntimeConfig::Simple("node".to_string()));
-    runtimes.insert("javascript".to_string(), RuntimeConfig::Simple("node".to_string()));
+    runtimes.insert(
+        "python".to_string(),
+        RuntimeConfig::Simple("python3".to_string()),
+    );
+    runtimes.insert(
+        "ruby".to_string(),
+        RuntimeConfig::Simple("ruby".to_string()),
+    );
+    runtimes.insert(
+        "node".to_string(),
+        RuntimeConfig::Simple("node".to_string()),
+    );
+    runtimes.insert(
+        "javascript".to_string(),
+        RuntimeConfig::Simple("node".to_string()),
+    );
     runtimes.insert("js".to_string(), RuntimeConfig::Simple("node".to_string()));
     runtimes.insert("php".to_string(), RuntimeConfig::Simple("php".to_string()));
-    runtimes.insert("perl".to_string(), RuntimeConfig::Simple("perl".to_string()));
+    runtimes.insert(
+        "perl".to_string(),
+        RuntimeConfig::Simple("perl".to_string()),
+    );
     runtimes.insert("jq".to_string(), RuntimeConfig::Simple("jq".to_string()));
 
     // Go requires file-based execution
-    runtimes.insert("go".to_string(), RuntimeConfig::Detailed {
-        command: "go run".to_string(),
-        execution_mode: ExecutionMode::File,
-    });
-    runtimes.insert("golang".to_string(), RuntimeConfig::Detailed {
-        command: "go run".to_string(),
-        execution_mode: ExecutionMode::File,
-    });
+    runtimes.insert(
+        "go".to_string(),
+        RuntimeConfig::Detailed {
+            command: "go run".to_string(),
+            execution_mode: ExecutionMode::File,
+        },
+    );
+    runtimes.insert(
+        "golang".to_string(),
+        RuntimeConfig::Detailed {
+            command: "go run".to_string(),
+            execution_mode: ExecutionMode::File,
+        },
+    );
 
     // mq requires argument-based execution
-    runtimes.insert("mq".to_string(), RuntimeConfig::Detailed {
-        command: "mq".to_string(),
-        execution_mode: ExecutionMode::Arg,
-    });
+    runtimes.insert(
+        "mq".to_string(),
+        RuntimeConfig::Detailed {
+            command: "mq".to_string(),
+            execution_mode: ExecutionMode::Arg,
+        },
+    );
 
     runtimes
 }

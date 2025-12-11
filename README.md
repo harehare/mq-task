@@ -1,16 +1,19 @@
-<h1 align="center">mx</h1>
+<h1 align="center">mq-task</h1>
 
 Markdown Task Runner
 
-[![ci](https://github.com/harehare/mx/actions/workflows/ci.yml/badge.svg)](https://github.com/harehare/mx/actions/workflows/ci.yml)
+[![ci](https://github.com/harehare/mq-task/actions/workflows/ci.yml/badge.svg)](https://github.com/harehare/mq-task/actions/workflows/ci.yml)
 
-`mx` is a task runner that executes code blocks in Markdown files based on section titles.
+`mq-task` is a task runner that executes code blocks in Markdown files based on section titles.
 It is implemented using [mq](https://github.com/harehare/mq), a jq-like command-line tool for Markdown processing, to parse and extract sections from Markdown documents.
 
 ![demo](assets/demo.gif)
 
 > [!WARNING]
-> `mx` is currently under active development.
+> `mq-task` is currently under active development.
+
+> [!NOTE]
+> This project was previously named `mx` and has been renamed to `mq-task`.
 
 ## Features
 
@@ -25,18 +28,18 @@ It is implemented using [mq](https://github.com/harehare/mq), a jq-like command-
 ### Quick Install
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/harehare/mx/refs/heads/main/bin/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/harehare/mq-task/refs/heads/main/bin/install.sh | bash
 ```
 
 The installer will:
 - Download the latest mq binary for your platform
-- Install it to `~/.mx/bin/`
+- Install it to `~/.mq/bin/`
 - Update your shell profile to add mq to your PATH
 
 ### Cargo
 
 ```sh
-$ cargo install --git https://github.com/harehare/mx.git
+$ cargo install --git https://github.com/harehare/mq-task.git
 ```
 
 ## Usage
@@ -45,17 +48,17 @@ $ cargo install --git https://github.com/harehare/mx.git
 
 ```bash
 # Run from README.md (default)
-mx "Task Name"
+mq-task "Task Name"
 
 # Run from a specific file
-mx -f tasks.md "Task Name"
+mq-task -f tasks.md "Task Name"
 ```
 
 ### Run a task (explicit)
 
 ```bash
-mx run "Task Name"
-mx run --file tasks.md "Task Name"
+mq-task run "Task Name"
+mq-task run --file tasks.md "Task Name"
 ```
 
 ### Pass arguments to a task
@@ -64,13 +67,13 @@ You can pass arguments to your task using `--` separator:
 
 ```bash
 # Pass arguments to a task
-mx "Task Name" -- arg1 arg2 arg3
+mq-task "Task Name" -- arg1 arg2 arg3
 
 # With explicit run command
-mx run "Task Name" -- arg1 arg2 arg3
+mq-task run "Task Name" -- arg1 arg2 arg3
 
 # From a specific file
-mx -f tasks.md "Task Name" -- arg1 arg2
+mq-task -f tasks.md "Task Name" -- arg1 arg2
 ```
 
 Arguments are accessible via environment variables:
@@ -93,24 +96,24 @@ echo "Second arg: $MX_ARG_1"
 
 ```bash
 # List tasks from README.md (default)
-mx
+mq-task
 
 # List tasks from a specific file
-mx -f tasks.md
-mx list --file tasks.md
+mq-task -f tasks.md
+mq-task list --file tasks.md
 ```
 
 ### Initialize configuration
 
 ```bash
-mx init
+mq-task init
 ```
 
-This creates an `mx.toml` file with default runtime settings.
+This creates an `mq-task.toml` file with default runtime settings.
 
 ## Configuration
 
-Create an `mx.toml` file to customize runtime behavior:
+Create an `mq-task.toml` file to customize runtime behavior:
 
 ```toml
 # Heading level for sections (default: 2, i.e., ## headings)
@@ -163,14 +166,14 @@ execution_mode = "file"
 
 ```bash
 # Using shorthand (from tasks.md by default)
-mx Build
+mq-task Build
 
 # From a specific file
-mx -f tasks.md Build
+mq-task -f tasks.md Build
 
 # Using explicit run command
-mx run Build
-mx run --file tasks.md Build
+mq-task run Build
+mq-task run --file tasks.md Build
 ```
 
 ## License

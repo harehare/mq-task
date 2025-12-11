@@ -642,8 +642,9 @@ dependencies = [
 
 [[package]]
 name = "mq-lang"
-version = "0.3.0"
-source = "git+https://github.com/harehare/mq.git#7f19dad90d5f50982db6d6768e33587f3b16a57b"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ebd548938813e0e936301dad6f03fb6ad34479ec2465531853e4bbe06300cc11"
 dependencies = [
  "base64",
  "chrono",
@@ -664,8 +665,9 @@ dependencies = [
 
 [[package]]
 name = "mq-markdown"
-version = "0.3.0"
-source = "git+https://github.com/harehare/mq.git#7f19dad90d5f50982db6d6768e33587f3b16a57b"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7366687db3d93462aeb3209eabb7a28492b883a087894d02f0a1ec5bfd7aaac1"
 dependencies = [
  "ego-tree",
  "itertools",
@@ -678,15 +680,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "mq-test"
-version = "0.3.0"
-source = "git+https://github.com/harehare/mq.git#7f19dad90d5f50982db6d6768e33587f3b16a57b"
-dependencies = [
- "scopeguard",
-]
-
-[[package]]
-name = "mx"
+name = "mq-task"
 version = "0.1.1"
 dependencies = [
  "clap",
@@ -694,7 +688,6 @@ dependencies = [
  "miette",
  "mq-lang",
  "mq-markdown",
- "mq-test",
  "serde",
  "serde_json",
  "thiserror",
@@ -912,9 +905,9 @@ dependencies = [
 
 [[package]]
 name = "regex-lite"
-version = "0.1.7"
+version = "0.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "943f41321c63ef1c92fd763bfe054d2668f7f225a5c29f0105903dc2fc04ba30"
+checksum = "8d942b98df5e658f56f20d592c7f868833fe38115e65c33003d8cd224b0155da"
 
 [[package]]
 name = "rustc-demangle"
@@ -1087,12 +1080,12 @@ checksum = "67b1b7a3b5fe4f1376887184045fcf45c69e92af734b7aaddc05fb777b6fbd03"
 
 [[package]]
 name = "smol_str"
-version = "0.3.2"
+version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9676b89cd56310a87b93dec47b11af744f34d5fc9f367b829474eec0a891350d"
+checksum = "3498b0a27f93ef1402f20eefacfaa1691272ac4eca1cdc8c596cb0a245d6cbf5"
 dependencies = [
  "borsh",
- "serde",
+ "serde_core",
 ]
 
 [[package]]

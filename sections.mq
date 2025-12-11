@@ -34,11 +34,12 @@ end
 def sections_with_code(md_nodes, level):
   let section_list = extract_sections(md_nodes, level)
   | map(section_list, fn(section):
-    let title = get(section, "title")
-    | let lvl = get(section, "level")
-    | let content = get(section, "content")
+    let title = section["title"]
+    | let level = section["level"]
+    | let content = section["content"]
     | let codes = extract_code_blocks(content)
     | let description = extract_description(content)
-    | {"title": title, "level": lvl, "codes": codes, "description": description}
+    | {"title": title, "level": level, "codes": codes, "description": description}
   end)
 end
+

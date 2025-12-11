@@ -1,16 +1,16 @@
-//! mx - Markdown-based task runner CLI
+//! mq_task - Markdown-based task runner CLI
 
 use clap::{Parser, Subcommand};
 use colored::*;
 use miette::{IntoDiagnostic, Result};
 use std::path::PathBuf;
 
-use mx::{Config, ExecutionMode, Runner};
+use mq_task::{Config, ExecutionMode, Runner};
 
 const DEFAULT_TASKS_FILE: &str = "README.md";
 
 #[derive(Parser)]
-#[command(name = "mx")]
+#[command(name = "mq_task")]
 #[command(about = "Markdown-based task runner", long_about = None)]
 #[command(version)]
 struct Cli {
@@ -38,7 +38,11 @@ struct Cli {
     #[arg(short, long, value_name = "MODE")]
     execution_mode: Option<String>,
 
-    /// Arguments to pass to the task (use -- to separate: mx task -- arg1 arg2)
+    /// Filter code blocks by language (e.g., bash, python, go)
+    #[arg(long, value_name = "LANG")]
+    lang: Option<String>,
+
+    /// Arguments to pass to the task (use -- to separate: mq_task task -- arg1 arg2)
     #[arg(last = true)]
     args: Vec<String>,
 
@@ -73,7 +77,11 @@ enum Commands {
         #[arg(short, long, value_name = "MODE")]
         execution_mode: Option<String>,
 
-        /// Arguments to pass to the task (use -- to separate: mx run task -- arg1 arg2)
+        /// Filter code blocks by language (e.g., bash, python, go)
+        #[arg(long, value_name = "LANG")]
+        lang: Option<String>,
+
+        /// Arguments to pass to the task (use -- to separate: mq_task run task -- arg1 arg2)
         #[arg(last = true)]
         args: Vec<String>,
     },
@@ -91,12 +99,16 @@ enum Commands {
         /// Heading level for sections (1-6)
         #[arg(short, long)]
         level: Option<u8>,
+
+        /// Filter code blocks by language (e.g., bash, python, go)
+        #[arg(long, value_name = "LANG")]
+        lang: Option<String>,
     },
 
     /// Generate a sample configuration file
     Init {
         /// Output path for configuration file
-        #[arg(short, long, default_value = "mx.toml")]
+        #[arg(short, long, default_value = "mq_task.toml")]
         output: PathBuf,
     },
 }
@@ -112,21 +124,41 @@ fn main() -> Result<()> {
             level,
             runtime,
             execution_mode,
+            lang,
             args,
-        }) => run_task(file, task, config, level, runtime, execution_mode, args)?,
+        }) => run_task(
+            file,
+            task,
+            config,
+            level,
+            runtime,
+            execution_mode,
+            lang,
+            args,
+        )?,
         Some(Commands::List {
             file,
             config,
             level,
-        }) => list_tasks(file, config, level)?,
+            lang,
+        }) => list_tasks(file, config, level, lang)?,
         Some(Commands::Init { output }) => init_config(output)?,
         None => {
             // If no subcommand, check if task is provided
             if let Some(task) = cli.task {
-                run_task(cli.file, task, cli.config, cli.level, cli.runtime, cli.execution_mode, cli.args)?;
+                run_task(
+                    cli.file,
+                    task,
+                    cli.config,
+                    cli.level,
+                    cli.runtime,
+                    cli.execution_mode,
+                    cli.lang,
+                    cli.args,
+                )?;
             } else {
                 // No task provided, list available tasks
-                list_tasks(cli.file, cli.config, cli.level)?;
+                list_tasks(cli.file, cli.config, cli.level, cli.lang)?;
             }
         }
     }
@@ -135,6 +167,7 @@ fn main() -> Result<()> {
 }
 
 /// Run a specific task
+#[allow(clippy::too_many_arguments)]
 fn run_task(
     markdown_path: PathBuf,
     task_name: String,
@@ -142,6 +175,7 @@ fn run_task(
     level: Option<u8>,
     runtime_overrides: Vec<String>,
     execution_mode: Option<String>,
+    lang_filter: Option<String>,
     args: Vec<String>,
 ) -> Result<()> {
     let mut config = load_config(config_path)?;
@@ -171,7 +205,7 @@ fn run_task(
     println!();
 
     runner
-        .run_task_with_args(&markdown_path, &task_name, &args)
+        .run_task_with_lang_filter(&markdown_path, &task_name, &args, lang_filter.as_deref())
         .into_diagnostic()?;
 
     Ok(())
@@ -182,6 +216,7 @@ fn list_tasks(
     markdown_path: PathBuf,
     config_path: Option<PathBuf>,
     level: Option<u8>,
+    lang_filter: Option<String>,
 ) -> Result<()> {
     let mut config = load_config(config_path)?;
 
@@ -192,37 +227,102 @@ fn list_tasks(
 
     let mut runner = Runner::new(config);
 
-    let sections = runner.list_task_sections(&markdown_path).into_diagnostic()?;
+    let sections = runner
+        .list_task_sections(&markdown_path)
+        .into_diagnostic()?;
 
-    if sections.is_empty() {
-        println!(
-            "{}",
-            format!("No tasks found in {}", markdown_path.display()).yellow()
-        );
+    // Filter sections by language if specified
+    let filtered_sections: Vec<_> = if let Some(ref lang) = lang_filter {
+        sections
+            .into_iter()
+            .filter(|section| section.codes.iter().any(|code| code.lang == *lang))
+            .collect()
+    } else {
+        sections
+    };
+
+    if filtered_sections.is_empty() {
+        if lang_filter.is_some() {
+            println!(
+                "{}",
+                format!(
+                    "No tasks found with language '{}' in {}",
+                    lang_filter.unwrap(),
+                    markdown_path.display()
+                )
+                .yellow()
+            );
+        } else {
+            println!(
+                "{}",
+                format!("No tasks found in {}", markdown_path.display()).yellow()
+            );
+        }
         return Ok(());
     }
 
     let mut output = String::new();
     output.push_str(&format!(
-        "{} {}\n\n",
+        "{} {}{}\n\n",
         "Available tasks in".bold(),
-        markdown_path.display().to_string().cyan()
+        markdown_path.display().to_string().cyan(),
+        if let Some(ref lang) = lang_filter {
+            format!(" {}", format!("(language: {})", lang).bright_black())
+        } else {
+            String::new()
+        }
     ));
 
-    for section in sections {
+    for section in filtered_sections {
+        // Show language information if filtering is active
+        let lang_info = if lang_filter.is_some() {
+            let langs: Vec<String> = section
+                .codes
+                .iter()
+                .filter_map(|code| {
+                    if let Some(ref filter) = lang_filter {
+                        if code.lang == *filter {
+                            Some(code.lang.clone())
+                        } else {
+                            None
+                        }
+                    } else {
+                        Some(code.lang.clone())
+                    }
+                })
+                .collect();
+
+            if !langs.is_empty() {
+                format!(" {}", format!("[{}]", langs.join(", ")).bright_black())
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        };
+
         if let Some(desc) = section.description {
             let trimmed = desc.trim();
             if !trimmed.is_empty() {
                 output.push_str(&format!(
-                    "  {} {}\n",
+                    "  {}{} {}\n",
                     section.title.green().bold(),
+                    lang_info,
                     format!("- {}", trimmed).bright_black()
                 ));
             } else {
-                output.push_str(&format!("  {}\n", section.title.green().bold()));
+                output.push_str(&format!(
+                    "  {}{}\n",
+                    section.title.green().bold(),
+                    lang_info
+                ));
             }
         } else {
-            output.push_str(&format!("  {}\n", section.title.green().bold()));
+            output.push_str(&format!(
+                "  {}{}\n",
+                section.title.green().bold(),
+                lang_info
+            ));
         }
     }
 

@@ -1,6 +1,6 @@
-//! mx - Markdown-based task runner
+//! mq_task - Markdown-based task runner
 //!
-//! mx is a task runner that executes code blocks in Markdown files based on section titles.
+//! mq_task is a task runner that executes code blocks in Markdown files based on section titles.
 //! It uses mq query language to parse and extract sections from Markdown documents.
 
 pub mod config;

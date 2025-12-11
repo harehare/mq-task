@@ -1,35 +1,33 @@
 [package]
 authors = ["Takahiro Sato <harehare1110@gmail.com>"]
 categories = ["command-line-utilities", "text-processing"]
-description = "Core language implementation for mq query language"
+description = "A task runner using Markdown"
 edition = "2024"
 homepage = "https://mqlang.org/"
 keywords = ["markdown", "jq", "task runner"]
 license = "MIT"
-name = "mx"
+name = "mq-task"
 readme = "README.md"
 repository = "https://github.com/harehare/mq"
 version = "0.1.1"
 
 [[bin]]
-name = "mx"
+name = "mq-task"
 path = "src/main.rs"
 
 [lib]
-name = "mx"
+name = "mq_task"
 path = "src/lib.rs"
 
 [dependencies]
 clap = {version = "4.5.48", features = ["derive"]}
 colored = "2.1"
 miette = {version = "7.6.0", features = ["fancy"]}
-mq-lang = {git = "https://github.com/harehare/mq.git", package = "mq-lang"}
-mq-markdown = {git = "https://github.com/harehare/mq.git", package = "mq-markdown"}
+mq-lang = "0.5.5"
+mq-markdown = "0.5.5"
 serde = {version = "1.0", features = ["derive"]}
 serde_json = "1.0"
 thiserror = "2.0.17"
 toml = "0.8.21"
 which = "7.0.1"
 
-[dev-dependencies]
-mq-test = {git = "https://github.com/harehare/mq.git", package = "mq-test"}

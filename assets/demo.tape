@@ -17,22 +17,22 @@ Type "clear"
 Enter
 Show
 
-Type `mx`
+Type `mq-task`
 Enter
 Sleep 1.5s
 
-Type `mx JavaScript`
+Type `mq-task JavaScript`
 Enter
 Sleep 1.5s
 
-Type `mx Go`
+Type `mq-task Go`
 Enter
 Sleep 1.5s
 
-Type `mx Python`
+Type `mq-task Python`
 Enter
 Sleep 1.5s
 
-Type `mx mq`
+Type `mq-task mq`
 Enter
 Sleep 1.5s

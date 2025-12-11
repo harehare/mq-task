@@ -1,4 +1,4 @@
-use mx::{runner::CodeBlock, Config, Runner};
+use mq_task::{runner::CodeBlock, Config, Runner};
 use std::fs;
 
 #[test]
@@ -88,7 +88,7 @@ print("world")
 ```
 "#;
 
-    let config = mx::Config {
+    let config = mq_task::Config {
         heading_level: 3,
         ..Default::default()
     };

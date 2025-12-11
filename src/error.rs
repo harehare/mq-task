@@ -1,11 +1,11 @@
-//! Error types for mx
+//! Error types for mq_task
 
 use thiserror::Error;
 
-/// Result type for mx operations
+/// Result type for mq_task operations
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// Error types for mx operations
+/// Error types for mq_task operations
 #[derive(Error, Debug)]
 pub enum Error {
     /// Error reading or parsing Markdown file

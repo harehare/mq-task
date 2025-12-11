@@ -2,11 +2,11 @@
 
 set -e
 
-# mx installation script
+# mq-task installation script
 
-readonly MX_REPO="harehare/mx"
-readonly MX_INSTALL_DIR="$HOME/.mq"
-readonly MX_BIN_DIR="$MX_INSTALL_DIR/bin"
+readonly MQ_TASK_REPO="harehare/mq-task"
+readonly MQ_TASK_INSTALL_DIR="$HOME/.mq-task"
+readonly MQ_TASK_BIN_DIR="$MQ_TASK_INSTALL_DIR/bin"
 
 
 # Colors for output
@@ -33,23 +33,23 @@ error() {
     exit 1
 }
 
-# Display the mx logo
+# Display the mq-task logo
 show_logo() {
     cat << 'EOF'
 
-    ███╗   ███╗ ██╗  ██╗
-    ████╗ ████║ ╚██╗██╔╝
-    ██╔████╔██║  ╚███╔╝
-    ██║╚██╔╝██║  ██╔██╗
-    ██║ ╚═╝ ██║ ██╔╝ ██╗
-    ╚═╝     ╚═╝ ╚═╝  ╚═╝
+    ███╗   ███╗  ██████╗       ████████╗ █████╗ ███████╗██╗  ██╗
+    ████╗ ████║ ██╔═══██╗      ╚══██╔══╝██╔══██╗██╔════╝██║ ██╔╝
+    ██╔████╔██║ ██║   ██║ █████╗  ██║   ███████║███████╗█████╔╝
+    ██║╚██╔╝██║ ██║▄▄ ██║ ╚════╝  ██║   ██╔══██║╚════██║██╔═██╗
+    ██║ ╚═╝ ██║ ╚██████╔╝         ██║   ██║  ██║███████║██║  ██╗
+    ╚═╝     ╚═╝  ╚══▀▀═╝          ╚═╝   ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝
 
 EOF
-    echo -e "${BOLD}${CYAN}     Markdown Task Runner${NC}"
-    echo -e "${BLUE}   mx is a task runner that executes code${NC}"
+    echo -e "${BOLD}${CYAN}            Markdown Task Runner${NC}"
+    echo -e "${BLUE}   mq-task is a task runner that executes code${NC}"
     echo -e "${BLUE}   blocks in Markdown files based on sections${NC}"
     echo ""
-    echo -e "${PURPLE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${PURPLE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
 }
 
@@ -89,7 +89,7 @@ detect_arch() {
 # Get the latest release version from GitHub
 get_latest_version() {
     local version
-    version=$(curl -s "https://api.github.com/repos/$MX_REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+    version=$(curl -s "https://api.github.com/repos/$MQ_TASK_REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
 
     if [[ -z "$version" ]]; then
         error "Failed to get the latest version"
@@ -114,13 +114,13 @@ get_download_url() {
         target="${arch}-unknown-linux-gnu"
     fi
 
-    echo "https://github.com/$MX_REPO/releases/download/$version/mx-${target}${ext}"
+    echo "https://github.com/$MQ_TASK_REPO/releases/download/$version/mq-task-${target}${ext}"
 }
 
 # Download checksums file
 download_checksums() {
     local version="$1"
-    local checksums_url="https://github.com/$MX_REPO/releases/download/$version/checksums.txt"
+    local checksums_url="https://github.com/$MQ_TASK_REPO/releases/download/$version/checksums.txt"
     local checksums_file
     checksums_file=$(mktemp)
 
@@ -178,19 +178,19 @@ verify_checksum() {
     fi
 }
 
-# Download and install mx
-install_mx() {
+# Download and install mq-task
+install_mq_task() {
     local version="$1"
     local os="$2"
     local arch="$3"
     local download_url
-    local binary_name="mx"
+    local binary_name="mq-task"
     local ext=""
     local target=""
 
     if [[ "$os" == "windows" ]]; then
         ext=".exe"
-        binary_name="mx.exe"
+        binary_name="mq-task.exe"
         target="${arch}-pc-windows-msvc"
     elif [[ "$os" == "darwin" ]]; then
         target="${arch}-apple-darwin"
@@ -200,7 +200,7 @@ install_mx() {
 
     download_url=$(get_download_url "$version" "$os" "$arch")
 
-    log "Downloading mx $version for $os/$arch..."
+    log "Downloading mq-task $version for $os/$arch..."
     log "Download URL: $download_url"
 
     # Download checksums file
@@ -208,18 +208,18 @@ install_mx() {
     checksums_file=$(download_checksums "$version")
 
     # Create installation directory
-    mkdir -p "$MX_BIN_DIR"
+    mkdir -p "$MQ_TASK_BIN_DIR"
 
     # Download the binary
     local temp_file
     temp_file=$(mktemp)
 
     if ! curl -L --progress-bar "$download_url" -o "$temp_file"; then
-        error "Failed to download mx binary"
+        error "Failed to download mq-task binary"
     fi
 
     # Verify checksum
-    local release_binary_name="mx-${target}${ext}"
+    local release_binary_name="mq-task-${target}${ext}"
     if [[ -n "$checksums_file" && -f "$checksums_file" ]]; then
         if ! verify_checksum "$temp_file" "$checksums_file" "$release_binary_name"; then
             rm -f "$checksums_file"
@@ -232,22 +232,22 @@ install_mx() {
     fi
 
     # Move and make executable
-    mv "$temp_file" "$MX_BIN_DIR/$binary_name"
-    chmod +x "$MX_BIN_DIR/$binary_name"
+    mv "$temp_file" "$MQ_TASK_BIN_DIR/$binary_name"
+    chmod +x "$MQ_TASK_BIN_DIR/$binary_name"
 
-    # Create mq-task symlink to mx
+    # Create mq-task symlink to mq-task
     local symlink_name="mq-task"
     if [[ "$os" == "windows" ]]; then
         symlink_name="mq-task.exe"
     fi
 
-    ln -sf "$MX_BIN_DIR/$binary_name" "$MX_BIN_DIR/$symlink_name"
-    log "Created symlink: $MX_BIN_DIR/$symlink_name -> $MX_BIN_DIR/$binary_name"
+    ln -sf "$MQ_TASK_BIN_DIR/$binary_name" "$MQ_TASK_BIN_DIR/$symlink_name"
+    log "Created symlink: $MQ_TASK_BIN_DIR/$symlink_name -> $MQ_TASK_BIN_DIR/$binary_name"
 
-    log "mx installed successfully to $MX_BIN_DIR/$binary_name"
+    log "mq-task installed successfully to $MQ_TASK_BIN_DIR/$binary_name"
 }
 
-# Add mx to PATH by updating shell profile
+# Add mq-task to PATH by updating shell profile
 update_shell_profile() {
     local shell_profile=""
     local shell_name
@@ -277,36 +277,36 @@ update_shell_profile() {
     if [[ -n "$shell_profile" ]]; then
         local path_export
         if [[ "$shell_name" == "fish" ]]; then
-            path_export="set -gx PATH \$PATH $MX_BIN_DIR"
+            path_export="set -gx PATH \$PATH $MQ_TASK_BIN_DIR"
         else
-            path_export="export PATH=\"\$PATH:$MX_BIN_DIR\""
+            path_export="export PATH=\"\$PATH:$MQ_TASK_BIN_DIR\""
         fi
 
-        if ! grep -q "$MX_BIN_DIR" "$shell_profile" 2>/dev/null; then
+        if ! grep -q "$MQ_TASK_BIN_DIR" "$shell_profile" 2>/dev/null; then
             echo "" >> "$shell_profile"
-            echo "# Added by mx installer" >> "$shell_profile"
+            echo "# Added by mq-task installer" >> "$shell_profile"
             echo "$path_export" >> "$shell_profile"
-            log "Added $MX_BIN_DIR to PATH in $shell_profile"
+            log "Added $MQ_TASK_BIN_DIR to PATH in $shell_profile"
         else
-            warn "$MX_BIN_DIR already exists in $shell_profile"
+            warn "$MQ_TASK_BIN_DIR already exists in $shell_profile"
         fi
     else
         warn "Could not detect shell profile to update"
-        warn "Please manually add $MX_BIN_DIR to your PATH"
+        warn "Please manually add $MQ_TASK_BIN_DIR to your PATH"
     fi
 }
 
 # Verify installation
 verify_installation() {
-    # Check mx installation
-    if [[ -x "$MX_BIN_DIR/mx" ]] || [[ -x "$MX_BIN_DIR/mx.exe" ]]; then
-        log "✓ mx installation verified"
+    # Check mq-task installation
+    if [[ -x "$MQ_TASK_BIN_DIR/mq-task" ]] || [[ -x "$MQ_TASK_BIN_DIR/mq-task.exe" ]]; then
+        log "✓ mq-task installation verified"
     else
-        error "mx installation verification failed"
+        error "mq-task installation verification failed"
     fi
 
     # Check mq-task symlink
-    if [[ -L "$MX_BIN_DIR/mq-task" ]] || [[ -L "$MX_BIN_DIR/mq-task.exe" ]]; then
+    if [[ -L "$MQ_TASK_BIN_DIR/mq-task" ]] || [[ -L "$MQ_TASK_BIN_DIR/mq-task.exe" ]]; then
         log "✓ mq-task symlink verified"
     else
         error "mq-task symlink verification failed"
@@ -320,7 +320,7 @@ verify_installation() {
 show_post_install() {
     echo ""
     echo -e "${PURPLE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${BOLD}${GREEN}✨ mx installed successfully! ✨${NC}"
+    echo -e "${BOLD}${GREEN}✨ mq-task installed successfully! ✨${NC}"
     echo -e "${PURPLE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     echo -e "${BOLD}${CYAN}🚀 Getting Started:${NC}"
@@ -329,19 +329,19 @@ show_post_install() {
     echo -e "     ${CYAN}source ~/.bashrc${NC} ${BLUE}(or your shell's profile)${NC}"
     echo ""
     echo -e "  ${YELLOW}2.${NC} Verify the installation:"
-    echo -e "     ${CYAN}mx --version${NC}"
+    echo -e "     ${CYAN}mq-task --version${NC}"
     echo ""
     echo -e "  ${YELLOW}3.${NC} Get help:"
-    echo -e "     ${CYAN}mx --help${NC}"
+    echo -e "     ${CYAN}mq-task --help${NC}"
     echo ""
     echo -e "${BOLD}${CYAN}⚡ Quick Examples:${NC}"
-    echo -e "  ${GREEN}▶${NC} ${CYAN}mx                    # List tasks from README.md${NC}"
-    echo -e "  ${GREEN}▶${NC} ${CYAN}mx \"Task Name\"        # Run a task from README.md${NC}"
-    echo -e "  ${GREEN}▶${NC} ${CYAN}mx -f tasks.md        # List tasks from tasks.md${NC}"
-    echo -e "  ${GREEN}▶${NC} ${CYAN}mx init               # Initialize mx.toml configuration${NC}"
+    echo -e "  ${GREEN}▶${NC} ${CYAN}mq-task                    # List tasks from README.md${NC}"
+    echo -e "  ${GREEN}▶${NC} ${CYAN}mq-task \"Task Name\"        # Run a task from README.md${NC}"
+    echo -e "  ${GREEN}▶${NC} ${CYAN}mq-task -f tasks.md        # List tasks from tasks.md${NC}"
+    echo -e "  ${GREEN}▶${NC} ${CYAN}mq-task init               # Initialize mq-task.toml configuration${NC}"
     echo ""
     echo -e "${BOLD}${CYAN}📚 Learn More:${NC}"
-    echo -e "  ${GREEN}▶${NC} Repository: ${BLUE}https://github.com/$MX_REPO${NC}"
+    echo -e "  ${GREEN}▶${NC} Repository: ${BLUE}https://github.com/$MQ_TASK_REPO${NC}"
     echo ""
     echo -e "${PURPLE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
@@ -367,8 +367,8 @@ main() {
     version=$(get_latest_version)
     log "Latest version: $version"
 
-    # Install mx
-    install_mx "$version" "$os" "$arch"
+    # Install mq-task
+    install_mq_task "$version" "$os" "$arch"
 
     # Update shell profile
     update_shell_profile
@@ -384,7 +384,7 @@ main() {
 while [[ $# -gt 0 ]]; do
     case $1 in
         --help|-h)
-            echo "mx installation script"
+            echo "mq-task installation script"
             echo ""
             echo "Usage: $0 [options]"
             echo ""
@@ -394,7 +394,7 @@ while [[ $# -gt 0 ]]; do
             exit 0
             ;;
         --version|-v)
-            echo "mx installer v1.0.0"
+            echo "mq-task installer v1.0.0"
             exit 0
             ;;
         *)

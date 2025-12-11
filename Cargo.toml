@@ -30,3 +30,14 @@ serde_json = "1.0"
 thiserror = "2.0.17"
 toml = "0.8.21"
 which = "7.0.1"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = "z"
+panic = "abort"
+strip = true
+
+[package.metadata.binstall]
+pkg-fmt = "bin"
+pkg-url = "{ repo }/releases/download/v{ version }/mq-task-{ target }{ binary-ext }"

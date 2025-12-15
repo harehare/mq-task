@@ -9,21 +9,16 @@ use std::path::Path;
 use crate::error::{Error, Result};
 
 /// Execution mode for a runtime
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ExecutionMode {
     /// Pass code via stdin
+    #[default]
     Stdin,
     /// Write code to a temporary file and pass it as argument
     File,
     /// Pass code as a command argument
     Arg,
-}
-
-impl Default for ExecutionMode {
-    fn default() -> Self {
-        Self::Stdin
-    }
 }
 
 impl TryFrom<&str> for ExecutionMode {

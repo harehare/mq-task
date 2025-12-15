@@ -182,10 +182,10 @@ impl Runner {
             }
 
             // Apply language filter if specified
-            if let Some(filter) = lang_filter {
-                if code_block.lang != filter {
-                    continue;
-                }
+            if let Some(filter) = lang_filter
+                && code_block.lang != filter
+            {
+                continue;
             }
 
             self.execute_code_with_args(&code_block.lang, &code_block.code, args)?;

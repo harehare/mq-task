@@ -242,12 +242,12 @@ fn list_tasks(
     };
 
     if filtered_sections.is_empty() {
-        if lang_filter.is_some() {
+        if let Some(ref lang) = lang_filter {
             println!(
                 "{}",
                 format!(
                     "No tasks found with language '{}' in {}",
-                    lang_filter.unwrap(),
+                    lang,
                     markdown_path.display()
                 )
                 .yellow()

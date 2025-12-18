@@ -614,9 +614,9 @@ dependencies = [
 
 [[package]]
 name = "mq-lang"
-version = "0.5.6"
+version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2e83089dc34549a35f6af4c6d3eca845e5977e16acea0844717c0507d5715ce"
+checksum = "085e9ffcabd9a8e3d07eb9bb5602c9760c7920401f3cc6cc1d8e40b27c1dd187"
 dependencies = [
  "base64",
  "chrono",

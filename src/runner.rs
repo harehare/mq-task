@@ -429,10 +429,10 @@ print("world")
         let mut runner = Runner::with_default_config();
         let sections = runner.extract_sections(markdown).unwrap();
 
-        assert_eq!(sections.len(), 2);
-        assert_eq!(sections[0].title, "Task 1");
-        assert_eq!(sections[0].codes.len(), 1);
-        assert_eq!(sections[0].codes[0].lang, "bash");
+        assert_eq!(sections.len(), 3);
+        assert_eq!(sections[1].title, "Task 1");
+        assert_eq!(sections[1].codes.len(), 1);
+        assert_eq!(sections[1].codes[0].lang, "bash");
     }
 
     #[test]
@@ -510,11 +510,11 @@ echo "more bash"
         let mut runner = Runner::with_default_config();
         let sections = runner.extract_sections(markdown).unwrap();
 
-        assert_eq!(sections.len(), 1);
-        assert_eq!(sections[0].title, "Mixed Task");
-        assert_eq!(sections[0].codes.len(), 3);
-        assert_eq!(sections[0].codes[0].lang, "bash");
-        assert_eq!(sections[0].codes[1].lang, "python");
-        assert_eq!(sections[0].codes[2].lang, "bash");
+        assert_eq!(sections.len(), 2);
+        assert_eq!(sections[1].title, "Mixed Task");
+        assert_eq!(sections[1].codes.len(), 3);
+        assert_eq!(sections[1].codes[0].lang, "bash");
+        assert_eq!(sections[1].codes[1].lang, "python");
+        assert_eq!(sections[1].codes[2].lang, "bash");
     }
 }

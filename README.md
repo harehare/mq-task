@@ -116,9 +116,6 @@ This creates an `mq-task.toml` file with default runtime settings.
 Create an `mq-task.toml` file to customize runtime behavior:
 
 ```toml
-# Heading level for sections (default: 2, i.e., ## headings)
-heading_level = 2
-
 # Runtimes configuration
 # Simple format: language = "command"
 # The execution mode defaults to "stdin"

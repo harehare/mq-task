@@ -75,17 +75,12 @@ pub struct Config {
     /// Runtime mappings: language -> command or detailed config
     #[serde(default = "default_runtimes")]
     pub runtimes: HashMap<String, RuntimeConfig>,
-
-    /// Heading level for sections (default: 2)
-    #[serde(default = "default_heading_level")]
-    pub heading_level: u8,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             runtimes: default_runtimes(),
-            heading_level: default_heading_level(),
         }
     }
 }
@@ -229,22 +224,9 @@ fn default_runtimes() -> HashMap<String, RuntimeConfig> {
     runtimes
 }
 
-/// Default heading level
-fn default_heading_level() -> u8 {
-    2
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_default_config() {
-        let config = Config::default();
-        assert_eq!(config.heading_level, 2);
-        assert!(config.has_runtime("bash"));
-        assert!(config.has_runtime("python"));
-    }
 
     #[test]
     fn test_get_runtime() {
@@ -289,8 +271,6 @@ mod tests {
     #[test]
     fn test_toml_deserialization_simple() {
         let toml = r#"
-heading_level = 2
-
 [runtimes]
 python = "python3"
 "#;
@@ -302,8 +282,6 @@ python = "python3"
     #[test]
     fn test_toml_deserialization_detailed() {
         let toml = r#"
-heading_level = 2
-
 [runtimes.go]
 command = "go run"
 execution_mode = "file"
@@ -316,8 +294,6 @@ execution_mode = "file"
     #[test]
     fn test_toml_deserialization_mixed() {
         let toml = r#"
-heading_level = 2
-
 [runtimes]
 python = "python3"
 

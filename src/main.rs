@@ -26,10 +26,6 @@ struct Cli {
     #[arg(short, long)]
     config: Option<PathBuf>,
 
-    /// Heading level for sections (1-6)
-    #[arg(short, long)]
-    level: Option<u8>,
-
     /// Override runtime for a language (format: lang:command, e.g., python:python3.11)
     #[arg(short, long, value_name = "LANG:COMMAND")]
     runtime: Vec<String>,
@@ -65,10 +61,6 @@ enum Commands {
         #[arg(short, long)]
         config: Option<PathBuf>,
 
-        /// Heading level for sections (1-6)
-        #[arg(short, long)]
-        level: Option<u8>,
-
         /// Override runtime for a language (format: lang:command, e.g., python:python3.11)
         #[arg(short, long, value_name = "LANG:COMMAND")]
         runtime: Vec<String>,
@@ -96,10 +88,6 @@ enum Commands {
         #[arg(short, long)]
         config: Option<PathBuf>,
 
-        /// Heading level for sections (1-6)
-        #[arg(short, long)]
-        level: Option<u8>,
-
         /// Filter code blocks by language (e.g., bash, python, go)
         #[arg(long, value_name = "LANG")]
         lang: Option<String>,
@@ -121,27 +109,12 @@ fn main() -> Result<()> {
             file,
             task,
             config,
-            level,
             runtime,
             execution_mode,
             lang,
             args,
-        }) => run_task(
-            file,
-            task,
-            config,
-            level,
-            runtime,
-            execution_mode,
-            lang,
-            args,
-        )?,
-        Some(Commands::List {
-            file,
-            config,
-            level,
-            lang,
-        }) => list_tasks(file, config, level, lang)?,
+        }) => run_task(file, task, config, runtime, execution_mode, lang, args)?,
+        Some(Commands::List { file, config, lang }) => list_tasks(file, config, lang)?,
         Some(Commands::Init { output }) => init_config(output)?,
         None => {
             // If no subcommand, check if task is provided
@@ -150,7 +123,6 @@ fn main() -> Result<()> {
                     cli.file,
                     task,
                     cli.config,
-                    cli.level,
                     cli.runtime,
                     cli.execution_mode,
                     cli.lang,
@@ -158,7 +130,7 @@ fn main() -> Result<()> {
                 )?;
             } else {
                 // No task provided, list available tasks
-                list_tasks(cli.file, cli.config, cli.level, cli.lang)?;
+                list_tasks(cli.file, cli.config, cli.lang)?;
             }
         }
     }
@@ -172,18 +144,12 @@ fn run_task(
     markdown_path: PathBuf,
     task_name: String,
     config_path: Option<PathBuf>,
-    level: Option<u8>,
     runtime_overrides: Vec<String>,
     execution_mode: Option<String>,
     lang_filter: Option<String>,
     args: Vec<String>,
 ) -> Result<()> {
     let mut config = load_config(config_path)?;
-
-    // Override heading level if specified
-    if let Some(level) = level {
-        config.heading_level = level;
-    }
 
     // Parse execution mode if specified
     let exec_mode = if let Some(mode_str) = execution_mode {
@@ -215,16 +181,9 @@ fn run_task(
 fn list_tasks(
     markdown_path: PathBuf,
     config_path: Option<PathBuf>,
-    level: Option<u8>,
     lang_filter: Option<String>,
 ) -> Result<()> {
-    let mut config = load_config(config_path)?;
-
-    // Override heading level if specified
-    if let Some(level) = level {
-        config.heading_level = level;
-    }
-
+    let config = load_config(config_path)?;
     let mut runner = Runner::new(config);
 
     let sections = runner

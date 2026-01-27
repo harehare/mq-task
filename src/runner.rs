@@ -26,8 +26,6 @@ pub struct CodeBlock {
 pub struct Section {
     /// Section title
     pub title: String,
-    /// Heading level
-    pub level: u8,
     /// Code blocks in this section
     pub codes: Vec<CodeBlock>,
     /// Optional description extracted from the section content
@@ -64,11 +62,7 @@ impl Runner {
         let input = parse_markdown_input(markdown)
             .map_err(|e| Error::Markdown(format!("Failed to parse markdown: {}", e)))?;
 
-        let query = format!(
-            "{}\n | nodes | sections_with_code({})",
-            SECTIONS_QUERY, self.config.heading_level
-        );
-
+        let query = format!("{}\n | nodes | sections_with_code()", SECTIONS_QUERY);
         let result = self
             .engine
             .eval(&query, input.into_iter())
@@ -101,14 +95,6 @@ impl Runner {
             })
             .unwrap_or_default();
 
-        let level = dict
-            .get(&Ident::from("level"))
-            .and_then(|v| match v {
-                RuntimeValue::Number(n) => Some(n.value() as u8),
-                _ => None,
-            })
-            .unwrap_or(self.config.heading_level);
-
         let codes = dict
             .get(&Ident::from("codes"))
             .and_then(|v| match v {
@@ -124,7 +110,6 @@ impl Runner {
 
         Ok(Section {
             title,
-            level,
             codes,
             description,
         })
@@ -425,12 +410,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_runner_creation() {
-        let runner = Runner::with_default_config();
-        assert_eq!(runner.config.heading_level, 2);
-    }
-
-    #[test]
     fn test_extract_sections() {
         let markdown = r#"# Title
 
@@ -461,12 +440,10 @@ print("world")
         let sections = vec![
             Section {
                 title: "Task 1".to_string(),
-                level: 2,
                 ..Default::default()
             },
             Section {
                 title: "Task 2".to_string(),
-                level: 2,
                 ..Default::default()
             },
         ];
@@ -484,7 +461,6 @@ print("world")
     fn test_language_filter() {
         let section = Section {
             title: "Mixed Task".to_string(),
-            level: 2,
             codes: vec![
                 CodeBlock {
                     lang: "bash".to_string(),

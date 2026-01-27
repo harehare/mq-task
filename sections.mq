@@ -4,12 +4,17 @@
 # - level: the heading level (1-6)
 # - content: array of markdown nodes in that section (including the heading)
 
-def extract_sections(md_nodes, level):
-  let section_list = sections(md_nodes, level)
-  | map(section_list, fn(section):
-    let heading = first(section)
+import "section"
+
+|
+
+def extract_sections(md_nodes):
+  let section_list = section::sections(md_nodes)
+  | map(section_list, fn(s):
+    let heading = first(s[:header])
     | let title = to_text(heading)
-    | {"title": title, "level": level, "content": section}
+    | let level = heading.level
+    | {"title": title, "level": level, "content": s[:children]}
   end)
 end
 
@@ -31,8 +36,8 @@ def extract_description(section_content):
 end
 
 # Main query to extract sections with their code blocks
-def sections_with_code(md_nodes, level):
-  let section_list = extract_sections(md_nodes, level)
+def sections_with_code(md_nodes):
+  let section_list = extract_sections(md_nodes)
   | map(section_list, fn(section):
     let title = section["title"]
     | let level = section["level"]

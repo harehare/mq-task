@@ -1,7 +1,5 @@
 <h1 align="center">mq-task</h1>
 
-Markdown Task Runner
-
 [![ci](https://github.com/harehare/mq-task/actions/workflows/ci.yml/badge.svg)](https://github.com/harehare/mq-task/actions/workflows/ci.yml)
 
 `mq-task` is a task runner that executes code blocks in Markdown files based on section titles.
@@ -11,9 +9,6 @@ It is implemented using [mq](https://github.com/harehare/mq), a jq-like command-
 
 > [!WARNING]
 > `mq-task` is currently under active development.
-
-> [!NOTE]
-> This project was previously named `mx` and has been renamed to `mq-task`.
 
 ## Features
 

@@ -9,7 +9,7 @@ license = "MIT"
 name = "mq-task"
 readme = "README.md"
 repository = "https://github.com/harehare/mq"
-version = "0.1.5"
+version = "0.1.6"
 
 [[bin]]
 name = "mq-task"
@@ -23,8 +23,8 @@ path = "src/lib.rs"
 clap = {version = "4.5.59", features = ["derive"]}
 colored = "3.1"
 miette = {version = "7.6.0", features = ["fancy"]}
-mq-lang = "0.5.15"
-mq-markdown = "0.5.15"
+mq-lang = "0.5.16"
+mq-markdown = "0.5.16"
 serde = {version = "1.0", features = ["derive"]}
 serde_json = "1.0"
 thiserror = "2.0.18"
@@ -41,3 +41,4 @@ strip = true
 [package.metadata.binstall]
 pkg-fmt = "bin"
 pkg-url = "{ repo }/releases/download/v{ version }/mq-task-{ target }{ binary-ext }"
+

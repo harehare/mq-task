@@ -22,7 +22,7 @@ path = "src/lib.rs"
 [dependencies]
 clap = {version = "4.5.60", features = ["derive"]}
 colored = "3.1"
-crossterm = "0.28"
+crossterm = "0.29"
 miette = {version = "7.6.0", features = ["fancy"]}
 mq-lang = "0.5.17"
 mq-markdown = "0.5.17"

@@ -36,6 +36,7 @@ pub struct Section {
 pub struct Runner {
     config: Config,
     engine: Engine,
+    dry_run: bool,
 }
 
 impl Runner {
@@ -44,12 +45,21 @@ impl Runner {
         let mut engine: Engine = Engine::default();
         engine.load_builtin_module();
 
-        Self { config, engine }
+        Self {
+            config,
+            engine,
+            dry_run: false,
+        }
     }
 
     /// Create a new Runner with default configuration
     pub fn with_default_config() -> Self {
         Self::new(Config::default())
+    }
+
+    /// Enable or disable dry-run mode
+    pub fn set_dry_run(&mut self, dry_run: bool) {
+        self.dry_run = dry_run;
     }
 
     /// Load and parse a Markdown file
@@ -196,6 +206,19 @@ impl Runner {
 
         // Get execution mode from config
         let execution_mode = self.config.get_execution_mode(lang);
+
+        if self.dry_run {
+            let args_line = if !args.is_empty() {
+                format!("\n[dry-run] args: {}", args.join(" "))
+            } else {
+                String::new()
+            };
+            println!(
+                "[dry-run] lang: {}\n[dry-run] runtime: {}\n[dry-run] code:\n{}{}",
+                lang, runtime, code, args_line
+            );
+            return Ok(());
+        }
 
         match execution_mode {
             ExecutionMode::File => self.execute_code_with_file_and_args(lang, code, &parts, args),

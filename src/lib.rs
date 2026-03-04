@@ -6,6 +6,7 @@
 pub mod config;
 pub mod error;
 pub mod runner;
+pub mod tui;
 
 pub use config::{Config, ExecutionMode};
 pub use error::{Error, Result};

@@ -38,6 +38,10 @@ struct Cli {
     #[arg(long, value_name = "LANG")]
     lang: Option<String>,
 
+    /// Show what would be executed without actually running it
+    #[arg(long)]
+    dry_run: bool,
+
     /// Arguments to pass to the task (use -- to separate: mq_task task -- arg1 arg2)
     #[arg(last = true)]
     args: Vec<String>,
@@ -73,6 +77,10 @@ enum Commands {
         #[arg(long, value_name = "LANG")]
         lang: Option<String>,
 
+        /// Show what would be executed without actually running it
+        #[arg(long)]
+        dry_run: bool,
+
         /// Arguments to pass to the task (use -- to separate: mq_task run task -- arg1 arg2)
         #[arg(last = true)]
         args: Vec<String>,
@@ -91,6 +99,25 @@ enum Commands {
         /// Filter code blocks by language (e.g., bash, python, go)
         #[arg(long, value_name = "LANG")]
         lang: Option<String>,
+    },
+
+    /// Interactively select and run a task using TUI
+    Tui {
+        /// Path to the markdown file
+        #[arg(short, long, default_value = DEFAULT_TASKS_FILE)]
+        file: PathBuf,
+
+        /// Path to configuration file
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+
+        /// Filter code blocks by language (e.g., bash, python, go)
+        #[arg(long, value_name = "LANG")]
+        lang: Option<String>,
+
+        /// Show what would be executed without actually running it
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Generate a sample configuration file
@@ -112,9 +139,16 @@ fn main() -> Result<()> {
             runtime,
             execution_mode,
             lang,
+            dry_run,
             args,
-        }) => run_task(file, task, config, runtime, execution_mode, lang, args)?,
+        }) => run_task(file, task, config, runtime, execution_mode, lang, dry_run, args)?,
         Some(Commands::List { file, config, lang }) => list_tasks(file, config, lang)?,
+        Some(Commands::Tui {
+            file,
+            config,
+            lang,
+            dry_run,
+        }) => run_tui(file, config, lang, dry_run)?,
         Some(Commands::Init { output }) => init_config(output)?,
         None => {
             // If no subcommand, check if task is provided
@@ -126,6 +160,7 @@ fn main() -> Result<()> {
                     cli.runtime,
                     cli.execution_mode,
                     cli.lang,
+                    cli.dry_run,
                     cli.args,
                 )?;
             } else {
@@ -147,6 +182,7 @@ fn run_task(
     runtime_overrides: Vec<String>,
     execution_mode: Option<String>,
     lang_filter: Option<String>,
+    dry_run: bool,
     args: Vec<String>,
 ) -> Result<()> {
     let mut config = load_config(config_path)?;
@@ -166,14 +202,26 @@ fn run_task(
     }
 
     let mut runner = Runner::new(config);
+    runner.set_dry_run(dry_run);
 
-    println!("Running task: {}", task_name);
-    println!();
+    println!("Running task: {}\n", task_name);
 
     runner
         .run_task_with_lang_filter(&markdown_path, &task_name, &args, lang_filter.as_deref())
         .into_diagnostic()?;
 
+    Ok(())
+}
+
+/// Launch the interactive TUI for task selection
+fn run_tui(
+    markdown_path: PathBuf,
+    config_path: Option<PathBuf>,
+    lang_filter: Option<String>,
+    dry_run: bool,
+) -> Result<()> {
+    let config = load_config(config_path)?;
+    mq_task::tui::run_tui(markdown_path, config, lang_filter, dry_run).into_diagnostic()?;
     Ok(())
 }
 

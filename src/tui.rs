@@ -17,8 +17,8 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
-use crate::{Config, Runner};
 use crate::runner::Section;
+use crate::{Config, Runner};
 
 struct App {
     sections: Vec<Section>,
@@ -103,8 +103,7 @@ pub fn run_tui(
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
         .map_err(|e| crate::error::Error::Io(e))?;
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)
-        .map_err(|e| crate::error::Error::Io(e))?;
+    let mut terminal = Terminal::new(backend).map_err(|e| crate::error::Error::Io(e))?;
 
     let mut app = App::new(sections);
     let result = run_app(&mut terminal, &mut app);
@@ -117,7 +116,9 @@ pub fn run_tui(
         DisableMouseCapture
     )
     .map_err(|e| crate::error::Error::Io(e))?;
-    terminal.show_cursor().map_err(|e| crate::error::Error::Io(e))?;
+    terminal
+        .show_cursor()
+        .map_err(|e| crate::error::Error::Io(e))?;
 
     // Execute selected task if any
     if let Some(task_name) = result? {
@@ -138,11 +139,9 @@ fn run_app<B: ratatui::backend::Backend>(
     app: &mut App,
 ) -> crate::error::Result<Option<String>> {
     loop {
-        terminal
-            .draw(|f| ui(f, app))
-            .map_err(|e| crate::error::Error::Io(e))?;
+        terminal.draw(|f| ui(f, app)).expect("Failed to draw TUI");
 
-        if let Event::Key(key) = event::read().map_err(|e| crate::error::Error::Io(e))? {
+        if let Event::Key(key) = event::read().map_err(crate::error::Error::Io)? {
             if key.kind != KeyEventKind::Press {
                 continue;
             }

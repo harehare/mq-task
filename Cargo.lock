@@ -413,6 +413,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "csv"
+version = "1.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52cd9d68cf7efc6ddfaaee42e7288d3a99d613d4b50f76ce9827ae0c6e14f938"
+dependencies = [
+ "csv-core",
+ "itoa",
+ "ryu",
+ "serde_core",
+]
+
+[[package]]
+name = "csv-core"
+version = "0.1.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "704a3c26996a80471189265814dbc2c257598b96b8a7feae2d31ace646bb9782"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "darling"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1192,12 +1213,13 @@ dependencies = [
 
 [[package]]
 name = "mq-lang"
-version = "0.5.19"
+version = "0.5.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17474f66467e5fb92c3907d7110b7b7d53d49b2fdb412ffb6f9256a939d47790"
+checksum = "81f39ef51b377a79911235311952fc5198c8da62bec4b101665a1ab1094d8449"
 dependencies = [
  "base64",
  "chrono",
+ "csv",
  "dirs",
  "itertools",
  "miette",
@@ -1205,20 +1227,24 @@ dependencies = [
  "nom 8.0.0",
  "nom_locate",
  "percent-encoding",
+ "quick-xml",
  "regex-lite",
  "rustc-hash",
+ "serde",
+ "serde_json",
  "smallvec",
  "smol_str",
  "string-interner",
  "thiserror 2.0.18",
+ "toon-format",
  "url",
 ]
 
 [[package]]
 name = "mq-markdown"
-version = "0.5.19"
+version = "0.5.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53d9d081eabd71e1572f9078b084931c2378b4cd7d58d9e45787b9a638081c1c"
+checksum = "1520d93c3614e01b2cd2ccd5d3e2fb91a2f21edaa4afdbb671bd7b3ad0fc5b06"
 dependencies = [
  "ego-tree",
  "itertools",
@@ -1598,6 +1624,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "quick-xml"
+version = "0.39.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "958f21e8e7ceb5a1aa7fa87fab28e7c75976e0bfe7e23ff069e0a260f894067d"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1901,6 +1936,7 @@ version = "1.0.149"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "83fc039473c5595ace860d8c4fafa220ff474b3fc6bfdb4293327f1a37e94d86"
 dependencies = [
+ "indexmap",
  "itoa",
  "memchr",
  "serde",
@@ -2339,6 +2375,18 @@ name = "toml_writer"
 version = "1.0.6+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab16f14aed21ee8bfd8ec22513f7287cd4a91aa92e44edfe2c17ddd004e92607"
+
+[[package]]
+name = "toon-format"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d25e33e50b37f95f3b55b6e664218cac7e1a50f056a75bb4c7a6cccfbc8a8c4"
+dependencies = [
+ "indexmap",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
 
 [[package]]
 name = "typenum"

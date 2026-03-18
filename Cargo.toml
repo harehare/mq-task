@@ -24,7 +24,7 @@ clap = {version = "4.6.0", features = ["derive"]}
 colored = "3.1"
 crossterm = "0.29"
 miette = {version = "7.6.0", features = ["fancy"]}
-mq-lang = "0.5.19"
+mq-lang = "0.5.20"
 mq-markdown = "0.5.19"
 ratatui = "0.30"
 serde = {version = "1.0", features = ["derive"]}

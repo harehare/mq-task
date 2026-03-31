@@ -98,27 +98,24 @@ pub fn run_tui(
     };
 
     // Setup terminal
-    enable_raw_mode().map_err(|e| crate::error::Error::Io(e))?;
+    enable_raw_mode().map_err(crate::error::Error::Io)?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
-        .map_err(|e| crate::error::Error::Io(e))?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture).map_err(crate::error::Error::Io)?;
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend).map_err(|e| crate::error::Error::Io(e))?;
+    let mut terminal = Terminal::new(backend).map_err(crate::error::Error::Io)?;
 
     let mut app = App::new(sections);
     let result = run_app(&mut terminal, &mut app);
 
     // Restore terminal
-    disable_raw_mode().map_err(|e| crate::error::Error::Io(e))?;
+    disable_raw_mode().map_err(crate::error::Error::Io)?;
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
         DisableMouseCapture
     )
-    .map_err(|e| crate::error::Error::Io(e))?;
-    terminal
-        .show_cursor()
-        .map_err(|e| crate::error::Error::Io(e))?;
+    .map_err(crate::error::Error::Io)?;
+    terminal.show_cursor().map_err(crate::error::Error::Io)?;
 
     // Execute selected task if any
     if let Some(task_name) = result? {

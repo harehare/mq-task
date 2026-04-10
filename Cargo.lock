@@ -1221,9 +1221,9 @@ dependencies = [
 
 [[package]]
 name = "mq-lang"
-version = "0.5.23"
+version = "0.5.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "19fa57775a9335dc33f5a4f457741f2c764c24282c6453331f9426d65fbd3f91"
+checksum = "ea642be0e25953e52e7272a8ff2eea0f6a01e08a9980a9ec0d3021dffe1844c8"
 dependencies = [
  "base64",
  "chrono",
@@ -1251,9 +1251,9 @@ dependencies = [
 
 [[package]]
 name = "mq-markdown"
-version = "0.5.24"
+version = "0.5.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a63e7c195d7859135a24a9a62cd6cb6452ba23beb5426b8f183b5b2c5da6409"
+checksum = "981fcf85194a86b4774f53e822dff401389862db268f1ca52df5fe3fbc8eb19d"
 dependencies = [
  "ego-tree",
  "itertools",
@@ -1825,9 +1825,9 @@ checksum = "b50b8869d9fc858ce7266cce0194bd74df58b9d0e3f6df3a9fc8eb470d95c09d"
 
 [[package]]
 name = "rustc-hash"
-version = "2.1.1"
+version = "2.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
+checksum = "94300abf3f1ae2e2b8ffb7b58043de3d399c73fa6f4b73826402a5c457614dbe"
 
 [[package]]
 name = "rustc_version"

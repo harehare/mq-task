@@ -28,7 +28,7 @@ curl -sSL https://raw.githubusercontent.com/harehare/mq-task/refs/heads/main/bin
 
 The installer will:
 - Download the latest mq binary for your platform
-- Install it to `~/.mq/bin/`
+- Install it to `~/.local/bin/`
 - Update your shell profile to add mq to your PATH
 
 ### Cargo

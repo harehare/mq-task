@@ -9,7 +9,7 @@ license = "MIT"
 name = "mq-task"
 readme = "README.md"
 repository = "https://github.com/harehare/mq"
-version = "0.1.8"
+version = "0.1.9"
 
 [[bin]]
 name = "mq-task"
@@ -24,8 +24,8 @@ clap = {version = "4.6.0", features = ["derive"]}
 colored = "3.1"
 crossterm = "0.29"
 miette = {version = "7.6.0", features = ["fancy"]}
-mq-lang = "0.5.25"
-mq-markdown = "0.5.25"
+mq-lang = "0.5.26"
+mq-markdown = "0.5.26"
 ratatui = "0.30"
 serde = {version = "1.0", features = ["derive"]}
 serde_json = "1.0"

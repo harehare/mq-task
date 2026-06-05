@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -21,15 +21,25 @@ pub struct CodeBlock {
     pub code: String,
 }
 
+/// Task metadata parsed from a `meta` code block within a section
+#[derive(Debug, Deserialize, Default)]
+struct TaskMeta {
+    #[serde(default)]
+    depends: Vec<String>,
+}
+
 /// Represents a section with its code blocks
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Section {
     /// Section title
     pub title: String,
-    /// Code blocks in this section
+    /// Code blocks in this section (excludes `meta` metadata blocks)
     pub codes: Vec<CodeBlock>,
     /// Optional description extracted from the section content
     pub description: Option<String>,
+    /// Task names this section depends on (declared in a `meta` code block)
+    #[serde(default)]
+    pub depends: Vec<String>,
 }
 
 /// Task runner that executes code blocks in Markdown sections
@@ -105,13 +115,22 @@ impl Runner {
             })
             .unwrap_or_default();
 
-        let codes = dict
+        let all_codes = dict
             .get(&Ident::from("codes"))
             .and_then(|v| match v {
                 RuntimeValue::Array(arr) => Some(self.parse_code_blocks(arr)),
                 _ => None,
             })
             .unwrap_or_else(|| Ok(Vec::new()))?;
+
+        let depends = all_codes
+            .iter()
+            .find(|c| c.lang == "meta")
+            .and_then(|c| toml::from_str::<TaskMeta>(&c.code).ok())
+            .map(|m| m.depends)
+            .unwrap_or_default();
+
+        let codes: Vec<CodeBlock> = all_codes.into_iter().filter(|c| c.lang != "meta").collect();
 
         let description = dict.get(&Ident::from("description")).and_then(|v| match v {
             RuntimeValue::String(s) => Some(s.to_string()),
@@ -122,6 +141,7 @@ impl Runner {
             title,
             codes,
             description,
+            depends,
         })
     }
 
@@ -155,6 +175,51 @@ impl Runner {
 
     pub fn find_section<'a>(&self, sections: &'a [Section], title: &str) -> Option<&'a Section> {
         sections.iter().find(|s| s.title == title)
+    }
+
+    fn resolve_execution_order<'a>(
+        &self,
+        sections: &'a [Section],
+        target: &str,
+    ) -> Result<Vec<&'a Section>> {
+        let mut visited = HashSet::new();
+        let mut in_progress = HashSet::new();
+        let mut order = Vec::new();
+        self.dfs_resolve(sections, target, &mut visited, &mut in_progress, &mut order)?;
+        Ok(order)
+    }
+
+    fn dfs_resolve<'a>(
+        &self,
+        sections: &'a [Section],
+        task_name: &str,
+        visited: &mut HashSet<String>,
+        in_progress: &mut HashSet<String>,
+        order: &mut Vec<&'a Section>,
+    ) -> Result<()> {
+        if in_progress.contains(task_name) {
+            return Err(Error::CircularDependency(task_name.to_string()));
+        }
+        if visited.contains(task_name) {
+            return Ok(());
+        }
+
+        in_progress.insert(task_name.to_string());
+
+        let section = self
+            .find_section(sections, task_name)
+            .ok_or_else(|| Error::SectionNotFound(task_name.to_string()))?;
+
+        let deps = section.depends.clone();
+        for dep in &deps {
+            self.dfs_resolve(sections, dep, visited, in_progress, order)?;
+        }
+
+        in_progress.remove(task_name);
+        visited.insert(task_name.to_string());
+        order.push(section);
+
+        Ok(())
     }
 
     pub fn execute_section(&self, section: &Section) -> Result<()> {
@@ -403,11 +468,21 @@ impl Runner {
         let markdown = self.load_markdown(markdown_path)?;
         let sections = self.extract_sections(&markdown)?;
 
-        let section = self
-            .find_section(&sections, task_name)
-            .ok_or_else(|| Error::SectionNotFound(task_name.to_string()))?;
+        let execution_order = self.resolve_execution_order(&sections, task_name)?;
 
-        self.execute_section_with_lang_filter(section, args, lang_filter)
+        for section in execution_order {
+            let is_dep = section.title != task_name;
+            if is_dep {
+                println!("Running dependency: {}\n", section.title);
+            }
+            self.execute_section_with_lang_filter(
+                section,
+                if is_dep { &[] } else { args },
+                lang_filter,
+            )?;
+        }
+
+        Ok(())
     }
 
     /// List all available tasks (sections) in a Markdown file
@@ -492,6 +567,7 @@ print("world")
                 CodeBlock {
                     lang: "python".to_string(),
                     code: "print('python code')".to_string(),
+
                 },
                 CodeBlock {
                     lang: "bash".to_string(),
@@ -499,6 +575,7 @@ print("world")
                 },
             ],
             description: None,
+            depends: vec![],
         };
 
         let runner = Runner::with_default_config();
@@ -539,5 +616,136 @@ echo "more bash"
         assert_eq!(sections[1].codes[0].lang, "bash");
         assert_eq!(sections[1].codes[1].lang, "python");
         assert_eq!(sections[1].codes[2].lang, "bash");
+    }
+
+    #[test]
+    fn test_depends_parsed_from_meta_block() {
+        let markdown = r#"# Title
+
+## format
+
+```bash
+echo "formatting"
+```
+
+## lint
+
+```meta
+depends = ["format"]
+```
+
+```bash
+echo "linting"
+```
+
+## test
+
+```meta
+depends = ["lint"]
+```
+
+```bash
+echo "testing"
+```
+"#;
+
+        let mut runner = Runner::with_default_config();
+        let sections = runner.extract_sections(markdown).unwrap();
+
+        // meta blocks should not appear in codes
+        let lint = sections.iter().find(|s| s.title == "lint").unwrap();
+        assert_eq!(lint.depends, vec!["format"]);
+        assert_eq!(lint.codes.len(), 1);
+        assert_eq!(lint.codes[0].lang, "bash");
+
+        let test = sections.iter().find(|s| s.title == "test").unwrap();
+        assert_eq!(test.depends, vec!["lint"]);
+    }
+
+    #[test]
+    fn test_resolve_execution_order() {
+        let sections = vec![
+            Section {
+                title: "format".to_string(),
+                codes: vec![],
+                description: None,
+                depends: vec![],
+            },
+            Section {
+                title: "lint".to_string(),
+                codes: vec![],
+                description: None,
+                depends: vec!["format".to_string()],
+            },
+            Section {
+                title: "test".to_string(),
+                codes: vec![],
+                description: None,
+                depends: vec!["lint".to_string()],
+            },
+        ];
+
+        let runner = Runner::with_default_config();
+        let order = runner.resolve_execution_order(&sections, "test").unwrap();
+
+        assert_eq!(order.len(), 3);
+        assert_eq!(order[0].title, "format");
+        assert_eq!(order[1].title, "lint");
+        assert_eq!(order[2].title, "test");
+    }
+
+    #[test]
+    fn test_circular_dependency_detected() {
+        let sections = vec![
+            Section {
+                title: "a".to_string(),
+                codes: vec![],
+                description: None,
+                depends: vec!["b".to_string()],
+            },
+            Section {
+                title: "b".to_string(),
+                codes: vec![],
+                description: None,
+                depends: vec!["a".to_string()],
+            },
+        ];
+
+        let runner = Runner::with_default_config();
+        let result = runner.resolve_execution_order(&sections, "a");
+        assert!(matches!(result, Err(Error::CircularDependency(_))));
+    }
+
+    #[test]
+    fn test_shared_dependency_runs_once() {
+        let sections = vec![
+            Section {
+                title: "format".to_string(),
+                codes: vec![],
+                description: None,
+                depends: vec![],
+            },
+            Section {
+                title: "lint".to_string(),
+                codes: vec![],
+                description: None,
+                depends: vec!["format".to_string()],
+            },
+            Section {
+                title: "test".to_string(),
+                codes: vec![],
+                description: None,
+                depends: vec!["format".to_string(), "lint".to_string()],
+            },
+        ];
+
+        let runner = Runner::with_default_config();
+        let order = runner.resolve_execution_order(&sections, "test").unwrap();
+
+        // format should appear only once even though both test and lint depend on it
+        assert_eq!(order.len(), 3);
+        assert_eq!(order[0].title, "format");
+        assert_eq!(order[1].title, "lint");
+        assert_eq!(order[2].title, "test");
     }
 }

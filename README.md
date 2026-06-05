@@ -13,6 +13,7 @@ It is implemented using [mq](https://github.com/harehare/mq), a jq-like command-
 ## Features
 
 - Execute code blocks from specific sections in Markdown files
+- Task dependencies with automatic execution ordering
 - Configurable runtimes for different programming languages
 - Support for custom heading levels
 - TOML-based configuration
@@ -86,6 +87,56 @@ echo "First arg: $MX_ARG_0"
 echo "Second arg: $MX_ARG_1"
 ```
 ````
+
+### Task dependencies
+
+You can declare dependencies between tasks using a `meta` code block (TOML format). When a task is run, its dependencies are automatically executed first in the correct order.
+
+````markdown
+## format
+
+```bash
+cargo fmt
+```
+
+## lint
+
+```meta
+depends = ["format"]
+```
+
+```bash
+cargo clippy
+```
+
+## test
+
+```meta
+depends = ["lint"]
+```
+
+```bash
+cargo test
+```
+````
+
+Running `mq-task test` will automatically execute `format → lint → test` in order:
+
+```
+Running task: test
+
+Running dependency: format
+...
+
+Running dependency: lint
+...
+
+(test output)
+```
+
+- Multiple dependencies are supported: `depends = ["format", "lint"]`
+- Shared dependencies are executed only once even if multiple tasks depend on them
+- Circular dependencies are detected and reported as an error
 
 ### List available tasks
 

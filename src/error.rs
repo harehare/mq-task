@@ -39,4 +39,8 @@ pub enum Error {
     /// Runtime not found
     #[error("Runtime not found for language: {0}")]
     RuntimeNotFound(String),
+
+    /// Circular dependency detected
+    #[error("Circular dependency detected involving task: {0}")]
+    CircularDependency(String),
 }

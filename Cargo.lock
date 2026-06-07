@@ -1384,9 +1384,9 @@ dependencies = [
 
 [[package]]
 name = "mq-lang"
-version = "0.5.31"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b51f7340c495c7d3327bec83c45ea26335dae91acb1392cc45ce2fcc2130194"
+checksum = "945450433662b786c8ce51f19ab70891dc442da43d39967c51537927e7f7305a"
 dependencies = [
  "base64",
  "chrono",
@@ -1416,14 +1416,15 @@ dependencies = [
  "toml",
  "toon-format",
  "url",
+ "web-sys",
  "yaml-rust2",
 ]
 
 [[package]]
 name = "mq-macros"
-version = "0.5.31"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d749dc5c73bcce7a6a978636aef01de4700e0e790d88b5a514ae2d5df393cb77"
+checksum = "18f40d74822fe55553384f385363530300ea41ceadd598baf68fe0373bbb1fae"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1432,9 +1433,9 @@ dependencies = [
 
 [[package]]
 name = "mq-markdown"
-version = "0.5.31"
+version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc96ff6f0490a589fae25145cbc61b883c7fd2d4b042f545eab954c37ed3a167"
+checksum = "791c374af833381678f62652884282f70043110e35b8a4a9f76c72cefca2def2"
 dependencies = [
  "ego-tree",
  "itertools",
@@ -1448,7 +1449,7 @@ dependencies = [
 
 [[package]]
 name = "mq-task"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "clap",
  "colored",
@@ -2593,9 +2594,9 @@ checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
 
 [[package]]
 name = "toon-format"
-version = "0.4.4"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d25e33e50b37f95f3b55b6e664218cac7e1a50f056a75bb4c7a6cccfbc8a8c4"
+checksum = "8f89570c1a68d73941f728cca32a4345b2ffca36667ad921af336c60309a3e7e"
 dependencies = [
  "indexmap",
  "serde",
@@ -2841,6 +2842,16 @@ dependencies = [
  "hashbrown 0.15.5",
  "indexmap",
  "semver",
+]
+
+[[package]]
+name = "web-sys"
+version = "0.3.85"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "312e32e551d92129218ea9a2452120f4aabc03529ef03e4d0d82fb2780608598"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
 ]
 
 [[package]]

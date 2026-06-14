@@ -1428,9 +1428,9 @@ dependencies = [
 
 [[package]]
 name = "mq-lang"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "945450433662b786c8ce51f19ab70891dc442da43d39967c51537927e7f7305a"
+checksum = "de5c9d2b5d689b6e2678e0c2434296adaf264badd1fd17a8bf2f8755d5d04412"
 dependencies = [
  "base64",
  "chrono",
@@ -1466,9 +1466,9 @@ dependencies = [
 
 [[package]]
 name = "mq-macros"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18f40d74822fe55553384f385363530300ea41ceadd598baf68fe0373bbb1fae"
+checksum = "cd4c6c3fce40116d16af56baf6a26ddad9433b8f8a921111fabdc939f9fce2d5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1477,9 +1477,9 @@ dependencies = [
 
 [[package]]
 name = "mq-markdown"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "791c374af833381678f62652884282f70043110e35b8a4a9f76c72cefca2def2"
+checksum = "160f55c054bc0739748e6d7cc7cefd123d9c9e6147dd5213b66918b98585aca4"
 dependencies = [
  "ego-tree",
  "itertools",
@@ -1493,7 +1493,7 @@ dependencies = [
 
 [[package]]
 name = "mq-task"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "clap",
  "colored",

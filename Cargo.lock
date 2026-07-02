@@ -1185,6 +1185,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "itertools"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b4baf93f58d4425749ca49a51c50ebab072c5df6994d08fed93541c331481dc"
+dependencies = [
+ "either",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1438,7 +1447,7 @@ dependencies = [
  "csv",
  "dirs",
  "hcl-rs",
- "itertools",
+ "itertools 0.14.0",
  "md5",
  "miette",
  "mq-macros",
@@ -1477,12 +1486,12 @@ dependencies = [
 
 [[package]]
 name = "mq-markdown"
-version = "0.6.2"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "acc763f967db0cc37f0ac31ee8d3f24ab769b45e6fb1c87af972385b510a0eb6"
+checksum = "97cb203323d6225628fc2dfbd1c208e914b85aabf96250e217fc4e883cef16e9"
 dependencies = [
  "ego-tree",
- "itertools",
+ "itertools 0.15.0",
  "markdown",
  "miette",
  "rustc-hash",
@@ -1959,7 +1968,7 @@ dependencies = [
  "compact_str",
  "critical-section",
  "hashbrown 0.17.1",
- "itertools",
+ "itertools 0.14.0",
  "kasuari",
  "lru",
  "palette",
@@ -2024,7 +2033,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "indoc",
  "instability",
- "itertools",
+ "itertools 0.14.0",
  "line-clipping",
  "ratatui-core",
  "serde",
@@ -2743,7 +2752,7 @@ version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "16b380a1238663e5f8a691f9039c73e1cdae598a30e9855f541d29b08b53e9a5"
 dependencies = [
- "itertools",
+ "itertools 0.14.0",
  "unicode-segmentation",
  "unicode-width 0.2.0",
 ]

@@ -1437,9 +1437,9 @@ dependencies = [
 
 [[package]]
 name = "mq-lang"
-version = "0.6.2"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f8386d160eda6f905f02627d43ec185cf04aa3b156ec6656bc72e5adbec5e37b"
+checksum = "1212fc83c06eef62bf76ccea314ae51cfa72304bd73445bae64960281835c229"
 dependencies = [
  "base64",
  "chrono",
@@ -1447,7 +1447,7 @@ dependencies = [
  "csv",
  "dirs",
  "hcl-rs",
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "md5",
  "miette",
  "mq-macros",
@@ -1475,9 +1475,9 @@ dependencies = [
 
 [[package]]
 name = "mq-macros"
-version = "0.6.2"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4e48cbe9a5839cc29cb9798e0171e74b26920a32ab308f33677d65824b1a7f3"
+checksum = "31e8b069c44f6802457aac42a52b2a44953b55b128ad1cfd7960d263bb3a318d"
 dependencies = [
  "proc-macro2",
  "quote",

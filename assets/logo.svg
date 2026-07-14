@@ -5,15 +5,7 @@
       <stop offset="100%" style="stop-color:#61AFEF" />
     </linearGradient>
   </defs>
-  <!-- Checklist rows: two done tasks, one pending -->
-  <rect x="20" y="17" width="16" height="16" rx="4" fill="none" stroke="url(#flowGradient)" stroke-width="5" />
-  <path d="M23 25 L27 29 L33 20" fill="none" stroke="url(#flowGradient)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" />
-  <line x1="46" y1="25" x2="80" y2="25" stroke="url(#flowGradient)" stroke-width="8" stroke-linecap="round" />
-
-  <rect x="20" y="42" width="16" height="16" rx="4" fill="none" stroke="url(#flowGradient)" stroke-width="5" />
-  <path d="M23 50 L27 54 L33 45" fill="none" stroke="url(#flowGradient)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" />
-  <line x1="46" y1="50" x2="80" y2="50" stroke="url(#flowGradient)" stroke-width="8" stroke-linecap="round" />
-
-  <rect x="20" y="67" width="16" height="16" rx="4" fill="none" stroke="url(#flowGradient)" stroke-width="5" />
-  <line x1="46" y1="75" x2="80" y2="75" stroke="url(#flowGradient)" stroke-width="8" stroke-linecap="round" />
+  <!-- Completed-task badge: rounded card with a centered checkmark -->
+  <rect x="21" y="21" width="58" height="58" rx="14" fill="none" stroke="url(#flowGradient)" stroke-width="7" />
+  <path d="M34 51 L45.5 62.5 L69 34" fill="none" stroke="url(#flowGradient)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
 </svg>

@@ -43,4 +43,12 @@ pub enum Error {
     /// Circular dependency detected
     #[error("Circular dependency detected involving task: {0}")]
     CircularDependency(String),
+
+    /// Task process exited with a non-zero status
+    #[error("Task exited with status code {0}")]
+    ExecutionFailed(i32),
+
+    /// A required task parameter was not provided
+    #[error("Missing required parameter '{0}' for task '{1}'")]
+    MissingParameter(String, String),
 }

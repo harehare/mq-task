@@ -2,10 +2,10 @@
 
 use clap::{Parser, Subcommand};
 use colored::*;
-use miette::{IntoDiagnostic, Result};
 use std::path::PathBuf;
+use std::process::ExitCode;
 
-use mq_task::{Config, ExecutionMode, Runner};
+use mq_task::{Config, ExecutionMode, Error, Result, Runner};
 
 const DEFAULT_TASKS_FILE: &str = "README.md";
 
@@ -45,6 +45,10 @@ struct Cli {
     /// Arguments to pass to the task (use -- to separate: mq_task task -- arg1 arg2)
     #[arg(last = true)]
     args: Vec<String>,
+
+    /// Include private tasks (name starts with `_` or `meta` has private = true) when listing
+    #[arg(short, long)]
+    all: bool,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -99,6 +103,10 @@ enum Commands {
         /// Filter code blocks by language (e.g., bash, python, go)
         #[arg(long, value_name = "LANG")]
         lang: Option<String>,
+
+        /// Include private tasks (name starts with `_` or `meta` has private = true)
+        #[arg(short, long)]
+        all: bool,
     },
 
     /// Interactively select and run a task using TUI
@@ -118,6 +126,10 @@ enum Commands {
         /// Show what would be executed without actually running it
         #[arg(long)]
         dry_run: bool,
+
+        /// Include private tasks (name starts with `_` or `meta` has private = true)
+        #[arg(short, long)]
+        all: bool,
     },
 
     /// Generate a sample configuration file
@@ -128,9 +140,23 @@ enum Commands {
     },
 }
 
-fn main() -> Result<()> {
+fn main() -> ExitCode {
     let cli = Cli::parse();
 
+    match dispatch(cli) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            let code = match &err {
+                Error::ExecutionFailed(code) => *code,
+                _ => 1,
+            };
+            eprintln!("{} {}", "Error:".red().bold(), err);
+            ExitCode::from(code.clamp(0, 255) as u8)
+        }
+    }
+}
+
+fn dispatch(cli: Cli) -> Result<()> {
     match cli.command {
         Some(Commands::Run {
             file,
@@ -142,13 +168,19 @@ fn main() -> Result<()> {
             dry_run,
             args,
         }) => run_task(file, task, config, runtime, execution_mode, lang, dry_run, args)?,
-        Some(Commands::List { file, config, lang }) => list_tasks(file, config, lang)?,
+        Some(Commands::List {
+            file,
+            config,
+            lang,
+            all,
+        }) => list_tasks(file, config, lang, all)?,
         Some(Commands::Tui {
             file,
             config,
             lang,
             dry_run,
-        }) => run_tui(file, config, lang, dry_run)?,
+            all,
+        }) => run_tui(file, config, lang, dry_run, all)?,
         Some(Commands::Init { output }) => init_config(output)?,
         None => {
             // If no subcommand, check if task is provided
@@ -164,8 +196,22 @@ fn main() -> Result<()> {
                     cli.args,
                 )?;
             } else {
-                // No task provided, list available tasks
-                list_tasks(cli.file, cli.config, cli.lang)?;
+                // No task given: fall back to the configured default task, if any
+                let config = load_config(cli.config.clone())?;
+                if let Some(default_task) = config.default_task.clone() {
+                    run_task(
+                        cli.file,
+                        default_task,
+                        cli.config,
+                        cli.runtime,
+                        cli.execution_mode,
+                        cli.lang,
+                        cli.dry_run,
+                        cli.args,
+                    )?;
+                } else {
+                    list_tasks(cli.file, cli.config, cli.lang, cli.all)?;
+                }
             }
         }
     }
@@ -189,16 +235,14 @@ fn run_task(
 
     // Parse execution mode if specified
     let exec_mode = if let Some(mode_str) = execution_mode {
-        Some(ExecutionMode::try_from(mode_str.as_str()).into_diagnostic()?)
+        Some(ExecutionMode::try_from(mode_str.as_str())?)
     } else {
         None
     };
 
     // Apply runtime overrides
     if !runtime_overrides.is_empty() {
-        config
-            .apply_runtime_overrides(&runtime_overrides, exec_mode)
-            .into_diagnostic()?;
+        config.apply_runtime_overrides(&runtime_overrides, exec_mode)?;
     }
 
     let mut runner = Runner::new(config);
@@ -206,9 +250,7 @@ fn run_task(
 
     println!("Running task: {}\n", task_name);
 
-    runner
-        .run_task_with_lang_filter(&markdown_path, &task_name, &args, lang_filter.as_deref())
-        .into_diagnostic()?;
+    runner.run_task_with_lang_filter(&markdown_path, &task_name, &args, lang_filter.as_deref())?;
 
     Ok(())
 }
@@ -219,9 +261,10 @@ fn run_tui(
     config_path: Option<PathBuf>,
     lang_filter: Option<String>,
     dry_run: bool,
+    show_all: bool,
 ) -> Result<()> {
     let config = load_config(config_path)?;
-    mq_task::tui::run_tui(markdown_path, config, lang_filter, dry_run).into_diagnostic()?;
+    mq_task::tui::run_tui(markdown_path, config, lang_filter, dry_run, show_all)?;
     Ok(())
 }
 
@@ -230,23 +273,23 @@ fn list_tasks(
     markdown_path: PathBuf,
     config_path: Option<PathBuf>,
     lang_filter: Option<String>,
+    show_all: bool,
 ) -> Result<()> {
     let config = load_config(config_path)?;
     let mut runner = Runner::new(config);
 
-    let sections = runner
-        .list_task_sections(&markdown_path)
-        .into_diagnostic()?;
+    let sections = runner.list_task_sections(&markdown_path)?;
 
-    // Filter sections by language if specified
-    let filtered_sections: Vec<_> = if let Some(ref lang) = lang_filter {
-        sections
-            .into_iter()
-            .filter(|section| section.codes.iter().any(|code| code.lang == *lang))
-            .collect()
-    } else {
-        sections
-    };
+    // Filter sections by language if specified, and hide private tasks unless --all
+    let filtered_sections: Vec<_> = sections
+        .into_iter()
+        .filter(|section| show_all || !section.private)
+        .filter(|section| {
+            lang_filter
+                .as_ref()
+                .is_none_or(|lang| section.codes.iter().any(|code| code.lang == *lang))
+        })
+        .collect();
 
     if filtered_sections.is_empty() {
         if let Some(ref lang) = lang_filter {
@@ -308,28 +351,34 @@ fn list_tasks(
             String::new()
         };
 
+        let title_display = if section.aliases.is_empty() {
+            section.title.green().bold().to_string()
+        } else {
+            format!(
+                "{} {}",
+                section.title.green().bold(),
+                format!("({})", section.aliases.join(", ")).bright_black()
+            )
+        };
+
         if let Some(desc) = section.description {
             let trimmed = desc.trim();
             if !trimmed.is_empty() {
                 output.push_str(&format!(
                     "  {}{} {}\n",
-                    section.title.green().bold(),
+                    title_display,
                     lang_info,
                     format!("- {}", trimmed).bright_black()
                 ));
             } else {
                 output.push_str(&format!(
                     "  {}{}\n",
-                    section.title.green().bold(),
+                    title_display,
                     lang_info
                 ));
             }
         } else {
-            output.push_str(&format!(
-                "  {}{}\n",
-                section.title.green().bold(),
-                lang_info
-            ));
+            output.push_str(&format!("  {}{}\n", title_display, lang_info));
         }
     }
 
@@ -341,16 +390,17 @@ fn list_tasks(
 /// Initialize configuration file
 fn init_config(output_path: PathBuf) -> Result<()> {
     if output_path.exists() {
-        return Err(miette::miette!(
+        return Err(Error::Config(format!(
             "Configuration file already exists: {}",
             output_path.display()
-        ));
+        )));
     }
 
     let config = Config::default();
-    let toml = toml::to_string_pretty(&config).into_diagnostic()?;
+    let toml = toml::to_string_pretty(&config)
+        .map_err(|e| Error::Config(format!("Failed to serialize configuration: {}", e)))?;
 
-    std::fs::write(&output_path, toml).into_diagnostic()?;
+    std::fs::write(&output_path, toml)?;
     println!("Configuration file created: {}", output_path.display());
 
     Ok(())
@@ -359,7 +409,7 @@ fn init_config(output_path: PathBuf) -> Result<()> {
 /// Load configuration from file or use default
 fn load_config(config_path: Option<PathBuf>) -> Result<Config> {
     let config = if let Some(path) = config_path {
-        Config::from_file(&path).into_diagnostic()?
+        Config::from_file(&path)?
     } else {
         Config::default()
     };

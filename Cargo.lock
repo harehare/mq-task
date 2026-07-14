@@ -277,6 +277,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
+name = "chacha20"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d524456ba66e72eb8b115ff89e01e497f8e6d11d78b70b1aa13c0fbd97540a81"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.0",
+ "rand_core 0.10.1",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -857,10 +868,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0de51e6874e94e7bf76d726fc5d13ba782deca734ff60d5bb2fb2607c7406555"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi 6.0.0",
+ "rand_core 0.10.1",
  "wasip2",
  "wasip3",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1437,15 +1451,16 @@ dependencies = [
 
 [[package]]
 name = "mq-lang"
-version = "0.6.3"
+version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1212fc83c06eef62bf76ccea314ae51cfa72304bd73445bae64960281835c229"
+checksum = "73c5f80180e33e9278a38894b864270f8cacc342a5586cbf7fd9c8e108aa07a8"
 dependencies = [
  "base64",
  "chrono",
  "ciborium",
  "csv",
  "dirs",
+ "getrandom 0.4.2",
  "hcl-rs",
  "itertools 0.15.0",
  "md5",
@@ -1456,6 +1471,7 @@ dependencies = [
  "nom_locate",
  "percent-encoding",
  "quick-xml",
+ "rand 0.10.2",
  "regex-lite",
  "rustc-hash",
  "serde",
@@ -1469,15 +1485,16 @@ dependencies = [
  "toml",
  "toon-format",
  "url",
+ "uuid",
  "web-sys",
  "yaml-rust2",
 ]
 
 [[package]]
 name = "mq-macros"
-version = "0.6.3"
+version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31e8b069c44f6802457aac42a52b2a44953b55b128ad1cfd7960d263bb3a318d"
+checksum = "b5ad779e5b5fa43841cad4ce8eb88b58d32c34e26bdd92a1bc0d1048b1d96874"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1486,9 +1503,9 @@ dependencies = [
 
 [[package]]
 name = "mq-markdown"
-version = "0.6.4"
+version = "0.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d2cc321c5808b511b9b06ffb67b504ee6128a064cabfef16a2a0994ea8dce25"
+checksum = "2494d260b43ba34a8243e1fe3f836776c1287638fa0e5e3347dca6a8dab869fd"
 dependencies = [
  "ego-tree",
  "itertools 0.15.0",
@@ -1496,13 +1513,15 @@ dependencies = [
  "miette",
  "rustc-hash",
  "scraper",
+ "serde",
+ "serde_json",
  "serde_yaml",
  "smol_str",
 ]
 
 [[package]]
 name = "mq-task"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "clap",
  "colored",
@@ -1788,7 +1807,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c80231409c20246a13fddb31776fb942c38553c51e871f8cbd687a4cfb5843d"
 dependencies = [
  "phf_shared 0.11.3",
- "rand",
+ "rand 0.8.5",
 ]
 
 [[package]]
@@ -1899,9 +1918,9 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.40.1"
+version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2474bd2e5029e7ccb6abb2ba48cf2383a333851dedf495901544281590c7da7f"
+checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
 dependencies = [
  "memchr",
 ]
@@ -1933,7 +1952,18 @@ version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34af8d1a0e25924bc5b7c43c079c942339d8f0a8b57c39049bef581b46327404"
 dependencies = [
- "rand_core",
+ "rand_core 0.6.4",
+]
+
+[[package]]
+name = "rand"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c7f5fa3a058cd35567ef9bfa5e75732bee0f9e4c55fa90477bef2dfcdbc4be80"
+dependencies = [
+ "chacha20",
+ "getrandom 0.4.2",
+ "rand_core 0.10.1",
 ]
 
 [[package]]
@@ -1941,6 +1971,12 @@ name = "rand_core"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
+
+[[package]]
+name = "rand_core"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
 name = "ratatui"
@@ -2813,9 +2849,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "uuid"
-version = "1.21.0"
+version = "1.23.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b672338555252d43fd2240c714dc444b8c6fb0a5c5335e65a07bba7742735ddb"
+checksum = "ea5fab0d6c3c01ae70085a09cb03d4c7a1d6314e2b3e075392783396d724ca0a"
 dependencies = [
  "atomic",
  "getrandom 0.4.2",

@@ -51,4 +51,8 @@ pub enum Error {
     /// A required task parameter was not provided
     #[error("Missing required parameter '{0}' for task '{1}'")]
     MissingParameter(String, String),
+
+    /// A `--env` value was not in `KEY=VALUE` format
+    #[error("Invalid environment variable '{0}'. Expected format: 'KEY=VALUE'")]
+    InvalidEnv(String),
 }

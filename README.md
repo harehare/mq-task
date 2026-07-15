@@ -22,6 +22,7 @@ It is implemented using [mq](https://github.com/harehare/mq), a jq-like command-
 - Execute code blocks from specific sections in Markdown files
 - Task dependencies with automatic execution ordering
 - Named task parameters with defaults, plus positional args
+- Per-run `--env`/`--dir` overrides, plus `meta`-declared defaults for environment variables and working directory
 - Default task, aliases, and private (hidden) tasks
 - Configurable runtimes for different programming languages, with real exit codes and interactive stdin
 - Support for custom heading levels
@@ -96,6 +97,65 @@ echo "First arg: $MX_ARG_0"
 echo "Second arg: $MX_ARG_1"
 ```
 ````
+
+### Environment variables and working directory
+
+Like `just`, you can set environment variables and a working directory for a task at invocation time — no declaration needed in the Markdown file:
+
+```bash
+# Set one or more environment variables (repeatable)
+mq-task deploy --env REGION=eu --env DEBUG=1
+
+# Run the task's commands in a specific working directory
+mq-task deploy --dir ../other-project
+
+# Combine both
+mq-task run deploy --env REGION=eu --dir ../other-project
+```
+
+`--env KEY=VALUE` variables are available in the task's shell alongside `MX_ARGS`/`MX_PARAM_*`. `--dir` applies to every command in the task (and its dependencies) for that run. Both flags are available on the shorthand form, `run`, and `tui`.
+
+You can also declare default environment variables directly in a task's `meta` block:
+
+````markdown
+## deploy
+
+```meta
+env = ["REGION=staging", "LOG_LEVEL=info"]
+```
+
+```bash
+echo "deploying to $REGION ($LOG_LEVEL)"
+```
+````
+
+A CLI `--env` flag of the same name overrides the `meta` default for that run:
+
+```bash
+mq-task deploy                    # REGION=staging
+mq-task deploy --env REGION=prod  # REGION=prod
+```
+
+A working directory can be declared the same way with `dir` (relative paths resolve against the directory `mq-task` was invoked from):
+
+````markdown
+## deploy
+
+```meta
+dir = "services/api"
+```
+
+```bash
+pwd  # services/api
+```
+````
+
+The CLI `--dir` flag overrides a `meta`-declared `dir` for that run:
+
+```bash
+mq-task deploy                        # runs in services/api
+mq-task deploy --dir services/worker  # runs in services/worker instead
+```
 
 ### Task dependencies
 

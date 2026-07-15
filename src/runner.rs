@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use mq_lang::{Engine, Ident, RuntimeValue, parse_markdown_input};
@@ -32,6 +32,12 @@ struct TaskMeta {
     alias: Vec<String>,
     #[serde(default)]
     private: bool,
+    /// Default environment variables, e.g. `env = ["REGION=eu", "DEBUG=1"]`
+    #[serde(default)]
+    env: Vec<String>,
+    /// Working directory to run this task's commands in, e.g. `dir = "services/api"`
+    #[serde(default)]
+    dir: Option<String>,
 }
 
 /// A named task parameter, e.g. `params = ["env=staging", "verbose"]`.
@@ -78,6 +84,14 @@ pub struct Section {
     /// Hidden from `list`/`tui` output; set via `meta` or a `_`-prefixed title
     #[serde(default)]
     pub private: bool,
+    /// Default environment variables declared in a `meta` code block;
+    /// overridden by CLI `--env` flags of the same name
+    #[serde(default)]
+    pub env: Vec<(String, String)>,
+    /// Working directory declared in a `meta` code block; overridden by
+    /// the CLI `--dir` flag
+    #[serde(default)]
+    pub dir: Option<PathBuf>,
 }
 
 /// Task runner that executes code blocks in Markdown sections
@@ -85,6 +99,8 @@ pub struct Runner {
     config: Config,
     engine: Engine,
     dry_run: bool,
+    env_overrides: Vec<(String, String)>,
+    working_dir: Option<std::path::PathBuf>,
 }
 
 impl Runner {
@@ -97,6 +113,8 @@ impl Runner {
             config,
             engine,
             dry_run: false,
+            env_overrides: Vec::new(),
+            working_dir: None,
         }
     }
 
@@ -108,6 +126,29 @@ impl Runner {
     /// Enable or disable dry-run mode
     pub fn set_dry_run(&mut self, dry_run: bool) {
         self.dry_run = dry_run;
+    }
+
+    /// Set environment variables injected into every task process for this run,
+    /// e.g. from repeated `--env KEY=VALUE` CLI flags. Unlike declared `params`,
+    /// these need no `meta` declaration in the task file.
+    pub fn set_env_overrides(&mut self, env_overrides: Vec<(String, String)>) {
+        self.env_overrides = env_overrides;
+    }
+
+    /// Parse `KEY=VALUE` strings (as passed via repeated `--env` flags) into pairs.
+    pub fn parse_env_overrides(raw: &[String]) -> Result<Vec<(String, String)>> {
+        raw.iter()
+            .map(|entry| match entry.split_once('=') {
+                Some((key, value)) if !key.is_empty() => Ok((key.to_string(), value.to_string())),
+                _ => Err(Error::InvalidEnv(entry.clone())),
+            })
+            .collect()
+    }
+
+    /// Set the working directory task processes are spawned in for this run,
+    /// e.g. from a `--dir PATH` CLI flag. Applies to every code block executed.
+    pub fn set_working_dir(&mut self, working_dir: Option<std::path::PathBuf>) {
+        self.working_dir = working_dir;
     }
 
     /// Load and parse a Markdown file
@@ -169,6 +210,8 @@ impl Runner {
 
         let params = meta.params.iter().map(|p| ParamDef::parse(p)).collect();
         let private = meta.private || title.starts_with('_');
+        let env = Self::parse_env_overrides(&meta.env)?;
+        let dir = meta.dir.map(PathBuf::from);
 
         let codes: Vec<CodeBlock> = all_codes.into_iter().filter(|c| c.lang != "meta").collect();
 
@@ -185,6 +228,8 @@ impl Runner {
             params,
             aliases: meta.alias,
             private,
+            env,
+            dir,
         })
     }
 
@@ -281,7 +326,13 @@ impl Runner {
         args: &[String],
         lang_filter: Option<&str>,
     ) -> Result<()> {
-        let param_env = Self::bind_params(&section.params, args, &section.title)?;
+        // Task-level env (from `meta`) is bound first so named params and later
+        // CLI `--env` overrides (applied in prepare_env_vars) can take precedence.
+        let mut task_env = section.env.clone();
+        task_env.extend(Self::bind_params(&section.params, args, &section.title)?);
+
+        // CLI `--dir` overrides a `meta`-declared working directory for this task.
+        let working_dir = self.working_dir.as_deref().or(section.dir.as_deref());
 
         for code_block in &section.codes {
             if code_block.lang.is_empty() {
@@ -295,7 +346,13 @@ impl Runner {
                 continue;
             }
 
-            self.execute_code_with_params(&code_block.lang, &code_block.code, args, &param_env)?;
+            self.execute_code_with_params(
+                &code_block.lang,
+                &code_block.code,
+                args,
+                &task_env,
+                working_dir,
+            )?;
         }
 
         Ok(())
@@ -351,7 +408,7 @@ impl Runner {
     }
 
     pub fn execute_code_with_args(&self, lang: &str, code: &str, args: &[String]) -> Result<()> {
-        self.execute_code_with_params(lang, code, args, &[])
+        self.execute_code_with_params(lang, code, args, &[], self.working_dir.as_deref())
     }
 
     fn execute_code_with_params(
@@ -360,6 +417,7 @@ impl Runner {
         code: &str,
         args: &[String],
         param_env: &[(String, String)],
+        working_dir: Option<&Path>,
     ) -> Result<()> {
         let runtime = self
             .config
@@ -392,20 +450,44 @@ impl Runner {
             } else {
                 String::new()
             };
+            let env_line = if !self.env_overrides.is_empty() {
+                format!(
+                    "\n[dry-run] env: {}",
+                    self.env_overrides
+                        .iter()
+                        .map(|(k, v)| format!("{}={}", k, v))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+            } else {
+                String::new()
+            };
+            let dir_line = if let Some(dir) = working_dir {
+                format!("\n[dry-run] dir: {}", dir.display())
+            } else {
+                String::new()
+            };
             println!(
-                "[dry-run] lang: {}\n[dry-run] runtime: {}\n[dry-run] code:\n{}{}{}",
-                lang, runtime, code, args_line, params_line
+                "[dry-run] lang: {}\n[dry-run] runtime: {}\n[dry-run] code:\n{}{}{}{}{}",
+                lang, runtime, code, args_line, params_line, env_line, dir_line
             );
             return Ok(());
         }
 
         match execution_mode {
-            ExecutionMode::File => {
-                self.execute_code_with_file_and_args(lang, code, &parts, args, param_env)
+            ExecutionMode::File => self.execute_code_with_file_and_args(
+                lang,
+                code,
+                &parts,
+                args,
+                param_env,
+                working_dir,
+            ),
+            ExecutionMode::Arg => {
+                self.execute_code_with_arg_mode(code, &parts, args, param_env, working_dir)
             }
-            ExecutionMode::Arg => self.execute_code_with_arg_mode(code, &parts, args, param_env),
             ExecutionMode::Stdin => {
-                self.execute_code_with_stdin_and_args(code, &parts, args, param_env)
+                self.execute_code_with_stdin_and_args(code, &parts, args, param_env, working_dir)
             }
         }
     }
@@ -416,17 +498,23 @@ impl Runner {
         parts: &[&str],
         task_args: &[String],
         param_env: &[(String, String)],
+        working_dir: Option<&Path>,
     ) -> Result<()> {
         let cmd = parts[0];
         let args = &parts[1..];
 
         // Use inherit() for stdout/stderr to preserve TTY and colors
-        let mut child = Command::new(cmd)
+        let mut command = Command::new(cmd);
+        command
             .args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
-            .envs(Self::prepare_env_vars(task_args, param_env))
+            .envs(self.prepare_env_vars(task_args, param_env));
+        if let Some(dir) = working_dir {
+            command.current_dir(dir);
+        }
+        let mut child = command
             .spawn()
             .map_err(|e| Error::Execution(format!("Failed to spawn process: {}", e)))?;
 
@@ -456,6 +544,7 @@ impl Runner {
         parts: &[&str],
         task_args: &[String],
         param_env: &[(String, String)],
+        working_dir: Option<&Path>,
     ) -> Result<()> {
         let cmd = parts[0];
         // Append code as an argument to the command
@@ -463,11 +552,16 @@ impl Runner {
         args.push(code);
 
         // Use inherit() for stdin/stdout/stderr to preserve TTY, colors, and interactivity
-        let status = Command::new(cmd)
+        let mut command = Command::new(cmd);
+        command
             .args(args)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
-            .envs(Self::prepare_env_vars(task_args, param_env))
+            .envs(self.prepare_env_vars(task_args, param_env));
+        if let Some(dir) = working_dir {
+            command.current_dir(dir);
+        }
+        let status = command
             .status()
             .map_err(|e| Error::Execution(format!("Failed to spawn process: {}", e)))?;
 
@@ -485,6 +579,7 @@ impl Runner {
         parts: &[&str],
         task_args: &[String],
         param_env: &[(String, String)],
+        working_dir: Option<&Path>,
     ) -> Result<()> {
         use std::env;
 
@@ -501,12 +596,22 @@ impl Runner {
             _ => lang, // Use language name as extension for custom languages
         };
 
-        // Generate unique file name
+        // Generate a unique file name. Nanosecond timestamps alone can collide
+        // under concurrent execution (clock resolution varies by platform), so
+        // mix in the process id and a per-process counter.
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let file_name = format!("mx_temp_{}.{}", timestamp, file_ext);
+        let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let file_name = format!(
+            "mx_temp_{}_{}_{}.{}",
+            timestamp,
+            std::process::id(),
+            counter,
+            file_ext
+        );
         let temp_file = temp_dir.join(&file_name);
 
         // Write code to temporary file
@@ -514,12 +619,17 @@ impl Runner {
             .map_err(|e| Error::Execution(format!("Failed to write temp file: {}", e)))?;
 
         // Execute go run <file>
-        let status = Command::new(parts[0])
+        let mut command = Command::new(parts[0]);
+        command
             .args(&parts[1..])
             .arg(&temp_file)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
-            .envs(Self::prepare_env_vars(task_args, param_env))
+            .envs(self.prepare_env_vars(task_args, param_env));
+        if let Some(dir) = working_dir {
+            command.current_dir(dir);
+        }
+        let status = command
             .status()
             .map_err(|e| Error::Execution(format!("Failed to execute {}: {}", lang, e)))?;
 
@@ -533,8 +643,14 @@ impl Runner {
         }
     }
 
-    /// Prepare environment variables from task arguments and bound named parameters
-    fn prepare_env_vars(args: &[String], param_env: &[(String, String)]) -> Vec<(String, String)> {
+    /// Prepare environment variables from task arguments, bound named parameters,
+    /// and `--env` overrides. Overrides are applied last so they take precedence
+    /// over any same-named `MX_*` variable.
+    fn prepare_env_vars(
+        &self,
+        args: &[String],
+        param_env: &[(String, String)],
+    ) -> Vec<(String, String)> {
         let mut env_vars = Vec::new();
 
         // Set MX_ARGS with all arguments joined by space
@@ -548,6 +664,8 @@ impl Runner {
         for (i, arg) in args.iter().enumerate() {
             env_vars.push((format!("MX_ARG_{}", i), arg.clone()));
         }
+
+        env_vars.extend(self.env_overrides.iter().cloned());
 
         env_vars
     }
@@ -682,7 +800,6 @@ print("world")
                 CodeBlock {
                     lang: "python".to_string(),
                     code: "print('python code')".to_string(),
-
                 },
                 CodeBlock {
                     lang: "bash".to_string(),
@@ -694,6 +811,8 @@ print("world")
             params: vec![],
             aliases: vec![],
             private: false,
+            env: vec![],
+            dir: None,
         };
 
         let runner = Runner::with_default_config();
@@ -791,6 +910,8 @@ echo "testing"
                 params: vec![],
                 aliases: vec![],
                 private: false,
+                env: vec![],
+                dir: None,
             },
             Section {
                 title: "lint".to_string(),
@@ -800,6 +921,8 @@ echo "testing"
                 params: vec![],
                 aliases: vec![],
                 private: false,
+                env: vec![],
+                dir: None,
             },
             Section {
                 title: "test".to_string(),
@@ -809,6 +932,8 @@ echo "testing"
                 params: vec![],
                 aliases: vec![],
                 private: false,
+                env: vec![],
+                dir: None,
             },
         ];
 
@@ -832,6 +957,8 @@ echo "testing"
                 params: vec![],
                 aliases: vec![],
                 private: false,
+                env: vec![],
+                dir: None,
             },
             Section {
                 title: "b".to_string(),
@@ -841,6 +968,8 @@ echo "testing"
                 params: vec![],
                 aliases: vec![],
                 private: false,
+                env: vec![],
+                dir: None,
             },
         ];
 
@@ -860,6 +989,8 @@ echo "testing"
                 params: vec![],
                 aliases: vec![],
                 private: false,
+                env: vec![],
+                dir: None,
             },
             Section {
                 title: "lint".to_string(),
@@ -869,6 +1000,8 @@ echo "testing"
                 params: vec![],
                 aliases: vec![],
                 private: false,
+                env: vec![],
+                dir: None,
             },
             Section {
                 title: "test".to_string(),
@@ -878,6 +1011,8 @@ echo "testing"
                 params: vec![],
                 aliases: vec![],
                 private: false,
+                env: vec![],
+                dir: None,
             },
         ];
 
@@ -918,6 +1053,104 @@ echo "deploying"
     }
 
     #[test]
+    fn test_env_parsed_from_meta_block() {
+        let markdown = r#"# Title
+
+## deploy
+
+```meta
+env = ["REGION=eu", "DEBUG=1"]
+```
+
+```bash
+echo "deploying"
+```
+"#;
+
+        let mut runner = Runner::with_default_config();
+        let sections = runner.extract_sections(markdown).unwrap();
+
+        let deploy = sections.iter().find(|s| s.title == "deploy").unwrap();
+        assert_eq!(
+            deploy.env,
+            vec![
+                ("REGION".to_string(), "eu".to_string()),
+                ("DEBUG".to_string(), "1".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_cli_env_override_takes_precedence_over_meta_env() {
+        let section = Section {
+            title: "deploy".to_string(),
+            env: vec![("REGION".to_string(), "staging".to_string())],
+            codes: vec![],
+            ..Default::default()
+        };
+
+        let mut runner = Runner::with_default_config();
+        runner.set_env_overrides(vec![("REGION".to_string(), "prod".to_string())]);
+
+        // Task-level env is bound first; prepare_env_vars appends CLI overrides
+        // last, so the same key from --env wins.
+        let mut task_env = section.env.clone();
+        task_env.extend(Runner::bind_params(&section.params, &[], &section.title).unwrap());
+        let env_vars = runner.prepare_env_vars(&[], &task_env);
+
+        let region_values: Vec<_> = env_vars
+            .iter()
+            .filter(|(k, _)| k == "REGION")
+            .map(|(_, v)| v.as_str())
+            .collect();
+        assert_eq!(region_values, vec!["staging", "prod"]);
+        // std::process::Command::envs applies later entries last, so "prod" wins.
+    }
+
+    #[test]
+    fn test_dir_parsed_from_meta_block() {
+        let markdown = r#"# Title
+
+## deploy
+
+```meta
+dir = "services/api"
+```
+
+```bash
+echo "deploying"
+```
+"#;
+
+        let mut runner = Runner::with_default_config();
+        let sections = runner.extract_sections(markdown).unwrap();
+
+        let deploy = sections.iter().find(|s| s.title == "deploy").unwrap();
+        assert_eq!(deploy.dir, Some(PathBuf::from("services/api")));
+    }
+
+    #[test]
+    fn test_cli_dir_override_takes_precedence_over_meta_dir() {
+        let section = Section {
+            title: "deploy".to_string(),
+            dir: Some(PathBuf::from("services/api")),
+            codes: vec![],
+            ..Default::default()
+        };
+
+        // No CLI --dir: meta dir is used.
+        let runner = Runner::with_default_config();
+        let resolved = runner.working_dir.as_deref().or(section.dir.as_deref());
+        assert_eq!(resolved, Some(Path::new("services/api")));
+
+        // CLI --dir set: it wins over the meta default.
+        let mut runner = Runner::with_default_config();
+        runner.set_working_dir(Some(PathBuf::from("/tmp/override")));
+        let resolved = runner.working_dir.as_deref().or(section.dir.as_deref());
+        assert_eq!(resolved, Some(Path::new("/tmp/override")));
+    }
+
+    #[test]
     fn test_bind_params_uses_named_positional_and_default() {
         let params = vec![
             ParamDef {
@@ -947,10 +1180,51 @@ echo "deploying"
 
         // falls back to default when unset
         let bound = Runner::bind_params(&params, &["region=eu".to_string()], "deploy").unwrap();
-        assert_eq!(bound[0], ("MX_PARAM_ENV".to_string(), "staging".to_string()));
+        assert_eq!(
+            bound[0],
+            ("MX_PARAM_ENV".to_string(), "staging".to_string())
+        );
 
         // missing required param is an error
         let result = Runner::bind_params(&params, &[], "deploy");
         assert!(matches!(result, Err(Error::MissingParameter(_, _))));
+    }
+
+    #[test]
+    fn test_parse_env_overrides() {
+        let parsed =
+            Runner::parse_env_overrides(&["REGION=eu".to_string(), "DEBUG=1".to_string()]).unwrap();
+        assert_eq!(
+            parsed,
+            vec![
+                ("REGION".to_string(), "eu".to_string()),
+                ("DEBUG".to_string(), "1".to_string()),
+            ]
+        );
+
+        // value may contain '='
+        let parsed = Runner::parse_env_overrides(&["URL=https://a.b?c=d".to_string()]).unwrap();
+        assert_eq!(
+            parsed,
+            vec![("URL".to_string(), "https://a.b?c=d".to_string())]
+        );
+
+        // missing '=' is an error
+        let result = Runner::parse_env_overrides(&["INVALID".to_string()]);
+        assert!(matches!(result, Err(Error::InvalidEnv(_))));
+
+        // empty key is an error
+        let result = Runner::parse_env_overrides(&["=value".to_string()]);
+        assert!(matches!(result, Err(Error::InvalidEnv(_))));
+    }
+
+    #[test]
+    fn test_env_overrides_included_in_prepared_env() {
+        let mut runner = Runner::with_default_config();
+        runner.set_env_overrides(vec![("REGION".to_string(), "eu".to_string())]);
+
+        let env_vars = runner.prepare_env_vars(&["arg1".to_string()], &[]);
+        assert!(env_vars.contains(&("REGION".to_string(), "eu".to_string())));
+        assert!(env_vars.contains(&("MX_ARGS".to_string(), "arg1".to_string())));
     }
 }

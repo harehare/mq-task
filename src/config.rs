@@ -75,12 +75,16 @@ pub struct Config {
     /// Runtime mappings: language -> command or detailed config
     #[serde(default = "default_runtimes")]
     pub runtimes: HashMap<String, RuntimeConfig>,
+    /// Task run when mq-task is invoked with no task name and no subcommand
+    #[serde(default)]
+    pub default_task: Option<String>,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             runtimes: default_runtimes(),
+            default_task: None,
         }
     }
 }
@@ -166,35 +170,37 @@ impl Config {
 fn default_runtimes() -> HashMap<String, RuntimeConfig> {
     let mut runtimes = HashMap::new();
 
-    // Languages with stdin execution mode (default)
+    // File mode (default) keeps the child's real stdin free for interactive
+    // prompts like `read`; Stdin mode consumes it to deliver the script.
+    for (lang, command) in [
+        ("bash", "bash"),
+        ("sh", "sh"),
+        ("python", "python3"),
+        ("ruby", "ruby"),
+        ("node", "node"),
+        ("javascript", "node"),
+        ("js", "node"),
+        ("php", "php"),
+        ("perl", "perl"),
+    ] {
+        runtimes.insert(
+            lang.to_string(),
+            RuntimeConfig::Detailed {
+                command: command.to_string(),
+                execution_mode: ExecutionMode::File,
+            },
+        );
+    }
+
+    // jq's filter is passed as a command-line argument, not read from stdin
+    // (stdin is reserved for the JSON data), so it uses arg mode.
     runtimes.insert(
-        "bash".to_string(),
-        RuntimeConfig::Simple("bash".to_string()),
+        "jq".to_string(),
+        RuntimeConfig::Detailed {
+            command: "jq".to_string(),
+            execution_mode: ExecutionMode::Arg,
+        },
     );
-    runtimes.insert("sh".to_string(), RuntimeConfig::Simple("sh".to_string()));
-    runtimes.insert(
-        "python".to_string(),
-        RuntimeConfig::Simple("python3".to_string()),
-    );
-    runtimes.insert(
-        "ruby".to_string(),
-        RuntimeConfig::Simple("ruby".to_string()),
-    );
-    runtimes.insert(
-        "node".to_string(),
-        RuntimeConfig::Simple("node".to_string()),
-    );
-    runtimes.insert(
-        "javascript".to_string(),
-        RuntimeConfig::Simple("node".to_string()),
-    );
-    runtimes.insert("js".to_string(), RuntimeConfig::Simple("node".to_string()));
-    runtimes.insert("php".to_string(), RuntimeConfig::Simple("php".to_string()));
-    runtimes.insert(
-        "perl".to_string(),
-        RuntimeConfig::Simple("perl".to_string()),
-    );
-    runtimes.insert("jq".to_string(), RuntimeConfig::Simple("jq".to_string()));
 
     // Go requires file-based execution
     runtimes.insert(
@@ -239,9 +245,10 @@ mod tests {
     #[test]
     fn test_execution_modes() {
         let config = Config::default();
-        // Test default execution mode (stdin)
-        assert_eq!(config.get_execution_mode("bash"), ExecutionMode::Stdin);
-        assert_eq!(config.get_execution_mode("python"), ExecutionMode::Stdin);
+        // Interpreted languages default to file-based execution so task
+        // scripts keep interactive access to the real stdin.
+        assert_eq!(config.get_execution_mode("bash"), ExecutionMode::File);
+        assert_eq!(config.get_execution_mode("python"), ExecutionMode::File);
 
         // Test file-based execution mode
         assert_eq!(config.get_execution_mode("go"), ExecutionMode::File);
@@ -249,6 +256,7 @@ mod tests {
 
         // Test arg-based execution mode
         assert_eq!(config.get_execution_mode("mq"), ExecutionMode::Arg);
+        assert_eq!(config.get_execution_mode("jq"), ExecutionMode::Arg);
     }
 
     #[test]

@@ -26,6 +26,35 @@ pub struct CodeBlock {
 struct TaskMeta {
     #[serde(default)]
     depends: Vec<String>,
+    #[serde(default)]
+    params: Vec<String>,
+    #[serde(default)]
+    alias: Vec<String>,
+    #[serde(default)]
+    private: bool,
+}
+
+/// A named task parameter, e.g. `params = ["env=staging", "verbose"]`.
+/// A bare name is required; `name=value` supplies a default.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ParamDef {
+    pub name: String,
+    pub default: Option<String>,
+}
+
+impl ParamDef {
+    fn parse(raw: &str) -> Self {
+        match raw.split_once('=') {
+            Some((name, default)) => ParamDef {
+                name: name.trim().to_string(),
+                default: Some(default.trim().to_string()),
+            },
+            None => ParamDef {
+                name: raw.trim().to_string(),
+                default: None,
+            },
+        }
+    }
 }
 
 /// Represents a section with its code blocks
@@ -40,6 +69,15 @@ pub struct Section {
     /// Task names this section depends on (declared in a `meta` code block)
     #[serde(default)]
     pub depends: Vec<String>,
+    /// Named parameters this task accepts (declared in a `meta` code block)
+    #[serde(default)]
+    pub params: Vec<ParamDef>,
+    /// Alternate names this task can be run by (declared in a `meta` code block)
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    /// Hidden from `list`/`tui` output; set via `meta` or a `_`-prefixed title
+    #[serde(default)]
+    pub private: bool,
 }
 
 /// Task runner that executes code blocks in Markdown sections
@@ -123,12 +161,14 @@ impl Runner {
             })
             .unwrap_or_else(|| Ok(Vec::new()))?;
 
-        let depends = all_codes
+        let meta = all_codes
             .iter()
             .find(|c| c.lang == "meta")
             .and_then(|c| toml::from_str::<TaskMeta>(&c.code).ok())
-            .map(|m| m.depends)
             .unwrap_or_default();
+
+        let params = meta.params.iter().map(|p| ParamDef::parse(p)).collect();
+        let private = meta.private || title.starts_with('_');
 
         let codes: Vec<CodeBlock> = all_codes.into_iter().filter(|c| c.lang != "meta").collect();
 
@@ -141,7 +181,10 @@ impl Runner {
             title,
             codes,
             description,
-            depends,
+            depends: meta.depends,
+            params,
+            aliases: meta.alias,
+            private,
         })
     }
 
@@ -174,7 +217,9 @@ impl Runner {
     }
 
     pub fn find_section<'a>(&self, sections: &'a [Section], title: &str) -> Option<&'a Section> {
-        sections.iter().find(|s| s.title == title)
+        sections
+            .iter()
+            .find(|s| s.title == title || s.aliases.iter().any(|a| a == title))
     }
 
     fn resolve_execution_order<'a>(
@@ -236,6 +281,8 @@ impl Runner {
         args: &[String],
         lang_filter: Option<&str>,
     ) -> Result<()> {
+        let param_env = Self::bind_params(&section.params, args, &section.title)?;
+
         for code_block in &section.codes {
             if code_block.lang.is_empty() {
                 continue;
@@ -248,10 +295,55 @@ impl Runner {
                 continue;
             }
 
-            self.execute_code_with_args(&code_block.lang, &code_block.code, args)?;
+            self.execute_code_with_params(&code_block.lang, &code_block.code, args, &param_env)?;
         }
 
         Ok(())
+    }
+
+    /// Bind declared params to CLI args: `name=value` binds by name, the
+    /// rest fill remaining params positionally, then defaults. Returns
+    /// `MX_PARAM_<NAME>` env pairs; errors if a required param is unbound.
+    fn bind_params(
+        params: &[ParamDef],
+        args: &[String],
+        task_name: &str,
+    ) -> Result<Vec<(String, String)>> {
+        if params.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut named: Vec<(&str, &str)> = Vec::new();
+        let mut positional: Vec<&String> = Vec::new();
+
+        for arg in args {
+            let stripped = arg.strip_prefix("--").unwrap_or(arg);
+            match stripped.split_once('=') {
+                Some((key, value)) if params.iter().any(|p| p.name == key) => {
+                    named.push((key, value));
+                }
+                _ => positional.push(arg),
+            }
+        }
+
+        let mut positional_iter = positional.into_iter();
+        let mut env_vars = Vec::new();
+
+        for param in params {
+            let value = named
+                .iter()
+                .find(|(k, _)| *k == param.name)
+                .map(|(_, v)| v.to_string())
+                .or_else(|| positional_iter.next().cloned())
+                .or_else(|| param.default.clone())
+                .ok_or_else(|| {
+                    Error::MissingParameter(param.name.clone(), task_name.to_string())
+                })?;
+
+            env_vars.push((format!("MX_PARAM_{}", param.name.to_uppercase()), value));
+        }
+
+        Ok(env_vars)
     }
 
     pub fn execute_code(&self, lang: &str, code: &str) -> Result<()> {
@@ -259,6 +351,16 @@ impl Runner {
     }
 
     pub fn execute_code_with_args(&self, lang: &str, code: &str, args: &[String]) -> Result<()> {
+        self.execute_code_with_params(lang, code, args, &[])
+    }
+
+    fn execute_code_with_params(
+        &self,
+        lang: &str,
+        code: &str,
+        args: &[String],
+        param_env: &[(String, String)],
+    ) -> Result<()> {
         let runtime = self
             .config
             .get_runtime(lang)
@@ -278,17 +380,33 @@ impl Runner {
             } else {
                 String::new()
             };
+            let params_line = if !param_env.is_empty() {
+                format!(
+                    "\n[dry-run] params: {}",
+                    param_env
+                        .iter()
+                        .map(|(k, v)| format!("{}={}", k, v))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+            } else {
+                String::new()
+            };
             println!(
-                "[dry-run] lang: {}\n[dry-run] runtime: {}\n[dry-run] code:\n{}{}",
-                lang, runtime, code, args_line
+                "[dry-run] lang: {}\n[dry-run] runtime: {}\n[dry-run] code:\n{}{}{}",
+                lang, runtime, code, args_line, params_line
             );
             return Ok(());
         }
 
         match execution_mode {
-            ExecutionMode::File => self.execute_code_with_file_and_args(lang, code, &parts, args),
-            ExecutionMode::Arg => self.execute_code_with_arg_mode(code, &parts, args),
-            ExecutionMode::Stdin => self.execute_code_with_stdin_and_args(code, &parts, args),
+            ExecutionMode::File => {
+                self.execute_code_with_file_and_args(lang, code, &parts, args, param_env)
+            }
+            ExecutionMode::Arg => self.execute_code_with_arg_mode(code, &parts, args, param_env),
+            ExecutionMode::Stdin => {
+                self.execute_code_with_stdin_and_args(code, &parts, args, param_env)
+            }
         }
     }
 
@@ -297,6 +415,7 @@ impl Runner {
         code: &str,
         parts: &[&str],
         task_args: &[String],
+        param_env: &[(String, String)],
     ) -> Result<()> {
         let cmd = parts[0];
         let args = &parts[1..];
@@ -307,7 +426,7 @@ impl Runner {
             .stdin(Stdio::piped())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
-            .envs(Self::prepare_env_vars(task_args))
+            .envs(Self::prepare_env_vars(task_args, param_env))
             .spawn()
             .map_err(|e| Error::Execution(format!("Failed to spawn process: {}", e)))?;
 
@@ -325,7 +444,7 @@ impl Runner {
             .map_err(|e| Error::Execution(format!("Failed to wait for process: {}", e)))?;
 
         if !status.success() {
-            return Err(Error::Execution("Execution failed".to_string()));
+            return Err(Error::ExecutionFailed(status.code().unwrap_or(1)));
         }
 
         Ok(())
@@ -336,36 +455,24 @@ impl Runner {
         code: &str,
         parts: &[&str],
         task_args: &[String],
+        param_env: &[(String, String)],
     ) -> Result<()> {
         let cmd = parts[0];
         // Append code as an argument to the command
         let mut args: Vec<&str> = parts[1..].to_vec();
         args.push(code);
 
-        // Use inherit() for stdout/stderr to preserve TTY and colors
-        let mut child = Command::new(cmd)
+        // Use inherit() for stdin/stdout/stderr to preserve TTY, colors, and interactivity
+        let status = Command::new(cmd)
             .args(args)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
-            .envs(Self::prepare_env_vars(task_args))
-            .spawn()
+            .envs(Self::prepare_env_vars(task_args, param_env))
+            .status()
             .map_err(|e| Error::Execution(format!("Failed to spawn process: {}", e)))?;
 
-        // Write code to stdin
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(code.as_bytes())
-                .map_err(|e| Error::Execution(format!("Failed to write to stdin: {}", e)))?;
-            drop(stdin);
-        }
-
-        // Wait for completion
-        let status = child
-            .wait()
-            .map_err(|e| Error::Execution(format!("Failed to wait for process: {}", e)))?;
-
         if !status.success() {
-            return Err(Error::Execution("Execution failed".to_string()));
+            return Err(Error::ExecutionFailed(status.code().unwrap_or(1)));
         }
 
         Ok(())
@@ -377,6 +484,7 @@ impl Runner {
         code: &str,
         parts: &[&str],
         task_args: &[String],
+        param_env: &[(String, String)],
     ) -> Result<()> {
         use std::env;
 
@@ -411,7 +519,7 @@ impl Runner {
             .arg(&temp_file)
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
-            .envs(Self::prepare_env_vars(task_args))
+            .envs(Self::prepare_env_vars(task_args, param_env))
             .status()
             .map_err(|e| Error::Execution(format!("Failed to execute {}: {}", lang, e)))?;
 
@@ -419,20 +527,22 @@ impl Runner {
         fs::remove_file(&temp_file).ok();
 
         if !status.success() {
-            Err(Error::Execution(format!("{} execution failed", lang)))
+            Err(Error::ExecutionFailed(status.code().unwrap_or(1)))
         } else {
             Ok(())
         }
     }
 
-    /// Prepare environment variables from task arguments
-    fn prepare_env_vars(args: &[String]) -> Vec<(String, String)> {
+    /// Prepare environment variables from task arguments and bound named parameters
+    fn prepare_env_vars(args: &[String], param_env: &[(String, String)]) -> Vec<(String, String)> {
         let mut env_vars = Vec::new();
 
         // Set MX_ARGS with all arguments joined by space
         if !args.is_empty() {
             env_vars.push(("MX_ARGS".to_string(), args.join(" ")));
         }
+
+        env_vars.extend(param_env.iter().cloned());
 
         // Set individual arguments as MX_ARG_0, MX_ARG_1, etc.
         for (i, arg) in args.iter().enumerate() {
@@ -469,9 +579,14 @@ impl Runner {
         let sections = self.extract_sections(&markdown)?;
 
         let execution_order = self.resolve_execution_order(&sections, task_name)?;
+        // Resolve alias to canonical title for the is_dep check below.
+        let primary_title = self
+            .find_section(&sections, task_name)
+            .map(|s| s.title.clone())
+            .unwrap_or_else(|| task_name.to_string());
 
         for section in execution_order {
-            let is_dep = section.title != task_name;
+            let is_dep = section.title != primary_title;
             if is_dep {
                 println!("Running dependency: {}\n", section.title);
             }
@@ -576,6 +691,9 @@ print("world")
             ],
             description: None,
             depends: vec![],
+            params: vec![],
+            aliases: vec![],
+            private: false,
         };
 
         let runner = Runner::with_default_config();
@@ -670,18 +788,27 @@ echo "testing"
                 codes: vec![],
                 description: None,
                 depends: vec![],
+                params: vec![],
+                aliases: vec![],
+                private: false,
             },
             Section {
                 title: "lint".to_string(),
                 codes: vec![],
                 description: None,
                 depends: vec!["format".to_string()],
+                params: vec![],
+                aliases: vec![],
+                private: false,
             },
             Section {
                 title: "test".to_string(),
                 codes: vec![],
                 description: None,
                 depends: vec!["lint".to_string()],
+                params: vec![],
+                aliases: vec![],
+                private: false,
             },
         ];
 
@@ -702,12 +829,18 @@ echo "testing"
                 codes: vec![],
                 description: None,
                 depends: vec!["b".to_string()],
+                params: vec![],
+                aliases: vec![],
+                private: false,
             },
             Section {
                 title: "b".to_string(),
                 codes: vec![],
                 description: None,
                 depends: vec!["a".to_string()],
+                params: vec![],
+                aliases: vec![],
+                private: false,
             },
         ];
 
@@ -724,18 +857,27 @@ echo "testing"
                 codes: vec![],
                 description: None,
                 depends: vec![],
+                params: vec![],
+                aliases: vec![],
+                private: false,
             },
             Section {
                 title: "lint".to_string(),
                 codes: vec![],
                 description: None,
                 depends: vec!["format".to_string()],
+                params: vec![],
+                aliases: vec![],
+                private: false,
             },
             Section {
                 title: "test".to_string(),
                 codes: vec![],
                 description: None,
                 depends: vec!["format".to_string(), "lint".to_string()],
+                params: vec![],
+                aliases: vec![],
+                private: false,
             },
         ];
 
@@ -747,5 +889,68 @@ echo "testing"
         assert_eq!(order[0].title, "format");
         assert_eq!(order[1].title, "lint");
         assert_eq!(order[2].title, "test");
+    }
+
+    #[test]
+    fn test_params_parsed_from_meta_block() {
+        let markdown = r#"# Title
+
+## deploy
+
+```meta
+params = ["env=staging", "verbose"]
+```
+
+```bash
+echo "deploying"
+```
+"#;
+
+        let mut runner = Runner::with_default_config();
+        let sections = runner.extract_sections(markdown).unwrap();
+
+        let deploy = sections.iter().find(|s| s.title == "deploy").unwrap();
+        assert_eq!(deploy.params.len(), 2);
+        assert_eq!(deploy.params[0].name, "env");
+        assert_eq!(deploy.params[0].default, Some("staging".to_string()));
+        assert_eq!(deploy.params[1].name, "verbose");
+        assert_eq!(deploy.params[1].default, None);
+    }
+
+    #[test]
+    fn test_bind_params_uses_named_positional_and_default() {
+        let params = vec![
+            ParamDef {
+                name: "env".to_string(),
+                default: Some("staging".to_string()),
+            },
+            ParamDef {
+                name: "region".to_string(),
+                default: None,
+            },
+        ];
+
+        // named + positional
+        let bound = Runner::bind_params(
+            &params,
+            &["region=eu".to_string(), "prod".to_string()],
+            "deploy",
+        )
+        .unwrap();
+        assert_eq!(
+            bound,
+            vec![
+                ("MX_PARAM_ENV".to_string(), "prod".to_string()),
+                ("MX_PARAM_REGION".to_string(), "eu".to_string()),
+            ]
+        );
+
+        // falls back to default when unset
+        let bound = Runner::bind_params(&params, &["region=eu".to_string()], "deploy").unwrap();
+        assert_eq!(bound[0], ("MX_PARAM_ENV".to_string(), "staging".to_string()));
+
+        // missing required param is an error
+        let result = Runner::bind_params(&params, &[], "deploy");
+        assert!(matches!(result, Err(Error::MissingParameter(_, _))));
     }
 }

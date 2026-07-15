@@ -1,6 +1,13 @@
-<h1 align="center">mq-task</h1>
+<div align="center">
+  <img src="assets/logo.svg" width="96" height="96" alt="mq-task logo" />
 
-[![ci](https://github.com/harehare/mq-task/actions/workflows/ci.yml/badge.svg)](https://github.com/harehare/mq-task/actions/workflows/ci.yml)
+  <h1>mq-task</h1>
+
+[![ci](https://img.shields.io/github/actions/workflow/status/harehare/mq-task/ci.yml?style=flat-square&logo=github-actions&label=ci)](https://github.com/harehare/mq-task/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/harehare/mq-task?style=flat-square&logo=github&label=release)](https://github.com/harehare/mq-task/releases)
+[![license](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
+
+</div>
 
 `mq-task` is a task runner that executes code blocks in Markdown files based on section titles.
 It is implemented using [mq](https://github.com/harehare/mq), a jq-like command-line tool for Markdown processing, to parse and extract sections from Markdown documents.
@@ -14,7 +21,9 @@ It is implemented using [mq](https://github.com/harehare/mq), a jq-like command-
 
 - Execute code blocks from specific sections in Markdown files
 - Task dependencies with automatic execution ordering
-- Configurable runtimes for different programming languages
+- Named task parameters with defaults, plus positional args
+- Default task, aliases, and private (hidden) tasks
+- Configurable runtimes for different programming languages, with real exit codes and interactive stdin
 - Support for custom heading levels
 - TOML-based configuration
 - Built on top of the mq query language
@@ -138,6 +147,64 @@ Running dependency: lint
 - Shared dependencies are executed only once even if multiple tasks depend on them
 - Circular dependencies are detected and reported as an error
 
+### Named parameters
+
+Declare parameters in the `meta` block. A bare name is required; `name=value` sets a default.
+
+````markdown
+## deploy
+
+```meta
+params = ["env=staging", "region"]
+```
+
+```bash
+echo "deploying to $MX_PARAM_ENV / $MX_PARAM_REGION"
+```
+````
+
+```bash
+mq-task deploy -- region=eu           # env falls back to "staging"
+mq-task deploy -- prod eu             # positional, filled in declaration order
+mq-task deploy -- env=prod region=eu  # named
+```
+
+Parameters are exposed as `MX_PARAM_<NAME>` environment variables. A required parameter with no value bound is an error.
+
+### Aliases and the default task
+
+Give a task alternate names with `alias` in its `meta` block:
+
+````markdown
+## build
+
+```meta
+alias = ["b"]
+```
+
+```bash
+cargo build
+```
+````
+
+`mq-task b` now runs `build`. Set `default_task` in `mq-task.toml` to run a task when `mq-task` is invoked with no task name:
+
+```toml
+default_task = "build"
+```
+
+### Private tasks
+
+A task whose title starts with `_`, or whose `meta` block has `private = true`, is hidden from `list`/`tui` output but can still be run directly or used as a dependency:
+
+````markdown
+## _cleanup
+
+```bash
+rm -rf tmp/
+```
+````
+
 ### List available tasks
 
 ```bash
@@ -147,6 +214,9 @@ mq-task
 # List tasks from a specific file
 mq-task -f tasks.md
 mq-task list --file tasks.md
+
+# Include private tasks
+mq-task list --all
 ```
 
 ### Initialize configuration
@@ -163,8 +233,7 @@ Create an `mq-task.toml` file to customize runtime behavior:
 
 ```toml
 # Runtimes configuration
-# Simple format: language = "command"
-# The execution mode defaults to "stdin"
+# Simple format: language = "command", execution mode defaults to "file"
 [runtimes]
 bash = "bash"
 sh = "sh"
@@ -175,32 +244,33 @@ javascript = "node"
 js = "node"
 php = "php"
 perl = "perl"
-jq = "jq"
 
 # Detailed format with execution mode
-# Execution modes: "stdin" (default), "file", or "arg"
-# - stdin: Pass code via standard input
-# - file: Write code to a temporary file and pass it as an argument
-# - arg: Pass code as a command-line argument
+# Execution modes: "file" (default), "stdin", or "arg"
+# - file: write code to a temp file and run it as an argument (keeps stdin interactive)
+# - stdin: pipe code into the command's standard input (stdin unavailable to the script itself)
+# - arg: pass code as a command-line argument
 
 [runtimes.go]
 command = "go run"
-execution_mode = "file"  # Go requires file-based execution
-
-[runtimes.golang]
-command = "go run"
 execution_mode = "file"
+
+[runtimes.jq]
+command = "jq"
+execution_mode = "arg"  # jq's filter is a CLI argument, not read from stdin
 
 [runtimes.mq]
 command = "mq"
 execution_mode = "arg"  # mq uses query as argument
 ```
 
+Use `execution_mode = "stdin"` only when a command needs the code piped in literally (e.g. `psql`, `redis-cli`) — the task script then can't also read from the terminal.
+
 You can also mix both formats:
 
 ```toml
 [runtimes]
-python = "python3"  # Simple format, uses default stdin mode
+python = "python3"  # Simple format, uses default file mode
 
 [runtimes.go]       # Detailed format with custom execution mode
 command = "go run"
@@ -218,6 +288,12 @@ mq-task -f tasks.md Build
 mq-task run Build
 mq-task run --file tasks.md Build
 ```
+
+`default_task` (top-level, outside `[runtimes]`) sets which task runs when `mq-task` is invoked with no task name — see [Aliases and the default task](#aliases-and-the-default-task).
+
+## Exit codes
+
+`mq-task` exits with the same code the task's process exited with, so it composes correctly with `&&`, CI, and git hooks.
 
 ## License
 

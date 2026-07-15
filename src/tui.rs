@@ -78,6 +78,7 @@ pub fn run_tui(
     config: Config,
     lang_filter: Option<String>,
     dry_run: bool,
+    show_all: bool,
 ) -> crate::error::Result<()> {
     let mut runner = Runner::new(config.clone());
     runner.set_dry_run(dry_run);
@@ -86,15 +87,15 @@ pub fn run_tui(
         let mut r = Runner::new(config);
         let raw_sections = r.list_task_sections(&markdown_path)?;
 
-        // Apply language filter if specified
-        if let Some(ref lang) = lang_filter {
-            raw_sections
-                .into_iter()
-                .filter(|s| s.codes.iter().any(|c| c.lang == *lang))
-                .collect()
-        } else {
-            raw_sections
-        }
+        raw_sections
+            .into_iter()
+            .filter(|s| show_all || !s.private)
+            .filter(|s| {
+                lang_filter
+                    .as_ref()
+                    .is_none_or(|lang| s.codes.iter().any(|c| c.lang == *lang))
+            })
+            .collect()
     };
 
     // Setup terminal

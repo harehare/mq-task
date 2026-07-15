@@ -5,7 +5,7 @@ use colored::*;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use mq_task::{Config, ExecutionMode, Error, Result, Runner};
+use mq_task::{Config, Error, ExecutionMode, Result, Runner};
 
 const DEFAULT_TASKS_FILE: &str = "README.md";
 
@@ -41,6 +41,14 @@ struct Cli {
     /// Show what would be executed without actually running it
     #[arg(long)]
     dry_run: bool,
+
+    /// Set an environment variable for the task (format: KEY=VALUE), repeatable
+    #[arg(long = "env", value_name = "KEY=VALUE")]
+    env: Vec<String>,
+
+    /// Working directory to run the task's commands in
+    #[arg(short = 'd', long = "dir", value_name = "PATH")]
+    dir: Option<PathBuf>,
 
     /// Arguments to pass to the task (use -- to separate: mq_task task -- arg1 arg2)
     #[arg(last = true)]
@@ -85,6 +93,14 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
 
+        /// Set an environment variable for the task (format: KEY=VALUE), repeatable
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
+
+        /// Working directory to run the task's commands in
+        #[arg(short = 'd', long = "dir", value_name = "PATH")]
+        dir: Option<PathBuf>,
+
         /// Arguments to pass to the task (use -- to separate: mq_task run task -- arg1 arg2)
         #[arg(last = true)]
         args: Vec<String>,
@@ -127,6 +143,14 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
 
+        /// Set an environment variable for the task (format: KEY=VALUE), repeatable
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
+
+        /// Working directory to run the task's commands in
+        #[arg(short = 'd', long = "dir", value_name = "PATH")]
+        dir: Option<PathBuf>,
+
         /// Include private tasks (name starts with `_` or `meta` has private = true)
         #[arg(short, long)]
         all: bool,
@@ -166,8 +190,21 @@ fn dispatch(cli: Cli) -> Result<()> {
             execution_mode,
             lang,
             dry_run,
+            env,
+            dir,
             args,
-        }) => run_task(file, task, config, runtime, execution_mode, lang, dry_run, args)?,
+        }) => run_task(
+            file,
+            task,
+            config,
+            runtime,
+            execution_mode,
+            lang,
+            dry_run,
+            env,
+            dir,
+            args,
+        )?,
         Some(Commands::List {
             file,
             config,
@@ -179,8 +216,10 @@ fn dispatch(cli: Cli) -> Result<()> {
             config,
             lang,
             dry_run,
+            env,
+            dir,
             all,
-        }) => run_tui(file, config, lang, dry_run, all)?,
+        }) => run_tui(file, config, lang, dry_run, env, dir, all)?,
         Some(Commands::Init { output }) => init_config(output)?,
         None => {
             // If no subcommand, check if task is provided
@@ -193,6 +232,8 @@ fn dispatch(cli: Cli) -> Result<()> {
                     cli.execution_mode,
                     cli.lang,
                     cli.dry_run,
+                    cli.env,
+                    cli.dir,
                     cli.args,
                 )?;
             } else {
@@ -207,6 +248,8 @@ fn dispatch(cli: Cli) -> Result<()> {
                         cli.execution_mode,
                         cli.lang,
                         cli.dry_run,
+                        cli.env,
+                        cli.dir,
                         cli.args,
                     )?;
                 } else {
@@ -229,6 +272,8 @@ fn run_task(
     execution_mode: Option<String>,
     lang_filter: Option<String>,
     dry_run: bool,
+    env: Vec<String>,
+    dir: Option<PathBuf>,
     args: Vec<String>,
 ) -> Result<()> {
     let mut config = load_config(config_path)?;
@@ -247,6 +292,8 @@ fn run_task(
 
     let mut runner = Runner::new(config);
     runner.set_dry_run(dry_run);
+    runner.set_env_overrides(Runner::parse_env_overrides(&env)?);
+    runner.set_working_dir(dir);
 
     println!("Running task: {}\n", task_name);
 
@@ -256,15 +303,26 @@ fn run_task(
 }
 
 /// Launch the interactive TUI for task selection
+#[allow(clippy::too_many_arguments)]
 fn run_tui(
     markdown_path: PathBuf,
     config_path: Option<PathBuf>,
     lang_filter: Option<String>,
     dry_run: bool,
+    env: Vec<String>,
+    dir: Option<PathBuf>,
     show_all: bool,
 ) -> Result<()> {
     let config = load_config(config_path)?;
-    mq_task::tui::run_tui(markdown_path, config, lang_filter, dry_run, show_all)?;
+    mq_task::tui::run_tui(
+        markdown_path,
+        config,
+        lang_filter,
+        dry_run,
+        env,
+        dir,
+        show_all,
+    )?;
     Ok(())
 }
 
@@ -371,11 +429,7 @@ fn list_tasks(
                     format!("- {}", trimmed).bright_black()
                 ));
             } else {
-                output.push_str(&format!(
-                    "  {}{}\n",
-                    title_display,
-                    lang_info
-                ));
+                output.push_str(&format!("  {}{}\n", title_display, lang_info));
             }
         } else {
             output.push_str(&format!("  {}{}\n", title_display, lang_info));

@@ -73,15 +73,20 @@ impl App {
 }
 
 /// Run the interactive TUI for task selection
+#[allow(clippy::too_many_arguments)]
 pub fn run_tui(
     markdown_path: PathBuf,
     config: Config,
     lang_filter: Option<String>,
     dry_run: bool,
+    env: Vec<String>,
+    dir: Option<PathBuf>,
     show_all: bool,
 ) -> crate::error::Result<()> {
     let mut runner = Runner::new(config.clone());
     runner.set_dry_run(dry_run);
+    runner.set_env_overrides(Runner::parse_env_overrides(&env)?);
+    runner.set_working_dir(dir);
 
     let sections = {
         let mut r = Runner::new(config);

@@ -4,6 +4,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use colored::Colorize;
 use mq_lang::{Engine, Ident, RuntimeValue, parse_markdown_input};
 use serde::{Deserialize, Serialize};
 
@@ -771,10 +772,12 @@ impl Runner {
             .map(|s| s.title.clone())
             .unwrap_or_else(|| task_name.to_string());
 
+        println!("{} {}\n", "▶".cyan().bold(), primary_title.bold());
+
         for section in execution_order {
             let is_dep = section.title != primary_title;
             if is_dep {
-                println!("Running dependency: {}\n", section.title);
+                println!("{}\n", format!("↳ {} (dependency)", section.title).dimmed());
             }
             self.execute_section_with_lang_filter(
                 section,

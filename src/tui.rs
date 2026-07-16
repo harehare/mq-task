@@ -125,7 +125,6 @@ pub fn run_tui(
 
     // Execute selected task if any
     if let Some(task_name) = result? {
-        println!("Running task: {}\n", task_name);
         runner.run_task_with_lang_filter(
             &markdown_path,
             &task_name,

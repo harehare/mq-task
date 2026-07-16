@@ -239,14 +239,12 @@ cargo test
 Running `mq-task test` will automatically execute `format → lint → test` in order:
 
 ```
-Running task: test
+▶ test
 
-Running dependency: format
+↳ format (dependency)
 ...
-
-Running dependency: lint
+↳ lint (dependency)
 ...
-
 (test output)
 ```
 

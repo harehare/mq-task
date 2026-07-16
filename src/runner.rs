@@ -772,12 +772,12 @@ impl Runner {
             .map(|s| s.title.clone())
             .unwrap_or_else(|| task_name.to_string());
 
-        println!("{} {}\n", "▶".cyan().bold(), primary_title.bold());
+        println!("{} {}", "▶".cyan().bold(), primary_title.bold());
 
         for section in execution_order {
             let is_dep = section.title != primary_title;
             if is_dep {
-                println!("{}\n", format!("↳ {} (dependency)", section.title).dimmed());
+                println!("{}", format!("↳ {} (dependency)", section.title).dimmed());
             }
             self.execute_section_with_lang_filter(
                 section,

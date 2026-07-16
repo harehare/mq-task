@@ -240,7 +240,6 @@ Running `mq-task test` will automatically execute `format → lint → test` in 
 
 ```
 ▶ test
-
 ↳ format (dependency)
 ...
 ↳ lint (dependency)

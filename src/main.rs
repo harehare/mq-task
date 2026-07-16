@@ -165,13 +165,8 @@ enum Commands {
 }
 
 fn main() -> ExitCode {
-    // Take over SIGINT/Ctrl+C so an interrupted task ends in a normal process
-    // exit instead of being killed outright by the default signal
-    // disposition. Some shells (e.g. nushell) report a signal-killed child
-    // as a hard error ("terminated by a signal"), which then trips wrapper
-    // tooling like npm/pnpm lifecycle scripts. Any spawned child inherits
-    // the same foreground process group and still receives Ctrl+C directly,
-    // so it exits on its own; we just avoid dying with it.
+    // Avoid dying by signal on Ctrl+C; some shells (e.g. nushell) treat
+    // that as a hard error and trip wrapper tooling like npm/pnpm.
     let _ = ctrlc::set_handler(|| {});
 
     let cli = Cli::parse();

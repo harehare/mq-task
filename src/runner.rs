@@ -13,10 +13,7 @@ use crate::error::{Error, Result};
 
 const SECTIONS_QUERY: &str = include_str!("../sections.mq");
 
-/// Maps a child process's exit status to a POSIX-style exit code. A process
-/// killed by a signal (e.g. Ctrl+C) has no exit code of its own, so it's
-/// reported as `128 + signal`, matching the convention shells use, instead
-/// of collapsing to a generic `1`.
+/// Maps a signal-killed process to the shell convention `128 + signal`.
 fn exit_code_from_status(status: &std::process::ExitStatus) -> i32 {
     #[cfg(unix)]
     {

@@ -13,6 +13,18 @@ use crate::error::{Error, Result};
 
 const SECTIONS_QUERY: &str = include_str!("../sections.mq");
 
+/// Maps a signal-killed process to the shell convention `128 + signal`.
+fn exit_code_from_status(status: &std::process::ExitStatus) -> i32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return 128 + signal;
+        }
+    }
+    status.code().unwrap_or(1)
+}
+
 /// `(env, dir)` defaults parsed from a document-wide `meta` block.
 type GlobalDefaults = (Vec<(String, String)>, Option<PathBuf>);
 
@@ -601,7 +613,7 @@ impl Runner {
             .map_err(|e| Error::Execution(format!("Failed to wait for process: {}", e)))?;
 
         if !status.success() {
-            return Err(Error::ExecutionFailed(status.code().unwrap_or(1)));
+            return Err(Error::ExecutionFailed(exit_code_from_status(&status)));
         }
 
         Ok(())
@@ -635,7 +647,7 @@ impl Runner {
             .map_err(|e| Error::Execution(format!("Failed to spawn process: {}", e)))?;
 
         if !status.success() {
-            return Err(Error::ExecutionFailed(status.code().unwrap_or(1)));
+            return Err(Error::ExecutionFailed(exit_code_from_status(&status)));
         }
 
         Ok(())
@@ -706,7 +718,7 @@ impl Runner {
         fs::remove_file(&temp_file).ok();
 
         if !status.success() {
-            Err(Error::ExecutionFailed(status.code().unwrap_or(1)))
+            Err(Error::ExecutionFailed(exit_code_from_status(&status)))
         } else {
             Ok(())
         }

@@ -165,6 +165,10 @@ enum Commands {
 }
 
 fn main() -> ExitCode {
+    // Avoid dying by signal on Ctrl+C; some shells (e.g. nushell) treat
+    // that as a hard error and trip wrapper tooling like npm/pnpm.
+    let _ = ctrlc::set_handler(|| {});
+
     let cli = Cli::parse();
 
     match dispatch(cli) {

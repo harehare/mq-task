@@ -36,3 +36,11 @@ Sleep 1.5s
 Type `mq-task mq`
 Enter
 Sleep 1.5s
+
+Type `mq-task deploy`
+Enter
+Sleep 2.5s
+
+Type `mq-task deploy -- env=prod`
+Enter
+Sleep 2.5s

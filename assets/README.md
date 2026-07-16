@@ -59,3 +59,30 @@ print "Hello, world!\n";
 ```mq
 print("Hello, world!")
 ```
+
+## build
+
+```bash
+echo "Building the project..."
+```
+
+## test
+
+```meta
+depends = ["build"]
+```
+
+```bash
+echo "Running tests..."
+```
+
+## deploy
+
+```meta
+depends = ["test"]
+params = ["env=staging"]
+```
+
+```bash
+echo "Deploying to $MX_PARAM_ENV..."
+```

@@ -4,6 +4,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use colored::Colorize;
 use mq_lang::{Engine, Ident, RuntimeValue, parse_markdown_input};
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +13,9 @@ use crate::error::{Error, Result};
 
 const SECTIONS_QUERY: &str = include_str!("../sections.mq");
 
+/// `(env, dir)` defaults parsed from a document-wide `meta` block.
+type GlobalDefaults = (Vec<(String, String)>, Option<PathBuf>);
+
 /// Represents a code block in a section
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CodeBlock {
@@ -19,6 +23,19 @@ pub struct CodeBlock {
     pub lang: String,
     /// Code content
     pub code: String,
+}
+
+/// Document-wide defaults parsed from a `meta` code block that appears
+/// before the first heading in the file. Applies to every task; a task's
+/// own `meta` block overrides same-named keys, and CLI flags override both.
+#[derive(Debug, Deserialize, Default)]
+struct GlobalMeta {
+    /// Default environment variables applied to every task
+    #[serde(default)]
+    env: Vec<String>,
+    /// Default working directory applied to every task without its own `dir`
+    #[serde(default)]
+    dir: Option<String>,
 }
 
 /// Task metadata parsed from a `meta` code block within a section
@@ -101,6 +118,10 @@ pub struct Runner {
     dry_run: bool,
     env_overrides: Vec<(String, String)>,
     working_dir: Option<std::path::PathBuf>,
+    /// Document-wide `env`/`dir` defaults declared in a preamble `meta`
+    /// block, parsed by the most recent call to `extract_sections`.
+    global_env: Vec<(String, String)>,
+    global_dir: Option<PathBuf>,
 }
 
 impl Runner {
@@ -115,6 +136,8 @@ impl Runner {
             dry_run: false,
             env_overrides: Vec::new(),
             working_dir: None,
+            global_env: Vec::new(),
+            global_dir: None,
         }
     }
 
@@ -161,6 +184,10 @@ impl Runner {
         let input = parse_markdown_input(markdown)
             .map_err(|e| Error::Markdown(format!("Failed to parse markdown: {}", e)))?;
 
+        let (global_env, global_dir) = self.parse_global_meta(input.clone())?;
+        self.global_env = global_env;
+        self.global_dir = global_dir;
+
         let query = format!("{}\n | nodes | sections_with_code()", SECTIONS_QUERY);
         let result = self
             .engine
@@ -170,6 +197,41 @@ impl Runner {
         let sections = self.parse_sections(result)?;
 
         Ok(sections)
+    }
+
+    /// Parse the document-wide `meta` block declared before the first
+    /// heading, if any, into `env`/`dir` defaults for every task.
+    fn parse_global_meta(&mut self, input: Vec<RuntimeValue>) -> Result<GlobalDefaults> {
+        let query = format!(
+            "{}\n | nodes | {{\"codes\": global_code_blocks()}}",
+            SECTIONS_QUERY
+        );
+        let result = self
+            .engine
+            .eval(&query, input.into_iter())
+            .map_err(|e| Error::Query(format!("Failed to execute query: {}", e)))?;
+
+        let codes = result
+            .into_iter()
+            .find_map(|value| match value {
+                RuntimeValue::Dict(dict) => dict.get(&Ident::from("codes")).and_then(|v| match v {
+                    RuntimeValue::Array(arr) => self.parse_code_blocks(arr).ok(),
+                    _ => None,
+                }),
+                _ => None,
+            })
+            .unwrap_or_default();
+
+        let meta = codes
+            .iter()
+            .find(|c| c.lang == "meta")
+            .and_then(|c| toml::from_str::<GlobalMeta>(&c.code).ok())
+            .unwrap_or_default();
+
+        let env = Self::parse_env_overrides(&meta.env)?;
+        let dir = meta.dir.map(PathBuf::from);
+
+        Ok((env, dir))
     }
 
     fn parse_sections(&self, result: mq_lang::RuntimeValues) -> Result<Vec<Section>> {
@@ -326,13 +388,20 @@ impl Runner {
         args: &[String],
         lang_filter: Option<&str>,
     ) -> Result<()> {
-        // Task-level env (from `meta`) is bound first so named params and later
-        // CLI `--env` overrides (applied in prepare_env_vars) can take precedence.
-        let mut task_env = section.env.clone();
+        // Document-wide `meta` env applies first, then the task's own `meta`
+        // env (which overrides same-named keys), then bound params; CLI
+        // `--env` overrides (applied in prepare_env_vars) take precedence over all.
+        let mut task_env = self.global_env.clone();
+        task_env.extend(section.env.clone());
         task_env.extend(Self::bind_params(&section.params, args, &section.title)?);
 
-        // CLI `--dir` overrides a `meta`-declared working directory for this task.
-        let working_dir = self.working_dir.as_deref().or(section.dir.as_deref());
+        // CLI `--dir` overrides a `meta`-declared working directory for this
+        // task, which in turn overrides the document-wide `meta` default.
+        let working_dir = self
+            .working_dir
+            .as_deref()
+            .or(section.dir.as_deref())
+            .or(self.global_dir.as_deref());
 
         for code_block in &section.codes {
             if code_block.lang.is_empty() {
@@ -703,10 +772,12 @@ impl Runner {
             .map(|s| s.title.clone())
             .unwrap_or_else(|| task_name.to_string());
 
+        println!("{} {}", "▶".cyan().bold(), primary_title.bold());
+
         for section in execution_order {
             let is_dep = section.title != primary_title;
             if is_dep {
-                println!("Running dependency: {}\n", section.title);
+                println!("{}", format!("↳ {} (dependency)", section.title).dimmed());
             }
             self.execute_section_with_lang_filter(
                 section,
@@ -1216,6 +1287,146 @@ echo "deploying"
         // empty key is an error
         let result = Runner::parse_env_overrides(&["=value".to_string()]);
         assert!(matches!(result, Err(Error::InvalidEnv(_))));
+    }
+
+    #[test]
+    fn test_global_env_parsed_from_preamble_meta_block() {
+        let markdown = r#"```meta
+env = ["REGION=eu", "LOG_LEVEL=info"]
+```
+
+# Title
+
+## deploy
+
+```bash
+echo "deploying"
+```
+"#;
+
+        let mut runner = Runner::with_default_config();
+        runner.extract_sections(markdown).unwrap();
+
+        assert_eq!(
+            runner.global_env,
+            vec![
+                ("REGION".to_string(), "eu".to_string()),
+                ("LOG_LEVEL".to_string(), "info".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_global_dir_parsed_from_preamble_meta_block() {
+        let markdown = r#"```meta
+dir = "services/api"
+```
+
+# Title
+
+## deploy
+
+```bash
+pwd
+```
+"#;
+
+        let mut runner = Runner::with_default_config();
+        runner.extract_sections(markdown).unwrap();
+
+        assert_eq!(runner.global_dir, Some(PathBuf::from("services/api")));
+    }
+
+    #[test]
+    fn test_no_preamble_meta_leaves_global_defaults_empty() {
+        let markdown = r#"# Title
+
+## deploy
+
+```bash
+echo "deploying"
+```
+"#;
+
+        let mut runner = Runner::with_default_config();
+        runner.extract_sections(markdown).unwrap();
+
+        assert!(runner.global_env.is_empty());
+        assert!(runner.global_dir.is_none());
+    }
+
+    #[test]
+    fn test_task_meta_env_overrides_global_env() {
+        let markdown = r#"```meta
+env = ["REGION=eu", "LOG_LEVEL=info"]
+```
+
+# Title
+
+## deploy
+
+```meta
+env = ["REGION=staging"]
+```
+
+```bash
+echo "deploying"
+```
+"#;
+
+        let mut runner = Runner::with_default_config();
+        let sections = runner.extract_sections(markdown).unwrap();
+        let deploy = sections.iter().find(|s| s.title == "deploy").unwrap();
+
+        // Global env is merged in ahead of the task's own env; the task's
+        // value for a shared key wins because later `Command::envs` entries
+        // override earlier ones with the same key.
+        let mut task_env = runner.global_env.clone();
+        task_env.extend(deploy.env.clone());
+
+        let region_values: Vec<_> = task_env
+            .iter()
+            .filter(|(k, _)| k == "REGION")
+            .map(|(_, v)| v.as_str())
+            .collect();
+        assert_eq!(region_values, vec!["eu", "staging"]);
+
+        // LOG_LEVEL only comes from the global default.
+        assert!(task_env.contains(&("LOG_LEVEL".to_string(), "info".to_string())));
+    }
+
+    #[test]
+    fn test_task_dir_overrides_global_dir() {
+        let section = Section {
+            title: "deploy".to_string(),
+            dir: Some(PathBuf::from("services/api")),
+            codes: vec![],
+            ..Default::default()
+        };
+
+        let mut runner = Runner::with_default_config();
+        runner.global_dir = Some(PathBuf::from("services/default"));
+
+        // Task's own dir wins over the global default.
+        let resolved = runner
+            .working_dir
+            .as_deref()
+            .or(section.dir.as_deref())
+            .or(runner.global_dir.as_deref());
+        assert_eq!(resolved, Some(Path::new("services/api")));
+
+        // Falls back to the global default when the task declares none.
+        let section_no_dir = Section {
+            title: "build".to_string(),
+            codes: vec![],
+            ..Default::default()
+        };
+        let resolved = runner
+            .working_dir
+            .as_deref()
+            .or(section_no_dir.dir.as_deref())
+            .or(runner.global_dir.as_deref());
+        assert_eq!(resolved, Some(Path::new("services/default")));
     }
 
     #[test]

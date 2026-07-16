@@ -22,7 +22,7 @@ It is implemented using [mq](https://github.com/harehare/mq), a jq-like command-
 - Execute code blocks from specific sections in Markdown files
 - Task dependencies with automatic execution ordering
 - Named task parameters with defaults, plus positional args
-- Per-run `--env`/`--dir` overrides, plus `meta`-declared defaults for environment variables and working directory
+- Per-run `--env`/`--dir` overrides, plus `meta`-declared defaults for environment variables and working directory (per task or document-wide)
 - Default task, aliases, and private (hidden) tasks
 - Configurable runtimes for different programming languages, with real exit codes and interactive stdin
 - Support for custom heading levels
@@ -157,6 +157,53 @@ mq-task deploy                        # runs in services/api
 mq-task deploy --dir services/worker  # runs in services/worker instead
 ```
 
+#### Document-wide defaults
+
+A `meta` block placed **before the first heading** in the file applies to every task, not just one. It's useful for defaults you'd otherwise have to repeat in each task's own `meta` block:
+
+````markdown
+```meta
+env = ["REGION=staging", "LOG_LEVEL=info"]
+dir = "services/api"
+```
+
+## deploy
+
+```bash
+echo "deploying to $REGION ($LOG_LEVEL) from $(pwd)"
+```
+
+## build
+
+```bash
+echo "building in $(pwd)"
+```
+````
+
+Both tasks inherit `REGION`, `LOG_LEVEL`, and `dir` from the document-wide block. Precedence, from lowest to highest, is: document-wide `meta` → task's own `meta` → CLI `--env`/`--dir`. A task's `meta` only needs to declare the keys it wants to change:
+
+````markdown
+```meta
+env = ["REGION=staging"]
+```
+
+## deploy
+
+```meta
+env = ["REGION=prod"]
+```
+
+```bash
+echo "$REGION"   # prod — the task's own meta wins
+```
+
+## build
+
+```bash
+echo "$REGION"   # staging — falls back to the document-wide default
+```
+````
+
 ### Task dependencies
 
 You can declare dependencies between tasks using a `meta` code block (TOML format). When a task is run, its dependencies are automatically executed first in the correct order.
@@ -192,14 +239,11 @@ cargo test
 Running `mq-task test` will automatically execute `format → lint → test` in order:
 
 ```
-Running task: test
-
-Running dependency: format
+▶ test
+↳ format (dependency)
 ...
-
-Running dependency: lint
+↳ lint (dependency)
 ...
-
 (test output)
 ```
 

@@ -48,3 +48,18 @@ def sections_with_code(md_nodes):
   end)
 end
 
+# Extracts code blocks that appear before the first heading, i.e. the
+# document preamble. Used to declare document-wide task defaults (a `meta`
+# block there applies to every task).
+def global_code_blocks(md_nodes):
+  let n = len(md_nodes)
+  | if (n == 0):
+      []
+    else:
+      do
+        let heading_indices = do foreach (i, range(n - 1)): if (is_h(md_nodes[i])): i; | compact();
+        | let first_heading = if (is_empty(heading_indices)): n else: first(heading_indices)
+        | extract_code_blocks(md_nodes[0:first_heading])
+      end
+end
+

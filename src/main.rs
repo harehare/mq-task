@@ -295,8 +295,6 @@ fn run_task(
     runner.set_env_overrides(Runner::parse_env_overrides(&env)?);
     runner.set_working_dir(dir);
 
-    println!("Running task: {}\n", task_name);
-
     runner.run_task_with_lang_filter(&markdown_path, &task_name, &args, lang_filter.as_deref())?;
 
     Ok(())

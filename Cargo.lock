@@ -1480,7 +1480,7 @@ dependencies = [
  "md5",
  "miette",
  "mq-macros",
- "mq-markdown 0.7.0",
+ "mq-markdown",
  "nom 8.0.0",
  "nom_locate",
  "percent-encoding",
@@ -1520,19 +1520,6 @@ dependencies = [
 
 [[package]]
 name = "mq-markdown"
-version = "0.6.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2494d260b43ba34a8243e1fe3f836776c1287638fa0e5e3347dca6a8dab869fd"
-dependencies = [
- "itertools 0.15.0",
- "markdown",
- "miette",
- "rustc-hash",
- "smol_str",
-]
-
-[[package]]
-name = "mq-markdown"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d296714247c23a16b0890577c6e876fcdc1702964864b38c797aab20da009f57"
@@ -1559,7 +1546,7 @@ dependencies = [
  "ctrlc",
  "miette",
  "mq-lang",
- "mq-markdown 0.6.5",
+ "mq-markdown",
  "ratatui",
  "serde",
  "serde_json",

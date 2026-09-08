@@ -1469,9 +1469,9 @@ dependencies = [
 
 [[package]]
 name = "mq-lang"
-version = "0.8.4"
+version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8d1df8de900c90b0945c51fa9857d845c78d1ea8529faa5888bc88949777a0e0"
+checksum = "c7252d68684df367d15ec7db56408cec893b92f709a5ae592d6cfa35aed5636d"
 dependencies = [
  "ammonia",
  "base64 0.23.1",
@@ -1516,9 +1516,9 @@ dependencies = [
 
 [[package]]
 name = "mq-macros"
-version = "0.8.4"
+version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "604efe88e489430780cc500c1990084c549f5198a48d190d91487d2f0d47e508"
+checksum = "e63c21039aeeb646be2791d2168db4f34178f52b4df66ad50b3cc32d5aa196c7"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1527,9 +1527,9 @@ dependencies = [
 
 [[package]]
 name = "mq-markdown"
-version = "0.8.4"
+version = "0.8.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60b3228804efb8c2181f53306951ac77ea471fcb5812e8c44a1b6dfbdfdc8c77"
+checksum = "c182a42c959c77101dd461c257e62b919309cf92339e2c7bb289ce21b7fc3e99"
 dependencies = [
  "ego-tree",
  "itertools 0.15.0",
@@ -1547,7 +1547,7 @@ dependencies = [
 
 [[package]]
 name = "mq-task"
-version = "0.1.20"
+version = "0.1.21"
 dependencies = [
  "clap",
  "colored",
@@ -1966,9 +1966,9 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.41.0"
+version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
+checksum = "41b1177fdf999d2321d3fb46ff47159d9c1fb9ad66a4879f8c50a0b504615e9b"
 dependencies = [
  "memchr",
 ]

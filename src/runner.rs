@@ -1,11 +1,11 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use colored::Colorize;
-use mq_lang::{Engine, Ident, RuntimeValue, parse_markdown_input};
+use mq_lang::{DictMap, Engine, Ident, RuntimeValue, parse_markdown_input};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{Config, ExecutionMode};
@@ -259,7 +259,7 @@ impl Runner {
         Ok(sections)
     }
 
-    fn parse_section(&self, dict: &BTreeMap<Ident, RuntimeValue>) -> Result<Section> {
+    fn parse_section(&self, dict: &DictMap) -> Result<Section> {
         let title = dict
             .get(&Ident::from("title"))
             .and_then(|v| match v {

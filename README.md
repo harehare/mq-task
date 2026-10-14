@@ -25,6 +25,7 @@ It is implemented using [mq](https://github.com/harehare/mq), a jq-like command-
 - Conditions (`if`), retries, timeouts, and passing a task's output to its dependents
 - Importing tasks from other Markdown files
 - Skip up-to-date tasks (`sources`/`outputs`) and `--watch` mode
+- Dependency graph output (`graph`) and shell completions
 - Named task parameters with defaults, plus positional args
 - Per-run `--env`/`--dir` overrides, plus `meta`-declared defaults for environment variables and working directory (per task or document-wide)
 - Default task, aliases, and private (hidden) tasks
@@ -398,6 +399,27 @@ Fingerprints are stored in `.mq-task/cache.json` in the directory `mq-task` runs
 mq-task test --watch
 ```
 
+### Dependency graph
+
+```bash
+mq-task graph ci                     # tree
+mq-task graph --format mermaid       # Mermaid diagram of all public tasks
+```
+
+```
+ci [parallel]
+├── lint
+└── test
+    └── build
+```
+
+
+### Shell completions
+
+```bash
+mq-task completions zsh > ~/.zfunc/_mq-task
+mq-task completions bash > /etc/bash_completion.d/mq-task
+```
 
 ### Named parameters
 

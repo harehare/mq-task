@@ -1,6 +1,6 @@
 //! mq_task - Markdown-based task runner CLI
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use colored::*;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -8,7 +8,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use mq_task::{
-    Config, Error, ExecutionMode, INTERRUPTED, Result, RunOptions, Runner, cache,
+    Config, Error, ExecutionMode, GraphFormat, INTERRUPTED, Result, RunOptions, Runner, cache,
 };
 
 const DEFAULT_TASKS_FILE: &str = "README.md";
@@ -210,6 +210,30 @@ enum Commands {
         all: bool,
     },
 
+    /// Print the dependency graph of a task (or of all tasks)
+    Graph {
+        /// Task to show the dependencies of; all public tasks when omitted
+        task: Option<String>,
+
+        /// Path to the markdown file
+        #[arg(short, long, default_value = DEFAULT_TASKS_FILE)]
+        file: PathBuf,
+
+        /// Path to configuration file
+        #[arg(short, long)]
+        config: Option<PathBuf>,
+
+        /// Output format: text or mermaid
+        #[arg(long, default_value = "text", value_name = "FORMAT")]
+        format: GraphFormat,
+    },
+
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        shell: clap_complete::Shell,
+    },
+
     /// Generate a sample configuration file
     Init {
         /// Output path for configuration file
@@ -285,6 +309,16 @@ fn dispatch(cli: Cli) -> Result<()> {
             dir,
             all,
         }) => run_tui(file, config, lang, dry_run, env, dir, all)?,
+        Some(Commands::Graph {
+            task,
+            file,
+            config,
+            format,
+        }) => show_graph(file, config, task, format)?,
+        Some(Commands::Completions { shell }) => {
+            let mut cmd = Cli::command();
+            clap_complete::generate(shell, &mut cmd, "mq-task", &mut std::io::stdout());
+        }
         Some(Commands::Init { output }) => init_config(output)?,
         None => {
             // If no subcommand, check if task is provided
@@ -424,6 +458,21 @@ fn run_tui(
         dir,
         show_all,
     )?;
+    Ok(())
+}
+
+/// Print the dependency graph
+fn show_graph(
+    markdown_path: PathBuf,
+    config_path: Option<PathBuf>,
+    task: Option<String>,
+    format: GraphFormat,
+) -> Result<()> {
+    let mut runner = Runner::new(load_config(config_path)?);
+    print!(
+        "{}",
+        runner.dependency_graph(&markdown_path, task.as_deref(), format)?
+    );
     Ok(())
 }
 

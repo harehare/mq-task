@@ -676,7 +676,11 @@ impl Runner {
 
     /// List all available task sections in a Markdown file with their details
     pub fn list_task_sections<P: AsRef<Path>>(&mut self, markdown_path: P) -> Result<Vec<Section>> {
-        self.load_sections(markdown_path)
+        // Headings with neither code nor dependencies (e.g. the document
+        // title) do nothing when run, so they are not worth listing.
+        let mut sections = self.load_sections(markdown_path)?;
+        sections.retain(|s| !s.codes.is_empty() || !s.depends.is_empty());
+        Ok(sections)
     }
 }
 

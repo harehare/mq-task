@@ -36,6 +36,10 @@ pub enum Error {
     #[error("Section not found: {0}")]
     SectionNotFound(String),
 
+    /// Section has neither code blocks nor dependencies
+    #[error("Task '{0}' has no commands to run")]
+    NoCommands(String),
+
     /// Runtime not found
     #[error("Runtime not found for language: {0}")]
     RuntimeNotFound(String),

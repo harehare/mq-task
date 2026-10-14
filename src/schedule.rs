@@ -129,6 +129,11 @@ pub fn build_plan<'a>(
         index: HashMap::new(),
         in_progress: HashSet::new(),
     };
+    let root = find_section(sections, target)
+        .ok_or_else(|| Error::SectionNotFound(target.to_string()))?;
+    if root.codes.is_empty() && root.depends.is_empty() {
+        return Err(Error::NoCommands(target.to_string()));
+    }
     builder.visit(target)?;
     Ok(Plan {
         nodes: builder.nodes,
@@ -350,6 +355,15 @@ mod tests {
         assert!(matches!(
             build_plan(&sections, "zzz", false),
             Err(Error::SectionNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_a_target_with_nothing_to_run() {
+        let sections = vec![sec("a", &[], false)];
+        assert!(matches!(
+            build_plan(&sections, "a", false),
+            Err(Error::NoCommands(_))
         ));
     }
 

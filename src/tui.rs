@@ -1150,4 +1150,346 @@ mod tests {
         assert!(rendered.contains("build"));
         assert!(rendered.contains("Details"));
     }
+
+    #[rstest::rstest]
+    #[case("", &[])]
+    #[case("   \t ", &[])]
+    #[case("one", &["one"])]
+    #[case("a\tb", &["a", "b"])]
+    #[case("'single quoted'", &["single quoted"])]
+    #[case(r#""it's""#, &["it's"])]
+    #[case(r#"'say "hi"'"#, &[r#"say "hi""#])]
+    #[case(r#"a"b c"d"#, &["ab cd"])]
+    #[case("''", &[""])]
+    #[case("a '' b", &["a", "", "b"])]
+    #[case(r#""unterminated quote"#, &["unterminated quote"])]
+    #[case("--flag=value", &["--flag=value"])]
+    fn split_args_cases(#[case] input: &str, #[case] expected: &[&str]) {
+        assert_eq!(split_args(input), expected);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn split_args_never_panics(input in ".{0,40}") {
+            let _ = split_args(&input);
+        }
+
+        #[test]
+        fn plain_words_round_trip(words in proptest::collection::vec("[a-zA-Z0-9_./=-]{1,8}", 0..6)) {
+            let joined = words.join(" ");
+            proptest::prop_assert_eq!(split_args(&joined), words);
+        }
+
+        #[test]
+        fn quoting_protects_whitespace(words in proptest::collection::vec("[a-z]{1,4}( [a-z]{1,4}){0,2}", 1..4)) {
+            let line = words.iter().map(|w| format!("\"{w}\"")).collect::<Vec<_>>().join(" ");
+            proptest::prop_assert_eq!(split_args(&line), words);
+        }
+
+        #[test]
+        fn no_token_contains_unquoted_whitespace(input in "[a-z \t]{0,30}") {
+            for token in split_args(&input) {
+                proptest::prop_assert!(!token.contains(char::is_whitespace));
+                proptest::prop_assert!(!token.is_empty());
+            }
+        }
+    }
+
+    fn run_view() -> (mpsc::Sender<UiEvent>, RunView) {
+        let (tx, rx) = mpsc::channel();
+        let view = RunView {
+            task: "ci".into(),
+            tasks: Vec::new(),
+            log: Vec::new(),
+            selected: 0,
+            all_logs: false,
+            scroll: 0,
+            result: None,
+            rx,
+            cancel: Arc::new(AtomicBool::new(false)),
+            handle: None,
+        };
+        (tx, view)
+    }
+
+    #[rstest::rstest]
+    #[case(TaskStatus::Started { dependency: false }, TaskState::Running)]
+    #[case(
+        TaskStatus::Retrying { attempt: 2, max: 4, delay: Duration::from_secs(1) },
+        TaskState::Retrying(2, 4)
+    )]
+    #[case(
+        TaskStatus::Succeeded { elapsed: Duration::from_secs(2) },
+        TaskState::Succeeded(Duration::from_secs(2))
+    )]
+    #[case(TaskStatus::Skipped { reason: "up to date".into() }, TaskState::Skipped("up to date".into()))]
+    #[case(TaskStatus::Failed { error: "x".into() }, TaskState::Failed("x".into()))]
+    #[case(TaskStatus::Cancelled { reason: "aborted".into() }, TaskState::Cancelled("aborted".into()))]
+    fn statuses_map_to_task_states(#[case] status: TaskStatus, #[case] expected: TaskState) {
+        let (_tx, mut view) = run_view();
+        view.apply(UiEvent::Status {
+            task: "t".into(),
+            status,
+        });
+        assert_eq!(view.tasks[0].state, expected);
+    }
+
+    #[test]
+    fn unknown_tasks_are_added_on_demand() {
+        let (_tx, mut view) = run_view();
+        view.apply(UiEvent::Output {
+            task: "late".into(),
+            stream: Stream::Stdout,
+            line: "x".into(),
+        });
+        assert_eq!(view.tasks.len(), 1);
+        assert_eq!(view.tasks[0].name, "late");
+        assert_eq!(view.tasks[0].state, TaskState::Pending);
+    }
+
+    #[test]
+    fn plan_events_do_not_duplicate_rows() {
+        let (_tx, mut view) = run_view();
+        view.apply(UiEvent::Plan(vec!["a".into(), "b".into()]));
+        view.apply(UiEvent::Plan(vec!["b".into(), "a".into(), "c".into()]));
+        let names: Vec<&str> = view.tasks.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn failures_append_an_error_line_to_the_log() {
+        let (_tx, mut view) = run_view();
+        view.apply(UiEvent::Status {
+            task: "t".into(),
+            status: TaskStatus::Failed {
+                error: "boom".into(),
+            },
+        });
+        assert_eq!(view.log.len(), 1);
+        assert_eq!(view.log[0].text, "error: boom");
+        assert_eq!(view.log[0].stream, Stream::Stderr);
+    }
+
+    #[test]
+    fn visible_log_follows_the_selection_unless_all_logs() {
+        let (_tx, mut view) = run_view();
+        view.apply(UiEvent::Plan(vec!["a".into(), "b".into()]));
+        for (task, line) in [("a", "a1"), ("b", "b1"), ("a", "a2")] {
+            view.apply(UiEvent::Output {
+                task: task.into(),
+                stream: Stream::Stdout,
+                line: line.into(),
+            });
+        }
+        let texts = |v: &RunView| -> Vec<String> {
+            v.visible_log().iter().map(|l| l.text.clone()).collect()
+        };
+        view.selected = 0;
+        assert_eq!(texts(&view), ["a1", "a2"]);
+        view.selected = 1;
+        assert_eq!(texts(&view), ["b1"]);
+        view.all_logs = true;
+        assert_eq!(texts(&view), ["a1", "b1", "a2"]);
+    }
+
+    #[test]
+    fn the_log_is_capped() {
+        let (_tx, mut view) = run_view();
+        for i in 0..(MAX_LOG_LINES + 500) {
+            view.apply(UiEvent::Output {
+                task: "t".into(),
+                stream: Stream::Stdout,
+                line: i.to_string(),
+            });
+        }
+        assert!(view.log.len() <= MAX_LOG_LINES);
+        // The newest line is always kept.
+        assert_eq!(
+            view.log.last().unwrap().text,
+            (MAX_LOG_LINES + 499).to_string()
+        );
+    }
+
+    #[test]
+    fn finishing_stops_the_run() {
+        let (tx, mut view) = run_view();
+        assert!(view.is_running());
+        tx.send(UiEvent::Finished(Ok(()))).unwrap();
+        view.drain();
+        assert!(!view.is_running());
+        assert_eq!(view.result, Some(Ok(())));
+    }
+
+    #[rstest::rstest]
+    #[case(TaskState::Pending, "")]
+    #[case(TaskState::Running, "")]
+    #[case(TaskState::Failed("boom".into()), "")]
+    #[case(TaskState::Succeeded(Duration::from_millis(1500)), " 1.5s")]
+    #[case(TaskState::Succeeded(Duration::ZERO), " 0.0s")]
+    #[case(TaskState::Retrying(2, 4), " retry 2/4")]
+    #[case(TaskState::Skipped("up to date".into()), " up to date")]
+    #[case(TaskState::Cancelled("aborted".into()), " aborted")]
+    fn state_notes(#[case] state: TaskState, #[case] expected: &str) {
+        assert_eq!(state_note(&state), expected);
+    }
+
+    #[test]
+    fn the_running_spinner_cycles_through_its_frames() {
+        let frames: Vec<String> = (0..SPINNER.len() * 2)
+            .map(|t| state_span(&TaskState::Running, t * 2).content.to_string())
+            .collect();
+        assert_eq!(frames[..SPINNER.len()], frames[SPINNER.len()..]);
+        let distinct: std::collections::HashSet<&String> = frames.iter().collect();
+        assert_eq!(distinct.len(), SPINNER.len());
+    }
+
+    fn details_text(s: &Section) -> Vec<String> {
+        section_details(s)
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|sp| sp.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn details_show_every_option() {
+        let mut s = section("deploy");
+        s.description = Some("  Ships it.  ".into());
+        s.depends = vec!["build".into(), "test".into()];
+        s.params = vec![
+            ParamDef {
+                name: "env".into(),
+                default: None,
+            },
+            ParamDef {
+                name: "tag".into(),
+                default: Some("latest".into()),
+            },
+        ];
+        s.parallel = true;
+        s.condition = Some("flag(\"CI\")".into());
+        s.retries = 2;
+        s.timeout = Some(Duration::from_millis(2500));
+        s.capture = true;
+        s.sources = vec!["src/**".into()];
+        s.dir = Some(PathBuf::from("svc"));
+        s.env = vec![("A".into(), "1".into()), ("B".into(), "2".into())];
+        s.codes = vec![crate::runner::CodeBlock {
+            lang: "bash".into(),
+            code: "echo hi".into(),
+        }];
+
+        let text = details_text(&s).join("\n");
+        for needle in [
+            "deploy",
+            "Ships it.",
+            "build, test",
+            "env (required), tag=latest",
+            "parallel deps",
+            "if flag(\"CI\")",
+            "retries 2",
+            "timeout 2.5s",
+            "captures output",
+            "cached on sources",
+            "svc",
+            "A=1 B=2",
+            "[bash]",
+            "echo hi",
+        ] {
+            assert!(text.contains(needle), "missing {needle:?} in:\n{text}");
+        }
+    }
+
+    #[test]
+    fn details_of_a_bare_task_have_no_option_rows() {
+        let text = details_text(&section("plain")).join("\n");
+        for label in ["depends", "params", "options", "dir", "env"] {
+            assert!(
+                !text.contains(label),
+                "unexpected {label:?} row in:\n{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn long_code_blocks_are_truncated() {
+        let mut s = section("long");
+        let code = (0..30)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        s.codes = vec![crate::runner::CodeBlock {
+            lang: "bash".into(),
+            code,
+        }];
+        let lines = details_text(&s);
+        assert!(lines.contains(&"line11".to_string()));
+        assert!(!lines.contains(&"line12".to_string()));
+        assert!(lines.contains(&"…".to_string()));
+    }
+
+    #[test]
+    fn navigation_wraps_and_handles_empty_lists() {
+        let mut a = app(vec![section("a"), section("b"), section("c")]);
+        assert_eq!(a.selected_section().unwrap().title, "a");
+        a.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(a.selected_section().unwrap().title, "b");
+        a.handle_key(KeyCode::Up, KeyModifiers::NONE);
+        a.handle_key(KeyCode::Up, KeyModifiers::NONE);
+        assert_eq!(a.selected_section().unwrap().title, "c");
+        a.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(a.selected_section().unwrap().title, "a");
+
+        let mut empty = app(vec![]);
+        empty.handle_key(KeyCode::Down, KeyModifiers::NONE);
+        empty.handle_key(KeyCode::Up, KeyModifiers::NONE);
+        assert!(empty.selected_section().is_none());
+    }
+
+    #[test]
+    fn filtering_matches_case_insensitively_and_can_be_empty() {
+        let mut a = app(vec![section("Build"), section("test")]);
+        a.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        for c in "BUI".chars() {
+            a.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        assert_eq!(a.visible, vec![0]);
+        for c in "zzz".chars() {
+            a.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        assert!(a.visible.is_empty());
+        assert!(a.selected_section().is_none());
+        // Backspacing out of the filter restores matches.
+        for _ in 0..3 {
+            a.handle_key(KeyCode::Backspace, KeyModifiers::NONE);
+        }
+        assert_eq!(a.visible, vec![0]);
+    }
+
+    #[test]
+    fn only_required_params_trigger_the_prompt() {
+        let optional = {
+            let mut s = section("opt");
+            s.params = vec![ParamDef {
+                name: "x".into(),
+                default: Some("1".into()),
+            }];
+            s
+        };
+        let required = {
+            let mut s = section("req");
+            s.params = vec![ParamDef {
+                name: "x".into(),
+                default: None,
+            }];
+            s
+        };
+        assert!(!App::needs_args(&section("none")));
+        assert!(!App::needs_args(&optional));
+        assert!(App::needs_args(&required));
+    }
 }

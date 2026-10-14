@@ -44,6 +44,11 @@ opt-level = "z"
 panic = "abort"
 strip = true
 
+[dev-dependencies]
+proptest = "1.12.0"
+rstest = "0.27.0"
+tempfile = "3.27.0"
+
 [package.metadata.binstall]
 pkg-fmt = "bin"
 pkg-url = "{ repo }/releases/download/v{ version }/mq-task-{ target }{ binary-ext }"

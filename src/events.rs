@@ -180,3 +180,108 @@ impl ConsoleObserver {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+    use rstest::rstest;
+
+    /// Remove ANSI escape sequences (`ESC [ ... m`).
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::new();
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' {
+                for c in chars.by_ref() {
+                    if c == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[rstest]
+    #[case("build", 5, "build")]
+    #[case("build", 8, "build   ")]
+    #[case("build", 0, "build")]
+    #[case("build", 2, "build")]
+    #[case("", 3, "   ")]
+    fn tag_pads_to_the_requested_width(
+        #[case] name: &str,
+        #[case] width: usize,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(strip_ansi(&tag(name, width)), expected);
+    }
+
+    #[test]
+    fn tag_color_is_stable_per_name() {
+        assert_eq!(tag("lint", 6), tag("lint", 6));
+    }
+
+    #[test]
+    fn prefixed_for_uses_the_longest_name_in_characters() {
+        let o = ConsoleObserver::prefixed_for(&["a".into(), "日本語".into(), "bb".into()]);
+        assert_eq!(o.width, 3);
+        assert!(o.prefixed);
+        assert_eq!(ConsoleObserver::prefixed_for(&[]).width, 0);
+    }
+
+    #[test]
+    fn constructors_set_the_prefix_mode() {
+        assert!(!ConsoleObserver::new().prefixed);
+        assert!(!ConsoleObserver::default().prefixed);
+        assert!(ConsoleObserver::prefixed().prefixed);
+    }
+
+    #[test]
+    fn every_status_can_be_reported_without_panicking() {
+        let statuses = [
+            TaskStatus::Started { dependency: true },
+            TaskStatus::Started { dependency: false },
+            TaskStatus::Retrying {
+                attempt: 1,
+                max: 3,
+                delay: Duration::from_millis(1500),
+            },
+            TaskStatus::Succeeded {
+                elapsed: Duration::from_millis(12),
+            },
+            TaskStatus::Skipped {
+                reason: "if: false".into(),
+            },
+            TaskStatus::Failed {
+                error: "boom".into(),
+            },
+            TaskStatus::Cancelled {
+                reason: "aborted".into(),
+            },
+        ];
+        for observer in [
+            ConsoleObserver::new(),
+            ConsoleObserver::prefixed_for(&["t".into()]),
+        ] {
+            for status in &statuses {
+                observer.status("t", status);
+            }
+        }
+        NullObserver.status("t", &statuses[0]);
+        NullObserver.output("t", Stream::Stdout, "ignored");
+        NullObserver.plan(&["t".into()]);
+    }
+
+    proptest! {
+        #[test]
+        fn tag_never_truncates_and_pads_with_spaces(name in "[ -~]{0,12}", width in 0usize..20) {
+            let plain = strip_ansi(&tag(&name, width));
+            prop_assert!(plain.starts_with(&name));
+            prop_assert_eq!(plain.chars().count(), name.chars().count().max(width));
+            prop_assert!(plain[name.len()..].chars().all(|c| c == ' '));
+        }
+    }
+}

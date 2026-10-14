@@ -32,7 +32,8 @@ pub fn parse_duration(raw: &str) -> Result<Duration> {
         "h" => value * 3600.0,
         _ => return Err(invalid()),
     };
-    Ok(Duration::from_secs_f64(seconds))
+    // Absurdly large values overflow `Duration`; report them instead of panicking.
+    Duration::try_from_secs_f64(seconds).map_err(|_| invalid())
 }
 
 /// 64-bit FNV-1a hash. Unlike `DefaultHasher` its output is stable across

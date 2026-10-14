@@ -55,4 +55,16 @@ pub enum Error {
     /// A `--env` value was not in `KEY=VALUE` format
     #[error("Invalid environment variable '{0}'. Expected format: 'KEY=VALUE'")]
     InvalidEnv(String),
+
+    /// A task ran longer than its `timeout`
+    #[error("Task '{0}' timed out")]
+    Timeout(String),
+
+    /// A task was aborted because another task failed
+    #[error("Task was cancelled")]
+    Cancelled,
+
+    /// Invalid task file contents (imports, durations, ...)
+    #[error("Invalid task file: {0}")]
+    Invalid(String),
 }

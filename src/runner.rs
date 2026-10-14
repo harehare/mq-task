@@ -1,32 +1,22 @@
 use std::collections::HashSet;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 use colored::Colorize;
 use mq_lang::{DictMap, Engine, Ident, RuntimeValue, parse_markdown_input};
 use serde::{Deserialize, Serialize};
 
-use crate::config::{Config, ExecutionMode};
+use crate::config::Config;
 use crate::error::{Error, Result};
+use crate::events::{ConsoleObserver, RunObserver};
+use crate::exec::Executor;
+use crate::schedule::{self, ScheduleOptions, build_plan};
+use crate::util::parse_duration;
 
 const SECTIONS_QUERY: &str = include_str!("../sections.mq");
-
-/// Maps a signal-killed process to the shell convention `128 + signal`.
-fn exit_code_from_status(status: &std::process::ExitStatus) -> i32 {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::ExitStatusExt;
-        if let Some(signal) = status.signal() {
-            return 128 + signal;
-        }
-    }
-    status.code().unwrap_or(1)
-}
-
-/// `(env, dir)` defaults parsed from a document-wide `meta` block.
-type GlobalDefaults = (Vec<(String, String)>, Option<PathBuf>);
 
 /// Represents a code block in a section
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -48,6 +38,9 @@ struct GlobalMeta {
     /// Default working directory applied to every task without its own `dir`
     #[serde(default)]
     dir: Option<String>,
+    /// Other task files whose tasks are made available as `<name>:<task>`
+    #[serde(default)]
+    imports: Vec<String>,
 }
 
 /// Task metadata parsed from a `meta` code block within a section
@@ -67,6 +60,30 @@ struct TaskMeta {
     /// Working directory to run this task's commands in, e.g. `dir = "services/api"`
     #[serde(default)]
     dir: Option<String>,
+    /// Run this task's dependencies concurrently
+    #[serde(default)]
+    parallel: bool,
+    /// Condition that must hold for the task to run
+    #[serde(default, rename = "if")]
+    condition: Option<String>,
+    /// How many times to retry after a failure
+    #[serde(default)]
+    retries: u32,
+    /// Delay between retries, e.g. `"2s"`
+    #[serde(default)]
+    retry_delay: Option<String>,
+    /// Kill the task if it runs longer than this, e.g. `"30s"`
+    #[serde(default)]
+    timeout: Option<String>,
+    /// Expose this task's stdout to dependents as `MX_OUTPUT_<TASK>`
+    #[serde(default)]
+    capture: bool,
+    /// Globs of input files; unchanged inputs let the task be skipped
+    #[serde(default)]
+    sources: Vec<String>,
+    /// Globs of files the task produces; must exist for it to be skipped
+    #[serde(default)]
+    outputs: Vec<String>,
 }
 
 /// A named task parameter, e.g. `params = ["env=staging", "verbose"]`.
@@ -121,19 +138,74 @@ pub struct Section {
     /// the CLI `--dir` flag
     #[serde(default)]
     pub dir: Option<PathBuf>,
+    /// Run this task's dependencies concurrently
+    #[serde(default)]
+    pub parallel: bool,
+    /// `if` condition; the task is skipped when it evaluates to false
+    #[serde(default)]
+    pub condition: Option<String>,
+    /// Number of retries after a failed attempt
+    #[serde(default)]
+    pub retries: u32,
+    /// Delay between retries (defaults to one second)
+    #[serde(default)]
+    pub retry_delay: Option<Duration>,
+    /// Maximum run time per attempt
+    #[serde(default)]
+    pub timeout: Option<Duration>,
+    /// Capture stdout and hand it to dependents as `MX_OUTPUT_<TASK>`
+    #[serde(default)]
+    pub capture: bool,
+    /// Input globs for up-to-date checks and `--watch`
+    #[serde(default)]
+    pub sources: Vec<String>,
+    /// Output globs that must exist for the task to count as up to date
+    #[serde(default)]
+    pub outputs: Vec<String>,
+}
+
+/// Document-wide settings found in the preamble `meta` block.
+#[derive(Debug, Default)]
+struct Globals {
+    env: Vec<(String, String)>,
+    dir: Option<PathBuf>,
+    imports: Vec<String>,
+}
+
+/// Options for [`Runner::run_task_with_options`].
+#[derive(Default)]
+pub struct RunOptions {
+    /// Arguments for the requested task (`MX_ARGS`, params)
+    pub args: Vec<String>,
+    /// Only run code blocks of this language
+    pub lang_filter: Option<String>,
+    /// Run dependencies concurrently regardless of each task's `parallel`
+    pub parallel: bool,
+    /// Maximum concurrent tasks; `Some(1)` forces sequential execution
+    pub jobs: Option<usize>,
+    /// Keep running independent tasks after one fails
+    pub keep_going: bool,
+    /// Receives progress and task output instead of the terminal. Task
+    /// output is piped through it and stdin is closed.
+    pub observer: Option<Arc<dyn RunObserver>>,
+    /// Set to abort the run: running processes are killed and no further
+    /// tasks start.
+    pub cancel: Option<Arc<AtomicBool>>,
+}
+
+/// A set of files whose changes should re-run a task in watch mode.
+#[derive(Debug, Clone)]
+pub struct WatchTarget {
+    pub patterns: Vec<String>,
+    pub dir: Option<PathBuf>,
 }
 
 /// Task runner that executes code blocks in Markdown sections
 pub struct Runner {
-    config: Config,
     engine: Engine,
-    dry_run: bool,
-    env_overrides: Vec<(String, String)>,
-    working_dir: Option<std::path::PathBuf>,
-    /// Document-wide `env`/`dir` defaults declared in a preamble `meta`
-    /// block, parsed by the most recent call to `extract_sections`.
-    global_env: Vec<(String, String)>,
-    global_dir: Option<PathBuf>,
+    exec: Executor,
+    /// `imports` of the file most recently passed to `extract_sections`.
+    imports: Vec<String>,
 }
 
 impl Runner {
@@ -143,13 +215,9 @@ impl Runner {
         engine.load_builtin_module();
 
         Self {
-            config,
             engine,
-            dry_run: false,
-            env_overrides: Vec::new(),
-            working_dir: None,
-            global_env: Vec::new(),
-            global_dir: None,
+            exec: Executor::new(config),
+            imports: Vec::new(),
         }
     }
 
@@ -160,14 +228,19 @@ impl Runner {
 
     /// Enable or disable dry-run mode
     pub fn set_dry_run(&mut self, dry_run: bool) {
-        self.dry_run = dry_run;
+        self.exec.dry_run = dry_run;
+    }
+
+    /// Enable or disable `sources`/`outputs` up-to-date checks (default: on)
+    pub fn set_use_cache(&mut self, use_cache: bool) {
+        self.exec.use_cache = use_cache;
     }
 
     /// Set environment variables injected into every task process for this run,
     /// e.g. from repeated `--env KEY=VALUE` CLI flags. Unlike declared `params`,
     /// these need no `meta` declaration in the task file.
     pub fn set_env_overrides(&mut self, env_overrides: Vec<(String, String)>) {
-        self.env_overrides = env_overrides;
+        self.exec.env_overrides = env_overrides;
     }
 
     /// Parse `KEY=VALUE` strings (as passed via repeated `--env` flags) into pairs.
@@ -183,7 +256,7 @@ impl Runner {
     /// Set the working directory task processes are spawned in for this run,
     /// e.g. from a `--dir PATH` CLI flag. Applies to every code block executed.
     pub fn set_working_dir(&mut self, working_dir: Option<std::path::PathBuf>) {
-        self.working_dir = working_dir;
+        self.exec.working_dir = working_dir;
     }
 
     /// Load and parse a Markdown file
@@ -191,14 +264,16 @@ impl Runner {
         fs::read_to_string(path).map_err(Error::Io)
     }
 
-    /// Extract sections from Markdown content
+    /// Extract sections from Markdown content. Does not follow `imports`;
+    /// use [`Runner::load_sections`] to load a file with its imports.
     pub fn extract_sections(&mut self, markdown: &str) -> Result<Vec<Section>> {
         let input = parse_markdown_input(markdown)
             .map_err(|e| Error::Markdown(format!("Failed to parse markdown: {}", e)))?;
 
-        let (global_env, global_dir) = self.parse_global_meta(input.clone())?;
-        self.global_env = global_env;
-        self.global_dir = global_dir;
+        let globals = self.parse_global_meta(input.clone())?;
+        self.exec.global_env = globals.env;
+        self.exec.global_dir = globals.dir;
+        self.imports = globals.imports;
 
         let query = format!("{}\n | nodes | sections_with_code()", SECTIONS_QUERY);
         let result = self
@@ -211,9 +286,78 @@ impl Runner {
         Ok(sections)
     }
 
+    /// Load the tasks of a Markdown file together with those of the files
+    /// it `imports`. Imported tasks are named `<file stem>:<task>`.
+    pub fn load_sections<P: AsRef<Path>>(&mut self, path: P) -> Result<Vec<Section>> {
+        let mut stack = Vec::new();
+        let (sections, _) = self.load_file(path.as_ref(), &mut stack)?;
+        // Loading imports overwrote the document defaults; the main file's
+        // own defaults apply at run time, so restore them.
+        let markdown = self.load_markdown(path.as_ref())?;
+        let input = parse_markdown_input(&markdown)
+            .map_err(|e| Error::Markdown(format!("Failed to parse markdown: {}", e)))?;
+        let globals = self.parse_global_meta(input)?;
+        self.exec.global_env = globals.env;
+        self.exec.global_dir = globals.dir;
+        self.exec.cache_scope = path.as_ref().to_string_lossy().into_owned();
+        Ok(sections)
+    }
+
+    /// Returns the file's sections (imports merged in, already namespaced)
+    /// and its document-wide defaults, which the caller applies.
+    fn load_file(
+        &mut self,
+        path: &Path,
+        stack: &mut Vec<PathBuf>,
+    ) -> Result<(Vec<Section>, Globals)> {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        if stack.contains(&canonical) {
+            return Err(Error::Invalid(format!(
+                "circular import of {}",
+                path.display()
+            )));
+        }
+        stack.push(canonical);
+
+        let markdown = self.load_markdown(path)?;
+        let mut sections = self.extract_sections(&markdown)?;
+        let globals = Globals {
+            env: self.exec.global_env.clone(),
+            dir: self.exec.global_dir.clone(),
+            imports: std::mem::take(&mut self.imports),
+        };
+
+        let base = path.parent().unwrap_or_else(|| Path::new("."));
+        let mut namespaces = HashSet::new();
+        for import in &globals.imports {
+            let import_path = base.join(import);
+            let stem = import_path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .ok_or_else(|| Error::Invalid(format!("invalid import path '{}'", import)))?;
+            if !namespaces.insert(stem.clone()) {
+                return Err(Error::Invalid(format!(
+                    "two imports share the namespace '{}'",
+                    stem
+                )));
+            }
+
+            let (mut imported, child_globals) = self.load_file(&import_path, stack)?;
+            // Importing a file's own heading (its document title) as a task
+            // is noise; keep only sections that do something.
+            imported.retain(|s| !s.codes.is_empty() || !s.depends.is_empty());
+            apply_globals(&mut imported, &child_globals);
+            namespace_sections(&mut imported, &stem);
+            sections.extend(imported);
+        }
+
+        stack.pop();
+        Ok((sections, globals))
+    }
+
     /// Parse the document-wide `meta` block declared before the first
-    /// heading, if any, into `env`/`dir` defaults for every task.
-    fn parse_global_meta(&mut self, input: Vec<RuntimeValue>) -> Result<GlobalDefaults> {
+    /// heading, if any, into defaults for every task.
+    fn parse_global_meta(&mut self, input: Vec<RuntimeValue>) -> Result<Globals> {
         let query = format!(
             "{}\n | nodes | {{\"codes\": global_code_blocks()}}",
             SECTIONS_QUERY
@@ -234,16 +378,17 @@ impl Runner {
             })
             .unwrap_or_default();
 
-        let meta = codes
-            .iter()
-            .find(|c| c.lang == "meta")
-            .and_then(|c| toml::from_str::<GlobalMeta>(&c.code).ok())
-            .unwrap_or_default();
+        let meta = match codes.iter().find(|c| c.lang == "meta") {
+            Some(block) => toml::from_str::<GlobalMeta>(&block.code)
+                .map_err(|e| Error::Invalid(format!("document `meta` block: {}", e)))?,
+            None => GlobalMeta::default(),
+        };
 
-        let env = Self::parse_env_overrides(&meta.env)?;
-        let dir = meta.dir.map(PathBuf::from);
-
-        Ok((env, dir))
+        Ok(Globals {
+            env: Self::parse_env_overrides(&meta.env)?,
+            dir: meta.dir.map(PathBuf::from),
+            imports: meta.imports,
+        })
     }
 
     fn parse_sections(&self, result: mq_lang::RuntimeValues) -> Result<Vec<Section>> {
@@ -276,11 +421,21 @@ impl Runner {
             })
             .unwrap_or_else(|| Ok(Vec::new()))?;
 
-        let meta = all_codes
-            .iter()
-            .find(|c| c.lang == "meta")
-            .and_then(|c| toml::from_str::<TaskMeta>(&c.code).ok())
-            .unwrap_or_default();
+        let meta = match all_codes.iter().find(|c| c.lang == "meta") {
+            Some(block) => toml::from_str::<TaskMeta>(&block.code)
+                .map_err(|e| Error::Invalid(format!("task '{}': `meta` block: {}", title, e)))?,
+            None => TaskMeta::default(),
+        };
+
+        let duration = |value: &Option<String>| -> Result<Option<Duration>> {
+            value
+                .as_deref()
+                .map(parse_duration)
+                .transpose()
+                .map_err(|e| Error::Invalid(format!("task '{}': {}", title, e)))
+        };
+        let retry_delay = duration(&meta.retry_delay)?;
+        let timeout = duration(&meta.timeout)?;
 
         let params = meta.params.iter().map(|p| ParamDef::parse(p)).collect();
         let private = meta.private || title.starts_with('_');
@@ -304,6 +459,14 @@ impl Runner {
             private,
             env,
             dir,
+            parallel: meta.parallel,
+            condition: meta.condition,
+            retries: meta.retries,
+            retry_delay,
+            timeout,
+            capture: meta.capture,
+            sources: meta.sources,
+            outputs: meta.outputs,
         })
     }
 
@@ -336,54 +499,7 @@ impl Runner {
     }
 
     pub fn find_section<'a>(&self, sections: &'a [Section], title: &str) -> Option<&'a Section> {
-        sections
-            .iter()
-            .find(|s| s.title == title || s.aliases.iter().any(|a| a == title))
-    }
-
-    fn resolve_execution_order<'a>(
-        &self,
-        sections: &'a [Section],
-        target: &str,
-    ) -> Result<Vec<&'a Section>> {
-        let mut visited = HashSet::new();
-        let mut in_progress = HashSet::new();
-        let mut order = Vec::new();
-        self.dfs_resolve(sections, target, &mut visited, &mut in_progress, &mut order)?;
-        Ok(order)
-    }
-
-    fn dfs_resolve<'a>(
-        &self,
-        sections: &'a [Section],
-        task_name: &str,
-        visited: &mut HashSet<String>,
-        in_progress: &mut HashSet<String>,
-        order: &mut Vec<&'a Section>,
-    ) -> Result<()> {
-        if in_progress.contains(task_name) {
-            return Err(Error::CircularDependency(task_name.to_string()));
-        }
-        if visited.contains(task_name) {
-            return Ok(());
-        }
-
-        in_progress.insert(task_name.to_string());
-
-        let section = self
-            .find_section(sections, task_name)
-            .ok_or_else(|| Error::SectionNotFound(task_name.to_string()))?;
-
-        let deps = section.depends.clone();
-        for dep in &deps {
-            self.dfs_resolve(sections, dep, visited, in_progress, order)?;
-        }
-
-        in_progress.remove(task_name);
-        visited.insert(task_name.to_string());
-        order.push(section);
-
-        Ok(())
+        schedule::find_section(sections, title)
     }
 
     pub fn execute_section(&self, section: &Section) -> Result<()> {
@@ -400,88 +516,7 @@ impl Runner {
         args: &[String],
         lang_filter: Option<&str>,
     ) -> Result<()> {
-        // Document-wide `meta` env applies first, then the task's own `meta`
-        // env (which overrides same-named keys), then bound params; CLI
-        // `--env` overrides (applied in prepare_env_vars) take precedence over all.
-        let mut task_env = self.global_env.clone();
-        task_env.extend(section.env.clone());
-        task_env.extend(Self::bind_params(&section.params, args, &section.title)?);
-
-        // CLI `--dir` overrides a `meta`-declared working directory for this
-        // task, which in turn overrides the document-wide `meta` default.
-        let working_dir = self
-            .working_dir
-            .as_deref()
-            .or(section.dir.as_deref())
-            .or(self.global_dir.as_deref());
-
-        for code_block in &section.codes {
-            if code_block.lang.is_empty() {
-                continue;
-            }
-
-            // Apply language filter if specified
-            if let Some(filter) = lang_filter
-                && code_block.lang != filter
-            {
-                continue;
-            }
-
-            self.execute_code_with_params(
-                &code_block.lang,
-                &code_block.code,
-                args,
-                &task_env,
-                working_dir,
-            )?;
-        }
-
-        Ok(())
-    }
-
-    /// Bind declared params to CLI args: `name=value` binds by name, the
-    /// rest fill remaining params positionally, then defaults. Returns
-    /// `MX_PARAM_<NAME>` env pairs; errors if a required param is unbound.
-    fn bind_params(
-        params: &[ParamDef],
-        args: &[String],
-        task_name: &str,
-    ) -> Result<Vec<(String, String)>> {
-        if params.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let mut named: Vec<(&str, &str)> = Vec::new();
-        let mut positional: Vec<&String> = Vec::new();
-
-        for arg in args {
-            let stripped = arg.strip_prefix("--").unwrap_or(arg);
-            match stripped.split_once('=') {
-                Some((key, value)) if params.iter().any(|p| p.name == key) => {
-                    named.push((key, value));
-                }
-                _ => positional.push(arg),
-            }
-        }
-
-        let mut positional_iter = positional.into_iter();
-        let mut env_vars = Vec::new();
-
-        for param in params {
-            let value = named
-                .iter()
-                .find(|(k, _)| *k == param.name)
-                .map(|(_, v)| v.to_string())
-                .or_else(|| positional_iter.next().cloned())
-                .or_else(|| param.default.clone())
-                .ok_or_else(|| {
-                    Error::MissingParameter(param.name.clone(), task_name.to_string())
-                })?;
-
-            env_vars.push((format!("MX_PARAM_{}", param.name.to_uppercase()), value));
-        }
-
-        Ok(env_vars)
+        self.exec.execute_section(section, args, lang_filter)
     }
 
     pub fn execute_code(&self, lang: &str, code: &str) -> Result<()> {
@@ -489,266 +524,8 @@ impl Runner {
     }
 
     pub fn execute_code_with_args(&self, lang: &str, code: &str, args: &[String]) -> Result<()> {
-        self.execute_code_with_params(lang, code, args, &[], self.working_dir.as_deref())
-    }
-
-    fn execute_code_with_params(
-        &self,
-        lang: &str,
-        code: &str,
-        args: &[String],
-        param_env: &[(String, String)],
-        working_dir: Option<&Path>,
-    ) -> Result<()> {
-        let runtime = self
-            .config
-            .get_runtime(lang)
-            .ok_or_else(|| Error::RuntimeNotFound(lang.to_string()))?;
-
-        let parts: Vec<&str> = runtime.split_whitespace().collect();
-        if parts.is_empty() {
-            return Err(Error::RuntimeNotFound(lang.to_string()));
-        }
-
-        // Get execution mode from config
-        let execution_mode = self.config.get_execution_mode(lang);
-
-        if self.dry_run {
-            let args_line = if !args.is_empty() {
-                format!("\n[dry-run] args: {}", args.join(" "))
-            } else {
-                String::new()
-            };
-            let params_line = if !param_env.is_empty() {
-                format!(
-                    "\n[dry-run] params: {}",
-                    param_env
-                        .iter()
-                        .map(|(k, v)| format!("{}={}", k, v))
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                )
-            } else {
-                String::new()
-            };
-            let env_line = if !self.env_overrides.is_empty() {
-                format!(
-                    "\n[dry-run] env: {}",
-                    self.env_overrides
-                        .iter()
-                        .map(|(k, v)| format!("{}={}", k, v))
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                )
-            } else {
-                String::new()
-            };
-            let dir_line = if let Some(dir) = working_dir {
-                format!("\n[dry-run] dir: {}", dir.display())
-            } else {
-                String::new()
-            };
-            println!(
-                "[dry-run] lang: {}\n[dry-run] runtime: {}\n[dry-run] code:\n{}{}{}{}{}",
-                lang, runtime, code, args_line, params_line, env_line, dir_line
-            );
-            return Ok(());
-        }
-
-        match execution_mode {
-            ExecutionMode::File => self.execute_code_with_file_and_args(
-                lang,
-                code,
-                &parts,
-                args,
-                param_env,
-                working_dir,
-            ),
-            ExecutionMode::Arg => {
-                self.execute_code_with_arg_mode(code, &parts, args, param_env, working_dir)
-            }
-            ExecutionMode::Stdin => {
-                self.execute_code_with_stdin_and_args(code, &parts, args, param_env, working_dir)
-            }
-        }
-    }
-
-    fn execute_code_with_stdin_and_args(
-        &self,
-        code: &str,
-        parts: &[&str],
-        task_args: &[String],
-        param_env: &[(String, String)],
-        working_dir: Option<&Path>,
-    ) -> Result<()> {
-        let cmd = parts[0];
-        let args = &parts[1..];
-
-        // Use inherit() for stdout/stderr to preserve TTY and colors
-        let mut command = Command::new(cmd);
-        command
-            .args(args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .envs(self.prepare_env_vars(task_args, param_env));
-        if let Some(dir) = working_dir {
-            command.current_dir(dir);
-        }
-        let mut child = command
-            .spawn()
-            .map_err(|e| Error::Execution(format!("Failed to spawn process: {}", e)))?;
-
-        // Write code to stdin
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(code.as_bytes())
-                .map_err(|e| Error::Execution(format!("Failed to write to stdin: {}", e)))?;
-            drop(stdin);
-        }
-
-        // Wait for completion
-        let status = child
-            .wait()
-            .map_err(|e| Error::Execution(format!("Failed to wait for process: {}", e)))?;
-
-        if !status.success() {
-            return Err(Error::ExecutionFailed(exit_code_from_status(&status)));
-        }
-
-        Ok(())
-    }
-
-    fn execute_code_with_arg_mode(
-        &self,
-        code: &str,
-        parts: &[&str],
-        task_args: &[String],
-        param_env: &[(String, String)],
-        working_dir: Option<&Path>,
-    ) -> Result<()> {
-        let cmd = parts[0];
-        // Append code as an argument to the command
-        let mut args: Vec<&str> = parts[1..].to_vec();
-        args.push(code);
-
-        // Use inherit() for stdin/stdout/stderr to preserve TTY, colors, and interactivity
-        let mut command = Command::new(cmd);
-        command
-            .args(args)
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .envs(self.prepare_env_vars(task_args, param_env));
-        if let Some(dir) = working_dir {
-            command.current_dir(dir);
-        }
-        let status = command
-            .status()
-            .map_err(|e| Error::Execution(format!("Failed to spawn process: {}", e)))?;
-
-        if !status.success() {
-            return Err(Error::ExecutionFailed(exit_code_from_status(&status)));
-        }
-
-        Ok(())
-    }
-
-    fn execute_code_with_file_and_args(
-        &self,
-        lang: &str,
-        code: &str,
-        parts: &[&str],
-        task_args: &[String],
-        param_env: &[(String, String)],
-        working_dir: Option<&Path>,
-    ) -> Result<()> {
-        use std::env;
-
-        // Create temporary directory
-        let temp_dir = env::temp_dir();
-
-        // Use language name as file extension, or map known languages
-        let file_ext = match lang {
-            "go" | "golang" => "go",
-            "python" => "py",
-            "ruby" => "rb",
-            "javascript" | "js" => "js",
-            "typescript" | "ts" => "ts",
-            _ => lang, // Use language name as extension for custom languages
-        };
-
-        // Generate a unique file name. Nanosecond timestamps alone can collide
-        // under concurrent execution (clock resolution varies by platform), so
-        // mix in the process id and a per-process counter.
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let file_name = format!(
-            "mx_temp_{}_{}_{}.{}",
-            timestamp,
-            std::process::id(),
-            counter,
-            file_ext
-        );
-        let temp_file = temp_dir.join(&file_name);
-
-        // Write code to temporary file
-        fs::write(&temp_file, code)
-            .map_err(|e| Error::Execution(format!("Failed to write temp file: {}", e)))?;
-
-        // Execute go run <file>
-        let mut command = Command::new(parts[0]);
-        command
-            .args(&parts[1..])
-            .arg(&temp_file)
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .envs(self.prepare_env_vars(task_args, param_env));
-        if let Some(dir) = working_dir {
-            command.current_dir(dir);
-        }
-        let status = command
-            .status()
-            .map_err(|e| Error::Execution(format!("Failed to execute {}: {}", lang, e)))?;
-
-        // Clean up temporary file
-        fs::remove_file(&temp_file).ok();
-
-        if !status.success() {
-            Err(Error::ExecutionFailed(exit_code_from_status(&status)))
-        } else {
-            Ok(())
-        }
-    }
-
-    /// Prepare environment variables from task arguments, bound named parameters,
-    /// and `--env` overrides. Overrides are applied last so they take precedence
-    /// over any same-named `MX_*` variable.
-    fn prepare_env_vars(
-        &self,
-        args: &[String],
-        param_env: &[(String, String)],
-    ) -> Vec<(String, String)> {
-        let mut env_vars = Vec::new();
-
-        // Set MX_ARGS with all arguments joined by space
-        if !args.is_empty() {
-            env_vars.push(("MX_ARGS".to_string(), args.join(" ")));
-        }
-
-        env_vars.extend(param_env.iter().cloned());
-
-        // Set individual arguments as MX_ARG_0, MX_ARG_1, etc.
-        for (i, arg) in args.iter().enumerate() {
-            env_vars.push((format!("MX_ARG_{}", i), arg.clone()));
-        }
-
-        env_vars.extend(self.env_overrides.iter().cloned());
-
-        env_vars
+        self.exec
+            .execute_code(lang, code, args, &[], self.exec.working_dir.as_deref())
     }
 
     /// Run a specific task by section title
@@ -774,37 +551,106 @@ impl Runner {
         args: &[String],
         lang_filter: Option<&str>,
     ) -> Result<()> {
-        let markdown = self.load_markdown(markdown_path)?;
-        let sections = self.extract_sections(&markdown)?;
+        self.run_task_with_options(
+            markdown_path,
+            task_name,
+            RunOptions {
+                args: args.to_vec(),
+                lang_filter: lang_filter.map(str::to_string),
+                ..Default::default()
+            },
+        )
+    }
 
-        let execution_order = self.resolve_execution_order(&sections, task_name)?;
-        // Resolve alias to canonical title for the is_dep check below.
-        let primary_title = self
-            .find_section(&sections, task_name)
-            .map(|s| s.title.clone())
-            .unwrap_or_else(|| task_name.to_string());
+    /// Run a task and its dependencies. Dependencies run in declaration
+    /// order unless the task sets `parallel` (or `opts` asks for it), in
+    /// which case independent tasks run concurrently.
+    pub fn run_task_with_options<P: AsRef<Path>>(
+        &mut self,
+        markdown_path: P,
+        task_name: &str,
+        opts: RunOptions,
+    ) -> Result<()> {
+        let sections = self.load_sections(markdown_path)?;
 
-        println!("{} {}", "▶".cyan().bold(), primary_title.bold());
+        let explicit_parallel = opts.parallel || opts.jobs.is_some_and(|j| j > 1);
+        let plan = build_plan(&sections, task_name, explicit_parallel)?;
 
-        for section in execution_order {
-            let is_dep = section.title != primary_title;
-            if is_dep {
-                println!("{}", format!("↳ {} (dependency)", section.title).dimmed());
+        let wants_parallel = explicit_parallel || plan.nodes.iter().any(|n| n.section.parallel);
+        // Dry-run output goes straight to stdout; keep it ordered.
+        let jobs = if self.exec.dry_run || plan.nodes.len() == 1 {
+            1
+        } else {
+            match opts.jobs {
+                Some(j) => j.max(1),
+                None if wants_parallel => std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(4),
+                None => 1,
             }
-            self.execute_section_with_lang_filter(
-                section,
-                if is_dep { &[] } else { args },
-                lang_filter,
-            )?;
-        }
+        };
 
-        Ok(())
+        let names = plan.names();
+        let custom_observer = opts.observer.is_some();
+        let observer: Arc<dyn RunObserver> = match opts.observer {
+            Some(o) => o,
+            None if jobs > 1 => Arc::new(ConsoleObserver::prefixed_for(&names)),
+            None => {
+                println!(
+                    "{} {}",
+                    "▶".cyan().bold(),
+                    plan.nodes[plan.root()].section.title.bold()
+                );
+                Arc::new(ConsoleObserver::new())
+            }
+        };
+        observer.plan(&names);
+        let no_cancel = AtomicBool::new(false);
+        let cancel = opts.cancel.as_deref().unwrap_or(&no_cancel);
+
+        schedule::run_plan(
+            &self.exec,
+            &plan,
+            &ScheduleOptions {
+                args: &opts.args,
+                lang_filter: opts.lang_filter.as_deref(),
+                jobs,
+                keep_going: opts.keep_going,
+                piped: custom_observer,
+                cancel,
+                observer: observer.as_ref(),
+            },
+        )
+    }
+
+    /// Files whose changes should re-run `task_name` in watch mode: every
+    /// `sources` glob of the task and its dependencies, plus the task file.
+    pub fn watch_targets<P: AsRef<Path>>(
+        &mut self,
+        markdown_path: P,
+        task_name: &str,
+    ) -> Result<Vec<WatchTarget>> {
+        let sections = self.load_sections(markdown_path.as_ref())?;
+        let plan = build_plan(&sections, task_name, false)?;
+
+        let mut targets = vec![WatchTarget {
+            patterns: vec![markdown_path.as_ref().to_string_lossy().into_owned()],
+            dir: None,
+        }];
+        for node in &plan.nodes {
+            if !node.section.sources.is_empty() {
+                targets.push(WatchTarget {
+                    patterns: node.section.sources.clone(),
+                    dir: self.exec.effective_dir(node.section).map(Path::to_path_buf),
+                });
+            }
+        }
+        Ok(targets)
     }
 
     /// List all available tasks (sections) in a Markdown file
     pub fn list_tasks<P: AsRef<Path>>(&mut self, markdown_path: P) -> Result<Vec<String>> {
-        let markdown = self.load_markdown(markdown_path)?;
-        let sections = self.extract_sections(&markdown)?;
+        let sections = self.load_sections(markdown_path)?;
 
         Ok(sections
             .into_iter()
@@ -814,8 +660,71 @@ impl Runner {
 
     /// List all available task sections in a Markdown file with their details
     pub fn list_task_sections<P: AsRef<Path>>(&mut self, markdown_path: P) -> Result<Vec<Section>> {
-        let markdown = self.load_markdown(markdown_path)?;
-        self.extract_sections(&markdown)
+        self.load_sections(markdown_path)
+    }
+}
+
+/// Fold an imported file's document-wide defaults into its tasks so they
+/// keep behaving as they would when run from that file directly.
+fn apply_globals(sections: &mut [Section], globals: &Globals) {
+    for section in sections {
+        let mut env = globals.env.clone();
+        env.append(&mut section.env);
+        section.env = env;
+        if section.dir.is_none() {
+            section.dir = globals.dir.clone();
+        }
+    }
+}
+
+/// Prefix titles, aliases and intra-file dependency references with
+/// `<namespace>:`. References to tasks outside the file are left alone.
+fn namespace_sections(sections: &mut [Section], namespace: &str) {
+    let local: HashSet<String> = sections
+        .iter()
+        .flat_map(|s| std::iter::once(s.title.clone()).chain(s.aliases.iter().cloned()))
+        .collect();
+    let qualify = |name: &str| format!("{}:{}", namespace, name);
+
+    for section in sections {
+        section.title = qualify(&section.title);
+        section.aliases = section.aliases.iter().map(|a| qualify(a)).collect();
+        for dep in &mut section.depends {
+            if local.contains(dep.as_str()) {
+                *dep = qualify(dep);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+impl Runner {
+    fn resolve_execution_order<'a>(
+        &self,
+        sections: &'a [Section],
+        target: &str,
+    ) -> Result<Vec<&'a Section>> {
+        Ok(build_plan(sections, target, false)?
+            .nodes
+            .into_iter()
+            .map(|n| n.section)
+            .collect())
+    }
+
+    fn bind_params(
+        params: &[ParamDef],
+        args: &[String],
+        task_name: &str,
+    ) -> Result<Vec<(String, String)>> {
+        Executor::bind_params(params, args, task_name)
+    }
+
+    fn prepare_env_vars(
+        &self,
+        args: &[String],
+        param_env: &[(String, String)],
+    ) -> Vec<(String, String)> {
+        self.exec.prepare_env_vars(args, param_env)
     }
 }
 
@@ -896,6 +805,7 @@ print("world")
             private: false,
             env: vec![],
             dir: None,
+            ..Default::default()
         };
 
         let runner = Runner::with_default_config();
@@ -995,6 +905,7 @@ echo "testing"
                 private: false,
                 env: vec![],
                 dir: None,
+                ..Default::default()
             },
             Section {
                 title: "lint".to_string(),
@@ -1006,6 +917,7 @@ echo "testing"
                 private: false,
                 env: vec![],
                 dir: None,
+                ..Default::default()
             },
             Section {
                 title: "test".to_string(),
@@ -1017,6 +929,7 @@ echo "testing"
                 private: false,
                 env: vec![],
                 dir: None,
+                ..Default::default()
             },
         ];
 
@@ -1042,6 +955,7 @@ echo "testing"
                 private: false,
                 env: vec![],
                 dir: None,
+                ..Default::default()
             },
             Section {
                 title: "b".to_string(),
@@ -1053,6 +967,7 @@ echo "testing"
                 private: false,
                 env: vec![],
                 dir: None,
+                ..Default::default()
             },
         ];
 
@@ -1074,6 +989,7 @@ echo "testing"
                 private: false,
                 env: vec![],
                 dir: None,
+                ..Default::default()
             },
             Section {
                 title: "lint".to_string(),
@@ -1085,6 +1001,7 @@ echo "testing"
                 private: false,
                 env: vec![],
                 dir: None,
+                ..Default::default()
             },
             Section {
                 title: "test".to_string(),
@@ -1096,6 +1013,7 @@ echo "testing"
                 private: false,
                 env: vec![],
                 dir: None,
+                ..Default::default()
             },
         ];
 
@@ -1223,13 +1141,21 @@ echo "deploying"
 
         // No CLI --dir: meta dir is used.
         let runner = Runner::with_default_config();
-        let resolved = runner.working_dir.as_deref().or(section.dir.as_deref());
+        let resolved = runner
+            .exec
+            .working_dir
+            .as_deref()
+            .or(section.dir.as_deref());
         assert_eq!(resolved, Some(Path::new("services/api")));
 
         // CLI --dir set: it wins over the meta default.
         let mut runner = Runner::with_default_config();
         runner.set_working_dir(Some(PathBuf::from("/tmp/override")));
-        let resolved = runner.working_dir.as_deref().or(section.dir.as_deref());
+        let resolved = runner
+            .exec
+            .working_dir
+            .as_deref()
+            .or(section.dir.as_deref());
         assert_eq!(resolved, Some(Path::new("/tmp/override")));
     }
 
@@ -1320,7 +1246,7 @@ echo "deploying"
         runner.extract_sections(markdown).unwrap();
 
         assert_eq!(
-            runner.global_env,
+            runner.exec.global_env,
             vec![
                 ("REGION".to_string(), "eu".to_string()),
                 ("LOG_LEVEL".to_string(), "info".to_string()),
@@ -1346,7 +1272,7 @@ pwd
         let mut runner = Runner::with_default_config();
         runner.extract_sections(markdown).unwrap();
 
-        assert_eq!(runner.global_dir, Some(PathBuf::from("services/api")));
+        assert_eq!(runner.exec.global_dir, Some(PathBuf::from("services/api")));
     }
 
     #[test]
@@ -1363,8 +1289,8 @@ echo "deploying"
         let mut runner = Runner::with_default_config();
         runner.extract_sections(markdown).unwrap();
 
-        assert!(runner.global_env.is_empty());
-        assert!(runner.global_dir.is_none());
+        assert!(runner.exec.global_env.is_empty());
+        assert!(runner.exec.global_dir.is_none());
     }
 
     #[test]
@@ -1393,7 +1319,7 @@ echo "deploying"
         // Global env is merged in ahead of the task's own env; the task's
         // value for a shared key wins because later `Command::envs` entries
         // override earlier ones with the same key.
-        let mut task_env = runner.global_env.clone();
+        let mut task_env = runner.exec.global_env.clone();
         task_env.extend(deploy.env.clone());
 
         let region_values: Vec<_> = task_env
@@ -1417,14 +1343,15 @@ echo "deploying"
         };
 
         let mut runner = Runner::with_default_config();
-        runner.global_dir = Some(PathBuf::from("services/default"));
+        runner.exec.global_dir = Some(PathBuf::from("services/default"));
 
         // Task's own dir wins over the global default.
         let resolved = runner
+            .exec
             .working_dir
             .as_deref()
             .or(section.dir.as_deref())
-            .or(runner.global_dir.as_deref());
+            .or(runner.exec.global_dir.as_deref());
         assert_eq!(resolved, Some(Path::new("services/api")));
 
         // Falls back to the global default when the task declares none.
@@ -1434,10 +1361,11 @@ echo "deploying"
             ..Default::default()
         };
         let resolved = runner
+            .exec
             .working_dir
             .as_deref()
             .or(section_no_dir.dir.as_deref())
-            .or(runner.global_dir.as_deref());
+            .or(runner.exec.global_dir.as_deref());
         assert_eq!(resolved, Some(Path::new("services/default")));
     }
 

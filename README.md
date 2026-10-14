@@ -21,6 +21,10 @@ It is implemented using [mq](https://github.com/harehare/mq), a jq-like command-
 
 - Execute code blocks from specific sections in Markdown files
 - Task dependencies with automatic execution ordering
+- Parallel execution of independent dependencies, joined before the dependent task runs
+- Conditions (`if`), retries, timeouts, and passing a task's output to its dependents
+- Importing tasks from other Markdown files
+- Skip up-to-date tasks (`sources`/`outputs`) and `--watch` mode
 - Named task parameters with defaults, plus positional args
 - Per-run `--env`/`--dir` overrides, plus `meta`-declared defaults for environment variables and working directory (per task or document-wide)
 - Default task, aliases, and private (hidden) tasks
@@ -251,6 +255,150 @@ Running `mq-task test` will automatically execute `format → lint → test` in 
 - Shared dependencies are executed only once even if multiple tasks depend on them
 - Circular dependencies are detected and reported as an error
 
+### Parallel execution
+
+By default a task's dependencies run one after another in the order they are declared. Set `parallel = true` to run them concurrently; the task itself starts only after **all** of them have finished (a fan-out / fan-in):
+
+````markdown
+## ci
+
+```meta
+depends = ["lint", "test", "build"]
+parallel = true
+```
+
+```bash
+echo "all checks passed"
+```
+````
+
+- Only the real dependency edges constrain the order, so a task starts as soon as *its own* dependencies are done. Tasks that depend on each other (`test` depends on `build`) still run in order
+- Output lines are prefixed with the task name (`lint │ ...`) and each task reports `✔`/`✘` with its duration
+- By default the first failure aborts the run: running tasks are stopped (including processes they started) and nothing new begins. Use `--keep-going`/`-k` to let independent tasks finish; tasks that depend on a failed task are not run
+- `--parallel` runs every dependency graph concurrently regardless of `parallel` in the file, and `-j N`/`--jobs N` limits how many tasks run at once (`-j 1` forces sequential execution). The default limit is the number of CPUs
+- In parallel runs stdin is closed for tasks; interactive tasks should run sequentially. Dry-run is always sequential
+
+To run several tasks at once, define an aggregate task that depends on them (as `ci` above).
+
+### Conditions
+
+`if` skips a task when its condition is false. A skipped task does **not** block the tasks that depend on it.
+
+````markdown
+## deploy
+
+```meta
+if = 'env.CI && os == "linux"'
+```
+
+```bash
+./deploy.sh
+```
+````
+
+| Expression | True when |
+|---|---|
+| `env.NAME` | the variable is set and not empty, `0` or `false` |
+| `env.NAME == "x"`, `env.NAME != "x"` | the variable equals / differs from `x` |
+| `os == "linux"` | the OS is `linux`, `macos` or `windows` |
+| `exists("path")` | the path exists (relative to the task's working directory) |
+| `which("cmd")` | `cmd` is on `PATH` |
+| `!expr`, `a && b`, `a \|\| b` | boolean combinations (no parentheses) |
+
+Variables are looked up in `--env`, the task's `meta`/`params`, then the process environment.
+
+### Retries and timeouts
+
+````markdown
+## flaky-integration
+
+```meta
+retries = 3          # up to 4 attempts in total
+retry_delay = "2s"   # default: 1s
+timeout = "5m"       # per attempt; exit code 124 when exceeded
+```
+
+```bash
+./run-integration-tests.sh
+```
+````
+
+Durations accept `ms`, `s`, `m` and `h` (a bare number is seconds). Only runtime failures are retried — missing runtimes or parameters fail immediately. A task with a `timeout` runs in its own process group so the whole process tree is stopped; for that reason it cannot read from the terminal.
+
+### Passing output between tasks
+
+Set `capture = true` to expose a task's stdout (trailing newline removed) to the tasks that depend on it as `MX_OUTPUT_<TASK>` (the title upper-cased, other characters replaced with `_`). The output is still printed.
+
+````markdown
+## version
+
+```meta
+capture = true
+```
+
+```bash
+git describe --tags
+```
+
+## release
+
+```meta
+depends = ["version"]
+```
+
+```bash
+echo "releasing $MX_OUTPUT_VERSION"
+```
+````
+
+Captured output is available to the task's direct and transitive dependents. When a task captures its output, stdout is piped, so programs may stop colouring it.
+
+### Importing tasks from other files
+
+List files in the document-wide `meta` block (before the first heading). Their tasks become available as `<file name>:<task>`:
+
+````markdown
+```meta
+imports = ["ci/checks.md", "deploy.md"]
+```
+
+## release
+
+```meta
+depends = ["checks:lint", "deploy:staging"]
+```
+````
+
+- Paths are relative to the importing file; imports can be nested (`a:b:task`) and circular imports are rejected
+- Inside an imported file, `depends` refer to that file's own tasks by their short names
+- The imported file's document-wide `env`/`dir` defaults apply to its tasks. Relative `dir` values resolve against the directory `mq-task` was invoked from, as usual
+
+### Skipping up-to-date tasks and watch mode
+
+Declare the files a task reads with `sources` (globs). The task is skipped when its sources, code, arguments and environment are unchanged since its last successful run. With `outputs`, the task also runs if any listed output is missing.
+
+````markdown
+## build
+
+```meta
+sources = ["src/**/*.rs", "Cargo.toml"]
+outputs = ["target/release/app"]
+```
+
+```bash
+cargo build --release
+```
+````
+
+Fingerprints are stored in `.mq-task/cache.json` in the directory `mq-task` runs from (consider git-ignoring `.mq-task/`). `--no-cache` ignores them.
+
+`--watch`/`-w` re-runs the task whenever any `sources` of the task or its dependencies — or the task file itself — change:
+
+```bash
+mq-task test --watch
+```
+
+
 ### Named parameters
 
 Declare parameters in the `meta` block. A bare name is required; `name=value` sets a default.
@@ -397,7 +545,7 @@ mq-task run --file tasks.md Build
 
 ## Exit codes
 
-`mq-task` exits with the same code the task's process exited with, so it composes correctly with `&&`, CI, and git hooks.
+`mq-task` exits with the same code the task's process exited with, so it composes correctly with `&&`, CI, and git hooks. A task killed by its `timeout` exits with `124`. When several tasks fail under `--keep-going`, the first failure's code is used.
 
 ## License
 

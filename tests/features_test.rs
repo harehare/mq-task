@@ -684,3 +684,90 @@ fn completions_are_generated() {
     assert!(out.status.success());
     assert!(stdout(&out).contains("mq-task"));
 }
+
+#[test]
+fn keep_going_runs_later_siblings_in_a_sequential_task() {
+    // `all` has no `parallel`, so its dependencies are ordered. `good` still
+    // must run after `bad` fails because it does not depend on it.
+    let dir = workdir("keepgoing-seq");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## bad
+
+```bash
+echo bad-ran
+exit 2
+```
+
+## good
+
+```bash
+echo good-ran
+```
+
+## after-bad
+
+```meta
+depends = ["bad"]
+```
+
+```bash
+echo after-bad-ran
+```
+
+## all
+
+```meta
+depends = ["bad", "good", "after-bad"]
+```
+
+```bash
+echo all-ran
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "-k", "all"]);
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    let text = stdout(&out);
+    let bad = text.find("bad-ran").expect("bad ran");
+    let good = text.find("good-ran").expect("good should still run");
+    assert!(bad < good, "declaration order must be kept: {}", text);
+    assert!(!text.contains("after-bad-ran"), "{}", text);
+    assert!(!text.contains("all-ran"), "{}", text);
+}
+
+#[test]
+fn fail_fast_reports_the_tasks_that_were_not_run() {
+    let dir = workdir("failfast-report");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## bad
+
+```bash
+exit 1
+```
+
+## later
+
+```bash
+echo later-ran
+```
+
+## all
+
+```meta
+depends = ["bad", "later"]
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "all"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
+    assert!(!stdout(&out).contains("later-ran"));
+    let err = stderr(&out);
+    assert!(err.contains("later not run"), "{}", err);
+    assert!(err.contains("all not run"), "{}", err);
+}

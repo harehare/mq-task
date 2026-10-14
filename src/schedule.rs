@@ -222,7 +222,9 @@ pub fn run_plan(exec: &Executor, plan: &Plan, opts: &ScheduleOptions) -> Result<
                 report_unreached(i, "aborted");
                 return Err(first_err.take().unwrap_or(Error::Cancelled));
             }
-            if plan.nodes[i].after.iter().any(|&d| blocked[d]) {
+            // Only a failed *declared* dependency blocks a task. Mere
+            // ordering (a sibling that happens to come earlier) does not.
+            if plan.nodes[i].deps.iter().any(|&d| blocked[d]) {
                 blocked[i] = true;
                 opts.observer.status(
                     name,
@@ -257,6 +259,8 @@ pub fn run_plan(exec: &Executor, plan: &Plan, opts: &ScheduleOptions) -> Result<
     }
     let mut ready: BTreeSet<usize> = (0..n).filter(|&i| remaining[i] == 0).collect();
     let mut started = vec![false; n];
+    // A declared dependency failed (or was itself not run): never start.
+    let mut tainted = vec![false; n];
     let mut running = 0usize;
     let mut stop = false;
 
@@ -279,27 +283,42 @@ pub fn run_plan(exec: &Executor, plan: &Plan, opts: &ScheduleOptions) -> Result<
             }
             let Ok((i, result)) = rx.recv() else { break };
             running -= 1;
-            match result {
+            let failed = match result {
                 Ok(outcome) => {
                     if let NodeOutcome::Done { output } = outcome {
                         outputs[i] = output;
                     }
-                    for &d in &dependents[i] {
-                        remaining[d] -= 1;
-                        if remaining[d] == 0 {
-                            ready.insert(d);
-                        }
-                    }
+                    false
                 }
                 Err(e) => {
-                    // Dependents of a failed task never reach zero
-                    // `remaining`, so they are simply never started.
                     if !matches!(e, Error::Cancelled) {
                         first_err.get_or_insert(e);
                     }
                     if !opts.keep_going {
                         stop = true;
                         cancel.store(true, Ordering::SeqCst);
+                    }
+                    true
+                }
+            };
+
+            // Release everything that was waiting on `i`. Ordering edges
+            // only wait for it to finish; a failure additionally taints
+            // the tasks that declare it as a dependency, and those never
+            // start, which in turn taints their own dependents.
+            let mut settled = vec![(i, failed)];
+            while let Some((done, bad)) = settled.pop() {
+                for &d in &dependents[done] {
+                    if bad && plan.nodes[d].deps.contains(&done) {
+                        tainted[d] = true;
+                    }
+                    remaining[d] -= 1;
+                    if remaining[d] == 0 {
+                        if tainted[d] {
+                            settled.push((d, true));
+                        } else {
+                            ready.insert(d);
+                        }
                     }
                 }
             }

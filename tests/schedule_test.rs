@@ -338,9 +338,36 @@ fn run_with(
     cancel: &AtomicBool,
     args: &[String],
 ) -> Run {
+    run_full(sections, target, jobs > 1, jobs, keep_going, cancel, args)
+}
+
+/// Like `run`, but the plan keeps each task's own `parallel` setting while
+/// still running with `jobs` workers (what the CLI does when only some
+/// tasks in a plan are marked `parallel`).
+fn run_unforced(sections: &[Section], target: &str, jobs: usize, keep_going: bool) -> Run {
+    run_full(
+        sections,
+        target,
+        false,
+        jobs,
+        keep_going,
+        &AtomicBool::new(false),
+        &[],
+    )
+}
+
+fn run_full(
+    sections: &[Section],
+    target: &str,
+    force_parallel: bool,
+    jobs: usize,
+    keep_going: bool,
+    cancel: &AtomicBool,
+    args: &[String],
+) -> Run {
     let mut exec = Executor::new(Config::default());
     exec.use_cache = false;
-    let plan = build_plan(sections, target, jobs > 1).unwrap();
+    let plan = build_plan(sections, target, force_parallel).unwrap();
     let rec = Recorder::default();
     let result = run_plan(
         &exec,
@@ -465,20 +492,91 @@ fn keep_going_runs_independent_tasks_but_not_dependents(#[case] jobs: usize) {
     assert!(!started(&r, "all"));
 }
 
-#[test]
-fn keep_going_in_sequential_mode_also_blocks_later_siblings() {
-    // Characterization: without `parallel`, declaration order is an ordering
-    // constraint, so a later sibling waits on (and is blocked by) a failure
-    // even when it does not depend on it.
+#[rstest]
+#[case::sequential(1)]
+#[case::workers(4)]
+fn keep_going_runs_later_siblings_without_parallel(#[case] jobs: usize) {
+    // `all` is NOT parallel: declaration order is an ordering constraint,
+    // but `good` does not depend on `bad`, so it still runs after it.
     let sections = vec![
         bash("bad", &[], "exit 2"),
         bash("good", &[], "echo good"),
-        sec("all", &["bad", "good"]),
+        bash("needs_bad", &["bad"], "echo nope"),
+        sec("all", &["bad", "good", "needs_bad"]),
     ];
-    let r = run(&sections, "all", 1, true);
+    let r = run_unforced(&sections, "all", jobs, true);
     assert!(matches!(r.result, Err(Error::ExecutionFailed(2))));
-    assert!(!started(&r, "good"));
-    assert!(cancelled(&r, "good"));
+    assert!(succeeded(&r, "good"));
+    assert!(!started(&r, "needs_bad"));
+    assert!(cancelled(&r, "needs_bad"));
+    assert!(!started(&r, "all"));
+
+    // Declaration order still holds: `good` begins only after `bad` ended.
+    let failed = r
+        .rec
+        .position("bad", |s| matches!(s, TaskStatus::Failed { .. }))
+        .unwrap();
+    let begun = r
+        .rec
+        .position("good", |s| matches!(s, TaskStatus::Started { .. }))
+        .unwrap();
+    assert!(failed < begun);
+}
+
+#[rstest]
+#[case::sequential(1)]
+#[case::workers(4)]
+fn dependents_are_blocked_transitively_but_ordering_successors_are_not(#[case] jobs: usize) {
+    // bad <- mid <- top are a dependency chain; `side` is only ordered after.
+    let sections = vec![
+        bash("bad", &[], "exit 1"),
+        bash("mid", &["bad"], "echo mid"),
+        bash("top", &["mid"], "echo top"),
+        bash("side", &[], "echo side"),
+        sec("all", &["bad", "top", "side"]),
+    ];
+    let r = run_unforced(&sections, "all", jobs, true);
+    assert!(r.result.is_err());
+    for t in ["mid", "top", "all"] {
+        assert!(!started(&r, t), "{t} should not have run");
+        assert!(cancelled(&r, t), "{t} should be reported as not run");
+    }
+    assert!(succeeded(&r, "side"));
+}
+
+#[rstest]
+#[case::sequential(1)]
+#[case::workers(4)]
+fn a_failure_inside_a_sequential_group_does_not_stop_a_parallel_group(#[case] jobs: usize) {
+    // outer (sequential): [pre, group]; group (parallel): [x, y].
+    // `pre` fails, but x, y and group do not depend on it.
+    let sections = vec![
+        bash("pre", &[], "exit 3"),
+        bash("x", &[], "echo x"),
+        bash("y", &[], "echo y"),
+        par(sec("group", &["x", "y"])),
+        sec("outer", &["pre", "group"]),
+    ];
+    let r = run_unforced(&sections, "outer", jobs, true);
+    assert!(matches!(r.result, Err(Error::ExecutionFailed(3))));
+    for t in ["x", "y", "group"] {
+        assert!(succeeded(&r, t), "{t} should have run");
+    }
+    assert!(!started(&r, "outer"));
+}
+
+#[test]
+fn skipped_tasks_are_not_failures_for_keep_going() {
+    let mut gated = bash("gated", &[], "echo gated");
+    gated.condition = Some("false".into());
+    let sections = vec![
+        gated,
+        bash("next", &["gated"], "echo next"),
+        sec("all", &["next"]),
+    ];
+    let r = run_unforced(&sections, "all", 1, true);
+    r.result.as_ref().unwrap();
+    assert!(succeeded(&r, "next"));
 }
 
 #[test]
@@ -587,4 +685,123 @@ fn jobs_limit_caps_concurrency() {
     r.result.unwrap();
     // Four 0.4s tasks, two at a time: at least two waves.
     assert!(t.elapsed().as_millis() >= 780, "took {:?}", t.elapsed());
+}
+
+// ---------------------------------------------------------------------------
+// run_plan: properties
+// ---------------------------------------------------------------------------
+
+fn is_terminal(s: &TaskStatus) -> bool {
+    matches!(
+        s,
+        TaskStatus::Succeeded { .. }
+            | TaskStatus::Skipped { .. }
+            | TaskStatus::Failed { .. }
+            | TaskStatus::Cancelled { .. }
+    )
+}
+
+proptest! {
+    // Each case spawns real processes, so keep the case count modest.
+    #![proptest_config(ProptestConfig::with_cases(24))]
+
+    #[test]
+    fn keep_going_runs_exactly_the_tasks_with_no_failed_ancestor(
+        (deps, parallel, root) in dag(),
+        fails in prop::collection::vec(any::<bool>(), 10),
+        jobs in prop::sample::select(vec![1usize, 3]),
+        force in any::<bool>(),
+    ) {
+        let n = deps.len();
+        let sections: Vec<Section> = to_sections(&deps, &parallel)
+            .into_iter()
+            .enumerate()
+            .map(|(i, mut s)| {
+                s.codes[0].code = if fails[i] { "exit 1".into() } else { "true".into() };
+                s
+            })
+            .collect();
+        let target = format!("t{root}");
+        let plan = build_plan(&sections, &target, force).unwrap();
+
+        // Model: a task runs iff none of its declared dependencies failed
+        // or was itself blocked. `deps` only points at smaller indices.
+        let reach = reachable(&deps, root);
+        let mut runs = vec![false; n];
+        let mut bad = vec![false; n];
+        for &i in &reach {
+            let blocked = deps[i].iter().any(|&d| bad[d]);
+            runs[i] = !blocked;
+            bad[i] = blocked || fails[i];
+        }
+
+        let mut exec = Executor::new(Config::default());
+        exec.use_cache = false;
+        let rec = Recorder::default();
+        let cancel = AtomicBool::new(false);
+        let result = run_plan(
+            &exec,
+            &plan,
+            &ScheduleOptions {
+                args: &[],
+                lang_filter: None,
+                jobs,
+                keep_going: true,
+                piped: true,
+                cancel: &cancel,
+                observer: &rec,
+            },
+        );
+
+        for &i in &reach {
+            let title = format!("t{i}");
+            let statuses = rec.statuses(&title);
+            let began = statuses.iter().any(|s| matches!(s, TaskStatus::Started { .. }));
+            prop_assert_eq!(began, runs[i], "task {} (statuses {:?})", title, statuses);
+            // Exactly one terminal status per task.
+            prop_assert_eq!(statuses.iter().filter(|s| is_terminal(s)).count(), 1);
+        }
+        let any_failure = reach.iter().any(|&i| runs[i] && fails[i]);
+        prop_assert_eq!(result.is_err(), any_failure);
+    }
+
+    #[test]
+    fn fail_fast_gives_every_task_exactly_one_terminal_status(
+        (deps, parallel, root) in dag(),
+        fails in prop::collection::vec(any::<bool>(), 10),
+        jobs in prop::sample::select(vec![1usize, 3]),
+    ) {
+        let sections: Vec<Section> = to_sections(&deps, &parallel)
+            .into_iter()
+            .enumerate()
+            .map(|(i, mut s)| {
+                s.codes[0].code = if fails[i] { "exit 1".into() } else { "true".into() };
+                s
+            })
+            .collect();
+        let plan = build_plan(&sections, &format!("t{root}"), jobs > 1).unwrap();
+
+        let mut exec = Executor::new(Config::default());
+        exec.use_cache = false;
+        let rec = Recorder::default();
+        let cancel = AtomicBool::new(false);
+        let _ = run_plan(
+            &exec,
+            &plan,
+            &ScheduleOptions {
+                args: &[],
+                lang_filter: None,
+                jobs,
+                keep_going: false,
+                piped: true,
+                cancel: &cancel,
+                observer: &rec,
+            },
+        );
+
+        for name in plan.names() {
+            let terminal = rec.statuses(&name).iter().filter(|s| is_terminal(s)).count();
+            prop_assert_eq!(terminal, 1, "task {} was not accounted for", name);
+        }
+    }
 }

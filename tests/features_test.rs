@@ -318,7 +318,7 @@ fn if_condition_skips_and_runs() {
 ## gated
 
 ```meta
-if = 'env.GO == "yes"'
+if = 'getenv("GO") == "yes"'
 ```
 
 ```bash

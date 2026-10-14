@@ -1,66 +1,306 @@
-//! Interactive TUI for task selection and execution
+//! Interactive TUI: pick a task, run it with live per-task progress and a
+//! scrollable log pane.
 
 use std::io;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::Duration;
 
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 
-use crate::runner::Section;
+use crate::error::{Error, Result};
+use crate::events::{RunObserver, Stream, TaskStatus};
+use crate::runner::{RunOptions, Section};
 use crate::{Config, Runner};
 
-struct App {
-    sections: Vec<Section>,
-    list_state: ListState,
+/// Settings for [`run_tui`].
+#[derive(Debug, Clone, Default)]
+pub struct TuiOptions {
+    pub lang_filter: Option<String>,
+    pub dry_run: bool,
+    pub env: Vec<String>,
+    pub dir: Option<PathBuf>,
+    pub show_all: bool,
+    pub parallel: bool,
+    pub jobs: Option<usize>,
+    pub keep_going: bool,
+    pub no_cache: bool,
 }
 
-impl App {
-    fn new(sections: Vec<Section>) -> Self {
-        let mut list_state = ListState::default();
-        if !sections.is_empty() {
-            list_state.select(Some(0));
+const MAX_LOG_LINES: usize = 20_000;
+const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+// ---------------------------------------------------------------------------
+// Run events
+// ---------------------------------------------------------------------------
+
+/// Messages from the run thread to the UI.
+enum UiEvent {
+    Plan(Vec<String>),
+    Output {
+        task: String,
+        stream: Stream,
+        line: String,
+    },
+    Status {
+        task: String,
+        status: TaskStatus,
+    },
+    Finished(std::result::Result<(), String>),
+}
+
+struct TuiObserver {
+    tx: Mutex<Sender<UiEvent>>,
+}
+
+impl TuiObserver {
+    fn send(&self, event: UiEvent) {
+        if let Ok(tx) = self.tx.lock() {
+            let _ = tx.send(event);
         }
-        Self {
-            sections,
-            list_state,
+    }
+}
+
+impl RunObserver for TuiObserver {
+    fn plan(&self, tasks: &[String]) {
+        self.send(UiEvent::Plan(tasks.to_vec()));
+    }
+
+    fn output(&self, task: &str, stream: Stream, line: &str) {
+        self.send(UiEvent::Output {
+            task: task.to_string(),
+            stream,
+            line: line.to_string(),
+        });
+    }
+
+    fn status(&self, task: &str, status: &TaskStatus) {
+        self.send(UiEvent::Status {
+            task: task.to_string(),
+            status: status.clone(),
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+enum TaskState {
+    Pending,
+    Running,
+    Retrying(u32, u32),
+    Succeeded(Duration),
+    Skipped(String),
+    Failed(String),
+    Cancelled(String),
+}
+
+struct TaskRow {
+    name: String,
+    state: TaskState,
+}
+
+struct LogLine {
+    task: usize,
+    stream: Stream,
+    text: String,
+}
+
+/// Progress of one run shown in the run view.
+struct RunView {
+    task: String,
+    tasks: Vec<TaskRow>,
+    log: Vec<LogLine>,
+    selected: usize,
+    /// Show the combined log instead of only the selected task's.
+    all_logs: bool,
+    /// Lines scrolled up from the bottom of the log.
+    scroll: usize,
+    result: Option<std::result::Result<(), String>>,
+    rx: Receiver<UiEvent>,
+    cancel: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl RunView {
+    fn index_of(&mut self, name: &str) -> usize {
+        if let Some(i) = self.tasks.iter().position(|t| t.name == name) {
+            return i;
+        }
+        self.tasks.push(TaskRow {
+            name: name.to_string(),
+            state: TaskState::Pending,
+        });
+        self.tasks.len() - 1
+    }
+
+    fn apply(&mut self, event: UiEvent) {
+        match event {
+            UiEvent::Plan(names) => {
+                for name in names {
+                    self.index_of(&name);
+                }
+            }
+            UiEvent::Output { task, stream, line } => {
+                let task = self.index_of(&task);
+                self.log.push(LogLine {
+                    task,
+                    stream,
+                    text: line,
+                });
+                if self.log.len() > MAX_LOG_LINES {
+                    self.log.drain(..MAX_LOG_LINES / 10);
+                }
+            }
+            UiEvent::Status { task, status } => {
+                let i = self.index_of(&task);
+                self.tasks[i].state = match status {
+                    TaskStatus::Started { .. } => TaskState::Running,
+                    TaskStatus::Retrying { attempt, max, .. } => TaskState::Retrying(attempt, max),
+                    TaskStatus::Succeeded { elapsed } => TaskState::Succeeded(elapsed),
+                    TaskStatus::Skipped { reason } => TaskState::Skipped(reason),
+                    TaskStatus::Failed { error } => {
+                        self.log.push(LogLine {
+                            task: i,
+                            stream: Stream::Stderr,
+                            text: format!("error: {}", error),
+                        });
+                        TaskState::Failed(error)
+                    }
+                    TaskStatus::Cancelled { reason } => TaskState::Cancelled(reason),
+                };
+            }
+            UiEvent::Finished(result) => self.result = Some(result),
         }
     }
 
+    fn drain(&mut self) {
+        while let Ok(event) = self.rx.try_recv() {
+            self.apply(event);
+        }
+    }
+
+    fn is_running(&self) -> bool {
+        self.result.is_none()
+    }
+
+    fn visible_log(&self) -> Vec<&LogLine> {
+        self.log
+            .iter()
+            .filter(|l| self.all_logs || l.task == self.selected)
+            .collect()
+    }
+}
+
+enum Mode {
+    List,
+    Filter,
+    Args { input: String, terminal: bool },
+    Run,
+}
+
+/// What `run_app` asks the caller to do after the UI closes.
+enum Exit {
+    Quit,
+    /// Leave the TUI and run in the terminal (interactive stdin works there).
+    Terminal {
+        task: String,
+        args: Vec<String>,
+    },
+}
+
+struct App {
+    sections: Vec<Section>,
+    filter: String,
+    /// Indices into `sections` matching `filter`.
+    visible: Vec<usize>,
+    list_state: ListState,
+    mode: Mode,
+    run: Option<RunView>,
+    tick: usize,
+    path: PathBuf,
+    config: Config,
+    opts: TuiOptions,
+}
+
+impl App {
+    fn new(sections: Vec<Section>, path: PathBuf, config: Config, opts: TuiOptions) -> Self {
+        let mut app = Self {
+            sections,
+            filter: String::new(),
+            visible: Vec::new(),
+            list_state: ListState::default(),
+            mode: Mode::List,
+            run: None,
+            tick: 0,
+            path,
+            config,
+            opts,
+        };
+        app.refilter();
+        app
+    }
+
+    fn refilter(&mut self) {
+        let needle = self.filter.to_lowercase();
+        self.visible = self
+            .sections
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                needle.is_empty()
+                    || s.title.to_lowercase().contains(&needle)
+                    || s.aliases.iter().any(|a| a.to_lowercase().contains(&needle))
+                    || s.description
+                        .as_deref()
+                        .is_some_and(|d| d.to_lowercase().contains(&needle))
+            })
+            .map(|(i, _)| i)
+            .collect();
+        self.list_state.select(if self.visible.is_empty() {
+            None
+        } else {
+            Some(0)
+        });
+    }
+
     fn next(&mut self) {
-        if self.sections.is_empty() {
+        if self.visible.is_empty() {
             return;
         }
-        let i = match self.list_state.selected() {
-            Some(i) => (i + 1) % self.sections.len(),
-            None => 0,
-        };
+        let i = self
+            .list_state
+            .selected()
+            .map_or(0, |i| (i + 1) % self.visible.len());
         self.list_state.select(Some(i));
     }
 
     fn previous(&mut self) {
-        if self.sections.is_empty() {
+        if self.visible.is_empty() {
             return;
         }
         let i = match self.list_state.selected() {
-            Some(i) => {
-                if i == 0 {
-                    self.sections.len() - 1
-                } else {
-                    i - 1
-                }
-            }
-            None => 0,
+            Some(0) | None => self.visible.len() - 1,
+            Some(i) => i - 1,
         };
         self.list_state.select(Some(i));
     }
@@ -68,157 +308,846 @@ impl App {
     fn selected_section(&self) -> Option<&Section> {
         self.list_state
             .selected()
-            .and_then(|i| self.sections.get(i))
+            .and_then(|i| self.visible.get(i))
+            .and_then(|&i| self.sections.get(i))
+    }
+
+    fn needs_args(section: &Section) -> bool {
+        section.params.iter().any(|p| p.default.is_none())
+    }
+
+    /// Run the selected task: prompt for arguments if it has required
+    /// params (or `force_prompt`), otherwise start right away.
+    fn begin(&mut self, terminal: bool, force_prompt: bool) -> Option<Exit> {
+        let section = self.selected_section()?;
+        if force_prompt || Self::needs_args(section) {
+            self.mode = Mode::Args {
+                input: String::new(),
+                terminal,
+            };
+            return None;
+        }
+        self.launch(terminal, Vec::new())
+    }
+
+    fn launch(&mut self, terminal: bool, args: Vec<String>) -> Option<Exit> {
+        let task = self.selected_section()?.title.clone();
+        // Dry-run prints straight to stdout, which would garble the screen.
+        if terminal || self.opts.dry_run {
+            return Some(Exit::Terminal { task, args });
+        }
+        self.start_run(task, args);
+        None
+    }
+
+    fn start_run(&mut self, task: String, args: Vec<String>) {
+        let (tx, rx) = mpsc::channel();
+        let observer = Arc::new(TuiObserver { tx: Mutex::new(tx) });
+        let cancel = Arc::new(AtomicBool::new(false));
+
+        let handle = {
+            let config = self.config.clone();
+            let path = self.path.clone();
+            let opts = self.opts.clone();
+            let task = task.clone();
+            let cancel = Arc::clone(&cancel);
+            let observer = Arc::clone(&observer);
+            std::thread::spawn(move || {
+                let result = (|| -> Result<()> {
+                    let mut runner = Runner::new(config);
+                    runner.set_env_overrides(Runner::parse_env_overrides(&opts.env)?);
+                    runner.set_working_dir(opts.dir.clone());
+                    runner.set_use_cache(!opts.no_cache);
+                    runner.run_task_with_options(
+                        &path,
+                        &task,
+                        RunOptions {
+                            args,
+                            lang_filter: opts.lang_filter.clone(),
+                            parallel: opts.parallel,
+                            jobs: opts.jobs,
+                            keep_going: opts.keep_going,
+                            observer: Some(observer.clone() as Arc<dyn RunObserver>),
+                            cancel: Some(cancel),
+                        },
+                    )
+                })();
+                observer.send(UiEvent::Finished(result.map_err(|e| e.to_string())));
+            })
+        };
+
+        self.run = Some(RunView {
+            task,
+            tasks: Vec::new(),
+            log: Vec::new(),
+            selected: 0,
+            all_logs: true,
+            scroll: 0,
+            result: None,
+            rx,
+            cancel,
+            handle: Some(handle),
+        });
+        self.mode = Mode::Run;
+    }
+
+    fn close_run(&mut self) {
+        if let Some(mut run) = self.run.take()
+            && let Some(handle) = run.handle.take()
+        {
+            let _ = handle.join();
+        }
+        self.mode = Mode::List;
+    }
+
+    fn handle_key(&mut self, code: KeyCode, modifiers: KeyModifiers) -> Option<Exit> {
+        let ctrl_c = modifiers.contains(KeyModifiers::CONTROL) && code == KeyCode::Char('c');
+        match &mut self.mode {
+            Mode::List => match code {
+                _ if ctrl_c => return Some(Exit::Quit),
+                KeyCode::Char('q') => return Some(Exit::Quit),
+                KeyCode::Esc => {
+                    if self.filter.is_empty() {
+                        return Some(Exit::Quit);
+                    }
+                    self.filter.clear();
+                    self.refilter();
+                }
+                KeyCode::Down | KeyCode::Char('j') => self.next(),
+                KeyCode::Up | KeyCode::Char('k') => self.previous(),
+                KeyCode::Char('/') => self.mode = Mode::Filter,
+                KeyCode::Enter => return self.begin(false, false),
+                KeyCode::Char('a') => return self.begin(false, true),
+                KeyCode::Char('x') => return self.begin(true, false),
+                _ => {}
+            },
+            Mode::Filter => match code {
+                KeyCode::Esc => {
+                    self.filter.clear();
+                    self.refilter();
+                    self.mode = Mode::List;
+                }
+                KeyCode::Enter => self.mode = Mode::List,
+                KeyCode::Backspace => {
+                    self.filter.pop();
+                    self.refilter();
+                }
+                KeyCode::Down => self.next(),
+                KeyCode::Up => self.previous(),
+                KeyCode::Char(c) if !ctrl_c => {
+                    self.filter.push(c);
+                    self.refilter();
+                }
+                _ => {}
+            },
+            Mode::Args { input, terminal } => match code {
+                KeyCode::Esc => self.mode = Mode::List,
+                KeyCode::Backspace => {
+                    input.pop();
+                }
+                KeyCode::Enter => {
+                    let args = split_args(input);
+                    let terminal = *terminal;
+                    self.mode = Mode::List;
+                    return self.launch(terminal, args);
+                }
+                KeyCode::Char(c) if !ctrl_c => input.push(c),
+                _ => {}
+            },
+            Mode::Run => {
+                let Some(run) = self.run.as_mut() else {
+                    self.mode = Mode::List;
+                    return None;
+                };
+                match code {
+                    _ if ctrl_c => {
+                        run.cancel.store(true, Ordering::SeqCst);
+                    }
+                    KeyCode::Char('q') | KeyCode::Esc => {
+                        if run.is_running() {
+                            run.cancel.store(true, Ordering::SeqCst);
+                        } else {
+                            self.close_run();
+                        }
+                    }
+                    KeyCode::Enter if !run.is_running() => self.close_run(),
+                    KeyCode::Char('r') if !run.is_running() => {
+                        let task = run.task.clone();
+                        self.close_run();
+                        // Re-run without re-prompting: arguments are not kept.
+                        self.start_run(task, Vec::new());
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if !run.tasks.is_empty() {
+                            run.selected = (run.selected + 1) % run.tasks.len();
+                            run.scroll = 0;
+                        }
+                    }
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        if !run.tasks.is_empty() {
+                            run.selected = (run.selected + run.tasks.len() - 1) % run.tasks.len();
+                            run.scroll = 0;
+                        }
+                    }
+                    KeyCode::Tab => {
+                        run.all_logs = !run.all_logs;
+                        run.scroll = 0;
+                    }
+                    KeyCode::PageUp => run.scroll = run.scroll.saturating_add(10),
+                    KeyCode::PageDown => run.scroll = run.scroll.saturating_sub(10),
+                    KeyCode::Char('g') => run.scroll = usize::MAX / 2,
+                    KeyCode::Char('G') => run.scroll = 0,
+                    _ => {}
+                }
+            }
+        }
+        None
     }
 }
 
+/// Split an argument line on whitespace, honoring single and double quotes.
+fn split_args(input: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    let mut has_token = false;
+    for c in input.chars() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), c) => cur.push(c),
+            (None, '"' | '\'') => {
+                quote = Some(c);
+                has_token = true;
+            }
+            (None, c) if c.is_whitespace() => {
+                if has_token || !cur.is_empty() {
+                    args.push(std::mem::take(&mut cur));
+                    has_token = false;
+                }
+            }
+            (None, c) => cur.push(c),
+        }
+    }
+    if has_token || !cur.is_empty() {
+        args.push(cur);
+    }
+    args
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
 /// Run the interactive TUI for task selection
-#[allow(clippy::too_many_arguments)]
-pub fn run_tui(
-    markdown_path: PathBuf,
-    config: Config,
-    lang_filter: Option<String>,
-    dry_run: bool,
-    env: Vec<String>,
-    dir: Option<PathBuf>,
-    show_all: bool,
-) -> crate::error::Result<()> {
-    let mut runner = Runner::new(config.clone());
-    runner.set_dry_run(dry_run);
-    runner.set_env_overrides(Runner::parse_env_overrides(&env)?);
-    runner.set_working_dir(dir);
-
-    let sections = {
-        let mut r = Runner::new(config);
-        let raw_sections = r.list_task_sections(&markdown_path)?;
-
-        raw_sections
+pub fn run_tui(markdown_path: PathBuf, config: Config, opts: TuiOptions) -> Result<()> {
+    let sections: Vec<Section> = {
+        let mut r = Runner::new(config.clone());
+        r.list_task_sections(&markdown_path)?
             .into_iter()
-            .filter(|s| show_all || !s.private)
+            .filter(|s| opts.show_all || !s.private)
             .filter(|s| {
-                lang_filter
+                opts.lang_filter
                     .as_ref()
                     .is_none_or(|lang| s.codes.iter().any(|c| c.lang == *lang))
             })
             .collect()
     };
 
-    // Setup terminal
-    enable_raw_mode().map_err(crate::error::Error::Io)?;
+    enable_raw_mode().map_err(Error::Io)?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture).map_err(crate::error::Error::Io)?;
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture).map_err(Error::Io)?;
     let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend).map_err(crate::error::Error::Io)?;
+    let mut terminal = Terminal::new(backend).map_err(Error::Io)?;
 
-    let mut app = App::new(sections);
+    let mut app = App::new(
+        sections,
+        markdown_path.clone(),
+        config.clone(),
+        opts.clone(),
+    );
     let result = run_app(&mut terminal, &mut app);
 
-    // Restore terminal
-    disable_raw_mode().map_err(crate::error::Error::Io)?;
+    // Cancel any run still in flight so the process can exit cleanly.
+    if let Some(run) = app.run.take() {
+        run.cancel.store(true, Ordering::SeqCst);
+        if let Some(handle) = run.handle {
+            let _ = handle.join();
+        }
+    }
+
+    disable_raw_mode().map_err(Error::Io)?;
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
         DisableMouseCapture
     )
-    .map_err(crate::error::Error::Io)?;
-    terminal.show_cursor().map_err(crate::error::Error::Io)?;
+    .map_err(Error::Io)?;
+    terminal.show_cursor().map_err(Error::Io)?;
 
-    // Execute selected task if any
-    if let Some(task_name) = result? {
-        runner.run_task_with_lang_filter(
+    if let Exit::Terminal { task, args } = result? {
+        let mut runner = Runner::new(config);
+        runner.set_dry_run(opts.dry_run);
+        runner.set_env_overrides(Runner::parse_env_overrides(&opts.env)?);
+        runner.set_working_dir(opts.dir);
+        runner.set_use_cache(!opts.no_cache);
+        runner.run_task_with_options(
             &markdown_path,
-            &task_name,
-            &[],
-            lang_filter.as_deref(),
+            &task,
+            RunOptions {
+                args,
+                lang_filter: opts.lang_filter,
+                parallel: opts.parallel,
+                jobs: opts.jobs,
+                keep_going: opts.keep_going,
+                ..Default::default()
+            },
         )?;
     }
 
     Ok(())
 }
 
-fn run_app<B: ratatui::backend::Backend>(
-    terminal: &mut Terminal<B>,
-    app: &mut App,
-) -> crate::error::Result<Option<String>> {
+fn run_app<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) -> Result<Exit>
+where
+    B::Error: Send + Sync + 'static,
+{
     loop {
-        terminal.draw(|f| ui(f, app)).expect("Failed to draw TUI");
+        if let Some(run) = app.run.as_mut() {
+            run.drain();
+        }
+        app.tick = app.tick.wrapping_add(1);
 
-        if let Event::Key(key) = event::read().map_err(crate::error::Error::Io)? {
+        terminal
+            .draw(|f| ui(f, app))
+            .map_err(|e| Error::Io(io::Error::other(e)))?;
+
+        if event::poll(Duration::from_millis(60)).map_err(Error::Io)?
+            && let Event::Key(key) = event::read().map_err(Error::Io)?
+        {
             if key.kind != KeyEventKind::Press {
                 continue;
             }
-            match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => return Ok(None),
-                KeyCode::Down | KeyCode::Char('j') => app.next(),
-                KeyCode::Up | KeyCode::Char('k') => app.previous(),
-                KeyCode::Enter => {
-                    if let Some(section) = app.selected_section() {
-                        return Ok(Some(section.title.clone()));
-                    }
-                }
-                _ => {}
+            if let Some(exit) = app.handle_key(key.code, key.modifiers) {
+                return Ok(exit);
             }
         }
     }
 }
 
+// ---------------------------------------------------------------------------
+// Rendering
+// ---------------------------------------------------------------------------
+
 fn ui(f: &mut ratatui::Frame, app: &mut App) {
-    let chunks = Layout::default()
+    if matches!(app.mode, Mode::Run) && app.run.is_some() {
+        draw_run(f, app);
+    } else {
+        draw_list(f, app);
+    }
+}
+
+fn title_style() -> Style {
+    Style::default()
+        .fg(Color::Green)
+        .add_modifier(Modifier::BOLD)
+}
+
+fn draw_list(f: &mut ratatui::Frame, app: &mut App) {
+    let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(3)])
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(3),
+            Constraint::Length(3),
+        ])
         .split(f.area());
 
-    let items: Vec<ListItem> = app
-        .sections
-        .iter()
-        .map(|s| {
-            let content = if let Some(ref desc) = s.description {
-                let trimmed = desc.trim();
-                if !trimmed.is_empty() {
-                    Line::from(vec![
-                        Span::styled(
-                            s.title.clone(),
-                            Style::default()
-                                .fg(Color::Green)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::raw(" - "),
-                        Span::styled(trimmed.to_string(), Style::default().fg(Color::DarkGray)),
-                    ])
+    // Search / prompt bar
+    let (bar_title, bar_text) = match &app.mode {
+        Mode::Filter => (" Search ", format!("/{}▏", app.filter)),
+        Mode::Args { input, .. } => {
+            let hint = app
+                .selected_section()
+                .map(|s| {
+                    s.params
+                        .iter()
+                        .map(|p| match &p.default {
+                            Some(d) => format!("{}={}", p.name, d),
+                            None => format!("{}*", p.name),
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .unwrap_or_default();
+            (
+                " Arguments ",
+                if hint.is_empty() {
+                    format!("{}▏", input)
                 } else {
-                    Line::from(Span::styled(
-                        s.title.clone(),
-                        Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD),
-                    ))
-                }
-            } else {
-                Line::from(Span::styled(
-                    s.title.clone(),
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                ))
-            };
-            ListItem::new(content)
+                    format!("{}▏   params: {}", input, hint)
+                },
+            )
+        }
+        _ if !app.filter.is_empty() => (" Filter ", format!("/{}", app.filter)),
+        _ => (" Filter ", "press / to search".to_string()),
+    };
+    f.render_widget(
+        Paragraph::new(bar_text)
+            .style(Style::default().fg(Color::Gray))
+            .block(Block::default().borders(Borders::ALL).title(bar_title)),
+        rows[0],
+    );
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+        .split(rows[1]);
+
+    let items: Vec<ListItem> = app
+        .visible
+        .iter()
+        .map(|&i| {
+            let s = &app.sections[i];
+            let mut spans = vec![Span::styled(s.title.clone(), title_style())];
+            if !s.aliases.is_empty() {
+                spans.push(Span::styled(
+                    format!(" ({})", s.aliases.join(", ")),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            if s.parallel {
+                spans.push(Span::styled(" ∥", Style::default().fg(Color::Cyan)));
+            }
+            if !s.depends.is_empty() {
+                spans.push(Span::styled(
+                    format!(" ←{}", s.depends.len()),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            ListItem::new(Line::from(spans))
         })
         .collect();
 
     let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" Tasks "))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" Tasks ({}) ", app.visible.len())),
+        )
         .highlight_style(
             Style::default()
                 .bg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▶ ");
+    f.render_stateful_widget(list, cols[0], &mut app.list_state);
 
-    f.render_stateful_widget(list, chunks[0], &mut app.list_state);
+    // Detail pane
+    let detail = match app.selected_section() {
+        Some(s) => section_details(s),
+        None => vec![Line::from("No tasks")],
+    };
+    f.render_widget(
+        Paragraph::new(detail)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title(" Details ")),
+        cols[1],
+    );
 
-    let help = Paragraph::new("↑/↓ or j/k: navigate   Enter: run   q/Esc: quit")
-        .style(Style::default().fg(Color::DarkGray))
-        .block(Block::default().borders(Borders::ALL).title(" Help "));
+    let help = match app.mode {
+        Mode::Filter => "type to filter   Enter: accept   Esc: clear",
+        Mode::Args { .. } => "Enter: run   Esc: cancel   (quote args with \"…\")",
+        _ => {
+            "↑/↓ j/k: move   Enter: run   a: run with args   x: run in terminal   /: search   q: quit"
+        }
+    };
+    f.render_widget(
+        Paragraph::new(help)
+            .style(Style::default().fg(Color::DarkGray))
+            .block(Block::default().borders(Borders::ALL).title(" Help ")),
+        rows[2],
+    );
+}
 
-    f.render_widget(help, chunks[1]);
+fn section_details(s: &Section) -> Vec<Line<'static>> {
+    let label = |text: &str| Span::styled(format!("{:<9}", text), Style::default().fg(Color::Cyan));
+    let mut lines = vec![Line::from(Span::styled(s.title.clone(), title_style()))];
+
+    if let Some(desc) = s
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+    {
+        lines.push(Line::from(desc.to_string()));
+    }
+    lines.push(Line::raw(""));
+
+    if !s.depends.is_empty() {
+        lines.push(Line::from(vec![
+            label("depends"),
+            Span::raw(s.depends.join(", ")),
+        ]));
+    }
+    if !s.params.is_empty() {
+        let params = s
+            .params
+            .iter()
+            .map(|p| match &p.default {
+                Some(d) => format!("{}={}", p.name, d),
+                None => format!("{} (required)", p.name),
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        lines.push(Line::from(vec![label("params"), Span::raw(params)]));
+    }
+    let mut flags = Vec::new();
+    if s.parallel {
+        flags.push("parallel deps".to_string());
+    }
+    if let Some(c) = &s.condition {
+        flags.push(format!("if {}", c));
+    }
+    if s.retries > 0 {
+        flags.push(format!("retries {}", s.retries));
+    }
+    if let Some(t) = s.timeout {
+        flags.push(format!("timeout {}s", t.as_secs_f64()));
+    }
+    if s.capture {
+        flags.push("captures output".into());
+    }
+    if !s.sources.is_empty() {
+        flags.push("cached on sources".into());
+    }
+    if !flags.is_empty() {
+        lines.push(Line::from(vec![
+            label("options"),
+            Span::raw(flags.join(" · ")),
+        ]));
+    }
+    if let Some(dir) = &s.dir {
+        lines.push(Line::from(vec![
+            label("dir"),
+            Span::raw(dir.display().to_string()),
+        ]));
+    }
+    if !s.env.is_empty() {
+        let env = s
+            .env
+            .iter()
+            .map(|(k, v)| format!("{}={}", k, v))
+            .collect::<Vec<_>>()
+            .join(" ");
+        lines.push(Line::from(vec![label("env"), Span::raw(env)]));
+    }
+
+    for block in &s.codes {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(Span::styled(
+            format!("[{}]", block.lang),
+            Style::default().fg(Color::Yellow),
+        )));
+        for (n, line) in block.code.lines().enumerate() {
+            if n >= 12 {
+                lines.push(Line::from(Span::styled(
+                    "…",
+                    Style::default().fg(Color::DarkGray),
+                )));
+                break;
+            }
+            lines.push(Line::from(Span::styled(
+                line.to_string(),
+                Style::default().fg(Color::Gray),
+            )));
+        }
+    }
+    lines
+}
+
+fn state_span(state: &TaskState, tick: usize) -> Span<'static> {
+    match state {
+        TaskState::Pending => Span::styled("○", Style::default().fg(Color::DarkGray)),
+        TaskState::Running => Span::styled(
+            SPINNER[(tick / 2) % SPINNER.len()],
+            Style::default().fg(Color::Cyan),
+        ),
+        TaskState::Retrying(..) => Span::styled("↻", Style::default().fg(Color::Yellow)),
+        TaskState::Succeeded(_) => Span::styled("✔", Style::default().fg(Color::Green)),
+        TaskState::Skipped(_) => Span::styled("⊘", Style::default().fg(Color::DarkGray)),
+        TaskState::Failed(_) => Span::styled("✘", Style::default().fg(Color::Red)),
+        TaskState::Cancelled(_) => Span::styled("⊘", Style::default().fg(Color::Yellow)),
+    }
+}
+
+fn state_note(state: &TaskState) -> String {
+    match state {
+        TaskState::Succeeded(d) => format!(" {:.1}s", d.as_secs_f64()),
+        TaskState::Retrying(a, m) => format!(" retry {}/{}", a, m),
+        TaskState::Skipped(r) => format!(" {}", r),
+        TaskState::Cancelled(r) => format!(" {}", r),
+        _ => String::new(),
+    }
+}
+
+fn draw_run(f: &mut ratatui::Frame, app: &mut App) {
+    let tick = app.tick;
+    let Some(run) = app.run.as_ref() else { return };
+
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(3),
+            Constraint::Length(3),
+        ])
+        .split(f.area());
+
+    let (status_text, status_color) = match &run.result {
+        None => (
+            format!("{} running", SPINNER[(tick / 2) % SPINNER.len()]),
+            Color::Cyan,
+        ),
+        Some(Ok(())) => ("✔ finished".to_string(), Color::Green),
+        Some(Err(e)) => (format!("✘ {}", e), Color::Red),
+    };
+    let done = run
+        .tasks
+        .iter()
+        .filter(|t| {
+            matches!(
+                t.state,
+                TaskState::Succeeded(_) | TaskState::Skipped(_) | TaskState::Failed(_)
+            )
+        })
+        .count();
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(run.task.clone(), title_style()),
+            Span::raw("  "),
+            Span::styled(status_text, Style::default().fg(status_color)),
+            Span::styled(
+                format!("  {}/{} tasks", done, run.tasks.len()),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]))
+        .block(Block::default().borders(Borders::ALL).title(" Run ")),
+        rows[0],
+    );
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+        .split(rows[1]);
+
+    let items: Vec<ListItem> = run
+        .tasks
+        .iter()
+        .map(|t| {
+            ListItem::new(Line::from(vec![
+                state_span(&t.state, tick),
+                Span::raw(" "),
+                Span::raw(t.name.clone()),
+                Span::styled(state_note(&t.state), Style::default().fg(Color::DarkGray)),
+            ]))
+        })
+        .collect();
+    let mut state = ListState::default();
+    if !run.tasks.is_empty() {
+        state.select(Some(run.selected.min(run.tasks.len() - 1)));
+    }
+    f.render_stateful_widget(
+        List::new(items)
+            .block(Block::default().borders(Borders::ALL).title(" Tasks "))
+            .highlight_style(Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED)),
+        cols[0],
+        &mut state,
+    );
+
+    f.render_widget(log_widget(run, cols[1]), cols[1]);
+
+    let help = if run.is_running() {
+        "↑/↓: select task   Tab: all/selected log   PgUp/PgDn: scroll   q/Ctrl+C: abort"
+    } else {
+        "↑/↓: select task   Tab: all/selected log   PgUp/PgDn: scroll   r: re-run   q/Enter: back"
+    };
+    f.render_widget(
+        Paragraph::new(help)
+            .style(Style::default().fg(Color::DarkGray))
+            .block(Block::default().borders(Borders::ALL).title(" Help ")),
+        rows[2],
+    );
+}
+
+fn log_widget<'a>(run: &'a RunView, area: Rect) -> Paragraph<'a> {
+    let height = area.height.saturating_sub(2) as usize;
+    let lines = run.visible_log();
+    let end = lines.len().saturating_sub(run.scroll.min(lines.len()));
+    let start = end.saturating_sub(height);
+
+    let text: Vec<Line> = lines[start..end]
+        .iter()
+        .map(|l| {
+            let style = match l.stream {
+                Stream::Stdout => Style::default(),
+                Stream::Stderr => Style::default().fg(Color::Yellow),
+            };
+            if run.all_logs {
+                Line::from(vec![
+                    Span::styled(
+                        format!("{} │ ", run.tasks[l.task].name),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled(l.text.clone(), style),
+                ])
+            } else {
+                Line::from(Span::styled(l.text.clone(), style))
+            }
+        })
+        .collect();
+
+    let title = if run.all_logs {
+        " Log (all) ".to_string()
+    } else {
+        format!(
+            " Log ({}) ",
+            run.tasks.get(run.selected).map_or("", |t| t.name.as_str())
+        )
+    };
+    Paragraph::new(text).block(Block::default().borders(Borders::ALL).title(title))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runner::ParamDef;
+    use ratatui::backend::TestBackend;
+
+    fn section(title: &str) -> Section {
+        Section {
+            title: title.into(),
+            ..Default::default()
+        }
+    }
+
+    fn app(sections: Vec<Section>) -> App {
+        App::new(
+            sections,
+            PathBuf::from("README.md"),
+            Config::default(),
+            TuiOptions::default(),
+        )
+    }
+
+    #[test]
+    fn splits_args_with_quotes() {
+        assert_eq!(split_args("a b  c"), vec!["a", "b", "c"]);
+        assert_eq!(split_args(r#"a "b c" 'd e'"#), vec!["a", "b c", "d e"]);
+        assert_eq!(split_args(r#"x="1 2""#), vec!["x=1 2"]);
+        assert_eq!(split_args(r#""""#), vec![""]);
+        assert!(split_args("   ").is_empty());
+    }
+
+    #[test]
+    fn filters_and_navigates() {
+        let mut a = app(vec![section("build"), section("test"), section("deploy")]);
+        assert_eq!(a.visible.len(), 3);
+        a.handle_key(KeyCode::Char('/'), KeyModifiers::NONE);
+        a.handle_key(KeyCode::Char('e'), KeyModifiers::NONE);
+        a.handle_key(KeyCode::Char('s'), KeyModifiers::NONE);
+        assert_eq!(a.visible, vec![1]);
+        assert_eq!(a.selected_section().unwrap().title, "test");
+        a.handle_key(KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(a.visible.len(), 3);
+        assert!(matches!(a.mode, Mode::List));
+    }
+
+    #[test]
+    fn required_params_prompt_for_args() {
+        let mut s = section("deploy");
+        s.params = vec![ParamDef {
+            name: "env".into(),
+            default: None,
+        }];
+        let mut a = app(vec![s]);
+        assert!(a.handle_key(KeyCode::Enter, KeyModifiers::NONE).is_none());
+        assert!(matches!(a.mode, Mode::Args { .. }));
+        for c in "prod".chars() {
+            a.handle_key(KeyCode::Char(c), KeyModifiers::NONE);
+        }
+        // `x` style terminal run returns the parsed args.
+        a.mode = Mode::Args {
+            input: "prod".into(),
+            terminal: true,
+        };
+        match a.handle_key(KeyCode::Enter, KeyModifiers::NONE) {
+            Some(Exit::Terminal { task, args }) => {
+                assert_eq!(task, "deploy");
+                assert_eq!(args, vec!["prod"]);
+            }
+            _ => panic!("expected terminal exit"),
+        }
+    }
+
+    #[test]
+    fn run_view_tracks_status_and_output() {
+        let (tx, rx) = mpsc::channel();
+        let mut view = RunView {
+            task: "ci".into(),
+            tasks: Vec::new(),
+            log: Vec::new(),
+            selected: 0,
+            all_logs: true,
+            scroll: 0,
+            result: None,
+            rx,
+            cancel: Arc::new(AtomicBool::new(false)),
+            handle: None,
+        };
+        tx.send(UiEvent::Plan(vec!["lint".into(), "ci".into()]))
+            .unwrap();
+        tx.send(UiEvent::Status {
+            task: "lint".into(),
+            status: TaskStatus::Started { dependency: true },
+        })
+        .unwrap();
+        tx.send(UiEvent::Output {
+            task: "lint".into(),
+            stream: Stream::Stdout,
+            line: "ok".into(),
+        })
+        .unwrap();
+        tx.send(UiEvent::Status {
+            task: "lint".into(),
+            status: TaskStatus::Failed {
+                error: "boom".into(),
+            },
+        })
+        .unwrap();
+        view.drain();
+        assert_eq!(view.tasks.len(), 2);
+        assert_eq!(view.tasks[0].state, TaskState::Failed("boom".into()));
+        assert_eq!(view.tasks[1].state, TaskState::Pending);
+        assert_eq!(view.log.len(), 2);
+        assert!(view.is_running());
+        tx.send(UiEvent::Finished(Err("boom".into()))).unwrap();
+        view.drain();
+        assert!(!view.is_running());
+    }
+
+    #[test]
+    fn renders_list_and_run_views() {
+        let mut a = app(vec![section("build"), section("test")]);
+        let mut terminal = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        terminal.draw(|f| ui(f, &mut a)).unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(rendered.contains("build"));
+        assert!(rendered.contains("Details"));
+    }
 }

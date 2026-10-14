@@ -1,13 +1,53 @@
 //! mq_task - Markdown-based task runner CLI
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use colored::*;
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 
-use mq_task::{Config, Error, ExecutionMode, Result, Runner};
+use mq_task::{
+    Config, Error, ExecutionMode, INTERRUPTED, Result, RunOptions, Runner, cache,
+};
 
 const DEFAULT_TASKS_FILE: &str = "README.md";
+
+/// Flags controlling how a task's dependency graph is executed.
+#[derive(Args, Clone, Default)]
+struct ExecFlags {
+    /// Run dependencies concurrently (overrides each task's `parallel` setting)
+    #[arg(long)]
+    parallel: bool,
+
+    /// Maximum number of tasks to run at once (1 forces sequential execution)
+    #[arg(short = 'j', long, value_name = "N")]
+    jobs: Option<usize>,
+
+    /// Keep running independent tasks after one fails
+    #[arg(short = 'k', long)]
+    keep_going: bool,
+
+    /// Ignore `sources`/`outputs` up-to-date checks and always run tasks
+    #[arg(long)]
+    no_cache: bool,
+}
+
+/// Everything needed to run one task from the command line.
+struct RunRequest {
+    file: PathBuf,
+    task: String,
+    config: Option<PathBuf>,
+    runtime: Vec<String>,
+    execution_mode: Option<String>,
+    lang: Option<String>,
+    dry_run: bool,
+    env: Vec<String>,
+    dir: Option<PathBuf>,
+    args: Vec<String>,
+    flags: ExecFlags,
+    watch: bool,
+}
 
 #[derive(Parser)]
 #[command(name = "mq_task")]
@@ -58,6 +98,13 @@ struct Cli {
     #[arg(short, long)]
     all: bool,
 
+    /// Re-run the task whenever its `sources` (or the task file) change
+    #[arg(short = 'w', long)]
+    watch: bool,
+
+    #[command(flatten)]
+    flags: ExecFlags,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -100,6 +147,13 @@ enum Commands {
         /// Working directory to run the task's commands in
         #[arg(short = 'd', long = "dir", value_name = "PATH")]
         dir: Option<PathBuf>,
+
+        /// Re-run the task whenever its `sources` (or the task file) change
+        #[arg(short = 'w', long)]
+        watch: bool,
+
+        #[command(flatten)]
+        flags: ExecFlags,
 
         /// Arguments to pass to the task (use -- to separate: mq_task run task -- arg1 arg2)
         #[arg(last = true)]
@@ -167,7 +221,8 @@ enum Commands {
 fn main() -> ExitCode {
     // Avoid dying by signal on Ctrl+C; some shells (e.g. nushell) treat
     // that as a hard error and trip wrapper tooling like npm/pnpm.
-    let _ = ctrlc::set_handler(|| {});
+    // The flag lets long-running loops such as `--watch` shut down.
+    let _ = ctrlc::set_handler(|| INTERRUPTED.store(true, Ordering::SeqCst));
 
     let cli = Cli::parse();
 
@@ -176,6 +231,8 @@ fn main() -> ExitCode {
         Err(err) => {
             let code = match &err {
                 Error::ExecutionFailed(code) => *code,
+                // Same as coreutils `timeout`
+                Error::Timeout(_) => 124,
                 _ => 1,
             };
             eprintln!("{} {}", "Error:".red().bold(), err);
@@ -196,8 +253,10 @@ fn dispatch(cli: Cli) -> Result<()> {
             dry_run,
             env,
             dir,
+            watch,
+            flags,
             args,
-        }) => run_task(
+        }) => run_task(RunRequest {
             file,
             task,
             config,
@@ -208,7 +267,9 @@ fn dispatch(cli: Cli) -> Result<()> {
             env,
             dir,
             args,
-        )?,
+            flags,
+            watch,
+        })?,
         Some(Commands::List {
             file,
             config,
@@ -227,38 +288,27 @@ fn dispatch(cli: Cli) -> Result<()> {
         Some(Commands::Init { output }) => init_config(output)?,
         None => {
             // If no subcommand, check if task is provided
-            if let Some(task) = cli.task {
-                run_task(
-                    cli.file,
-                    task,
-                    cli.config,
-                    cli.runtime,
-                    cli.execution_mode,
-                    cli.lang,
-                    cli.dry_run,
-                    cli.env,
-                    cli.dir,
-                    cli.args,
-                )?;
-            } else {
+            let task = match cli.task {
+                Some(task) => Some(task),
                 // No task given: fall back to the configured default task, if any
-                let config = load_config(cli.config.clone())?;
-                if let Some(default_task) = config.default_task.clone() {
-                    run_task(
-                        cli.file,
-                        default_task,
-                        cli.config,
-                        cli.runtime,
-                        cli.execution_mode,
-                        cli.lang,
-                        cli.dry_run,
-                        cli.env,
-                        cli.dir,
-                        cli.args,
-                    )?;
-                } else {
-                    list_tasks(cli.file, cli.config, cli.lang, cli.all)?;
-                }
+                None => load_config(cli.config.clone())?.default_task,
+            };
+            match task {
+                Some(task) => run_task(RunRequest {
+                    file: cli.file,
+                    task,
+                    config: cli.config,
+                    runtime: cli.runtime,
+                    execution_mode: cli.execution_mode,
+                    lang: cli.lang,
+                    dry_run: cli.dry_run,
+                    env: cli.env,
+                    dir: cli.dir,
+                    args: cli.args,
+                    flags: cli.flags,
+                    watch: cli.watch,
+                })?,
+                None => list_tasks(cli.file, cli.config, cli.lang, cli.all)?,
             }
         }
     }
@@ -266,42 +316,91 @@ fn dispatch(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-/// Run a specific task
-#[allow(clippy::too_many_arguments)]
-fn run_task(
-    markdown_path: PathBuf,
-    task_name: String,
+/// Build a runner from the CLI settings shared by `run` and `tui`.
+fn build_runner(
     config_path: Option<PathBuf>,
-    runtime_overrides: Vec<String>,
-    execution_mode: Option<String>,
-    lang_filter: Option<String>,
+    runtime_overrides: &[String],
+    execution_mode: Option<&str>,
     dry_run: bool,
-    env: Vec<String>,
+    env: &[String],
     dir: Option<PathBuf>,
-    args: Vec<String>,
-) -> Result<()> {
+    no_cache: bool,
+) -> Result<Runner> {
     let mut config = load_config(config_path)?;
 
-    // Parse execution mode if specified
-    let exec_mode = if let Some(mode_str) = execution_mode {
-        Some(ExecutionMode::try_from(mode_str.as_str())?)
-    } else {
-        None
-    };
-
-    // Apply runtime overrides
+    let exec_mode = execution_mode.map(ExecutionMode::try_from).transpose()?;
     if !runtime_overrides.is_empty() {
-        config.apply_runtime_overrides(&runtime_overrides, exec_mode)?;
+        config.apply_runtime_overrides(runtime_overrides, exec_mode)?;
     }
 
     let mut runner = Runner::new(config);
     runner.set_dry_run(dry_run);
-    runner.set_env_overrides(Runner::parse_env_overrides(&env)?);
+    runner.set_env_overrides(Runner::parse_env_overrides(env)?);
     runner.set_working_dir(dir);
+    runner.set_use_cache(!no_cache);
+    Ok(runner)
+}
 
-    runner.run_task_with_lang_filter(&markdown_path, &task_name, &args, lang_filter.as_deref())?;
+/// Run a specific task, once or (with `--watch`) whenever its inputs change
+fn run_task(req: RunRequest) -> Result<()> {
+    let mut runner = build_runner(
+        req.config,
+        &req.runtime,
+        req.execution_mode.as_deref(),
+        req.dry_run,
+        &req.env,
+        req.dir,
+        req.flags.no_cache,
+    )?;
 
-    Ok(())
+    let options = || RunOptions {
+        args: req.args.clone(),
+        lang_filter: req.lang.clone(),
+        parallel: req.flags.parallel,
+        jobs: req.flags.jobs,
+        keep_going: req.flags.keep_going,
+        observer: None,
+        cancel: None,
+    };
+
+    if !req.watch {
+        return runner.run_task_with_options(&req.file, &req.task, options());
+    }
+
+    loop {
+        if let Err(err) = runner.run_task_with_options(&req.file, &req.task, options()) {
+            eprintln!("{} {}", "Error:".red().bold(), err);
+        }
+        if INTERRUPTED.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        let targets = runner.watch_targets(&req.file, &req.task)?;
+        let snapshot = || {
+            let mut all = std::collections::HashMap::new();
+            for target in &targets {
+                all.extend(cache::snapshot(&target.patterns, target.dir.as_deref()));
+            }
+            all
+        };
+        let before = snapshot();
+        println!(
+            "{}",
+            format!("watching {} file(s) — Ctrl+C to stop", before.len()).dimmed()
+        );
+
+        loop {
+            std::thread::sleep(Duration::from_millis(300));
+            if INTERRUPTED.load(Ordering::SeqCst) {
+                return Ok(());
+            }
+            if snapshot() != before {
+                // Let editors finish writing before re-running.
+                std::thread::sleep(Duration::from_millis(100));
+                break;
+            }
+        }
+    }
 }
 
 /// Launch the interactive TUI for task selection

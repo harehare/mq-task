@@ -1,0 +1,5 @@
+:root { --mq-accent: #67b0e8; }
+.content main { max-width: 860px; }
+.content a { color: var(--mq-accent); }
+code.hljs, pre code { font-size: 0.9em; }
+table { width: 100%; }

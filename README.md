@@ -14,6 +14,8 @@ It is implemented using [mq](https://github.com/harehare/mq), a jq-like command-
 
 ![demo](assets/demo.gif)
 
+📖 **Documentation: <https://task.mqlang.org/book/>**
+
 > [!WARNING]
 > `mq-task` is currently under active development.
 

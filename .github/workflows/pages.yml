@@ -1,0 +1,43 @@
+name: Deploy docs
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "docs/**"
+      - "assets/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install mdbook
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
+        with:
+          tool: mdbook
+      - name: Build mdbook
+        run: mdbook build -d ../book
+        working-directory: ./docs/books
+      - name: Copy assets
+        run: |
+          mkdir -p docs/assets
+          cp assets/logo.svg assets/demo.gif assets/og-image.png docs/assets/
+      - name: Deploy
+        uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy docs --project-name=${{ secrets.CLOUDFLARE_PROJECT_NAME }}

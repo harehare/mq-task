@@ -290,7 +290,7 @@ To run several tasks at once, define an aggregate task that depends on them (as 
 ## deploy
 
 ```meta
-if = 'env.CI && os == "linux"'
+if = 'flag("CI") && os() == "linux"'
 ```
 
 ```bash
@@ -300,14 +300,16 @@ if = 'env.CI && os == "linux"'
 
 | Expression | True when |
 |---|---|
-| `env.NAME` | the variable is set and not empty, `0` or `false` |
-| `env.NAME == "x"`, `env.NAME != "x"` | the variable equals / differs from `x` |
-| `os == "linux"` | the OS is `linux`, `macos` or `windows` |
+| `flag("NAME")` | the variable is set and not empty, `0` or `false` |
+| `getenv("NAME") == "x"`, `getenv("NAME") != "x"` | the variable equals / differs from `x` |
+| `os() == "linux"` | the OS is `linux`, `macos` or `windows` |
 | `exists("path")` | the path exists (relative to the task's working directory) |
 | `which("cmd")` | `cmd` is on `PATH` |
-| `!expr`, `a && b`, `a \|\| b` | boolean combinations (no parentheses) |
+| `!expr`, `a && b`, `a \|\| b` | boolean combinations; parentheses group |
 
 Variables are looked up in `--env`, the task's `meta`/`params`, then the process environment.
+
+A condition is an [mq](https://mqlang.org) expression that must evaluate to `true` or `false`, so anything else mq offers (string functions, `contains`, ...) works too. Use `getenv`/`flag` rather than mq's built-in `env()`, which only sees the process environment.
 
 ### Retries and timeouts
 

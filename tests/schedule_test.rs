@@ -687,10 +687,6 @@ fn jobs_limit_caps_concurrency() {
     assert!(t.elapsed().as_millis() >= 780, "took {:?}", t.elapsed());
 }
 
-// ---------------------------------------------------------------------------
-// run_plan: properties
-// ---------------------------------------------------------------------------
-
 fn is_terminal(s: &TaskStatus) -> bool {
     matches!(
         s,

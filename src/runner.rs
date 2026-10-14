@@ -1398,4 +1398,124 @@ echo "deploying"
         assert!(env_vars.contains(&("REGION".to_string(), "eu".to_string())));
         assert!(env_vars.contains(&("MX_ARGS".to_string(), "arg1".to_string())));
     }
+
+    #[rstest::rstest]
+    #[case("env", "env", None)]
+    #[case("  env  ", "env", None)]
+    #[case("env=staging", "env", Some("staging"))]
+    #[case(" env = staging ", "env", Some("staging"))]
+    #[case("env=", "env", Some(""))]
+    #[case("url=http://x?a=b", "url", Some("http://x?a=b"))]
+    #[case("=v", "", Some("v"))]
+    #[case("", "", None)]
+    fn param_def_parse(#[case] raw: &str, #[case] name: &str, #[case] default: Option<&str>) {
+        let p = ParamDef::parse(raw);
+        assert_eq!(p.name, name);
+        assert_eq!(p.default.as_deref(), default);
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn param_def_parse_round_trips(
+            name in "[a-z][a-z0-9_]{0,8}",
+            default in proptest::option::of("[a-zA-Z0-9_./:=-]{0,10}"),
+        ) {
+            let raw = match &default {
+                Some(d) => format!("{name}={d}"),
+                None => name.clone(),
+            };
+            let p = ParamDef::parse(&raw);
+            proptest::prop_assert_eq!(p.name, name);
+            proptest::prop_assert_eq!(p.default, default);
+        }
+    }
+
+    fn named(title: &str, depends: &[&str], aliases: &[&str]) -> Section {
+        Section {
+            title: title.into(),
+            depends: depends.iter().map(|s| s.to_string()).collect(),
+            aliases: aliases.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn namespacing_qualifies_titles_aliases_and_local_deps_only() {
+        let mut sections = vec![
+            named("build", &[], &["b"]),
+            named("test", &["build", "b", "elsewhere:lint", "ghost"], &[]),
+        ];
+        namespace_sections(&mut sections, "lib");
+        assert_eq!(sections[0].title, "lib:build");
+        assert_eq!(sections[0].aliases, ["lib:b"]);
+        assert_eq!(sections[1].title, "lib:test");
+        // A local title or alias is qualified; anything else is left alone.
+        assert_eq!(
+            sections[1].depends,
+            ["lib:build", "lib:b", "elsewhere:lint", "ghost"]
+        );
+    }
+
+    #[test]
+    fn namespacing_is_a_noop_on_empty_input() {
+        let mut sections: Vec<Section> = Vec::new();
+        namespace_sections(&mut sections, "x");
+        assert!(sections.is_empty());
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn namespaced_titles_are_unique_and_prefixed(
+            titles in proptest::collection::btree_set("[a-z]{1,6}", 1..8),
+        ) {
+            let mut sections: Vec<Section> = titles.iter().map(|t| named(t, &[], &[])).collect();
+            // Every task depends on the first one.
+            let first = sections[0].title.clone();
+            for s in sections.iter_mut().skip(1) {
+                s.depends.push(first.clone());
+            }
+            namespace_sections(&mut sections, "ns");
+            for s in &sections {
+                proptest::prop_assert!(s.title.starts_with("ns:"));
+                for d in &s.depends {
+                    proptest::prop_assert_eq!(d, &format!("ns:{}", titles.iter().next().unwrap()));
+                }
+            }
+            // Qualified dependencies still resolve inside the namespaced set.
+            for s in &sections {
+                for d in &s.depends {
+                    proptest::prop_assert!(schedule::find_section(&sections, d).is_some());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn globals_are_prepended_to_task_env_and_fill_missing_dir() {
+        let globals = Globals {
+            env: vec![("G".into(), "1".into()), ("K".into(), "global".into())],
+            dir: Some(PathBuf::from("gdir")),
+            imports: Vec::new(),
+        };
+        let mut with_dir = named("a", &[], &[]);
+        with_dir.env = vec![("K".into(), "task".into())];
+        with_dir.dir = Some(PathBuf::from("own"));
+        let without_dir = named("b", &[], &[]);
+
+        let mut sections = vec![with_dir, without_dir];
+        apply_globals(&mut sections, &globals);
+
+        // Task entries come last, so they win when applied in order.
+        assert_eq!(
+            sections[0].env,
+            [
+                ("G".to_string(), "1".to_string()),
+                ("K".to_string(), "global".to_string()),
+                ("K".to_string(), "task".to_string()),
+            ]
+        );
+        assert_eq!(sections[0].dir, Some(PathBuf::from("own")));
+        assert_eq!(sections[1].dir, Some(PathBuf::from("gdir")));
+        assert_eq!(sections[1].env.len(), 2);
+    }
 }

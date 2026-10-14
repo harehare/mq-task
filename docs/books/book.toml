@@ -1,0 +1,15 @@
+[book]
+authors = ["Takahiro Sato"]
+description = "mq-task documentation: a task runner that executes code blocks in Markdown files by section title."
+language = "en"
+src = "src"
+title = "mq-task — a Markdown task runner"
+
+[output.html]
+additional-css = ["theme/custom.css"]
+default-theme = "navy"
+git-repository-url = "https://github.com/harehare/mq-task"
+no-section-label = true
+preferred-dark-theme = "navy"
+site-url = "/book/"
+smart-punctuation = false

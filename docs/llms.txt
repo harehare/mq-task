@@ -1,0 +1,28 @@
+# mq-task
+
+> mq-task is a task runner that executes code blocks in Markdown files, selected by section title. Built on mq (https://mqlang.org/). Supports dependencies, parallel execution, conditions, retries, timeouts, output passing, imports, caching, watch mode, a dependency graph, shell completions and an interactive TUI.
+
+## Docs
+
+- [Introduction](https://task.mqlang.org/book/): Overview and features
+- [Install](https://task.mqlang.org/book/start/install.html): Install with Cargo
+- [Quick Start](https://task.mqlang.org/book/start/quickstart.html): Define and run a first task
+- [Configuration](https://task.mqlang.org/book/start/configuration.html): mq-task.toml runtimes and execution modes
+- [Writing Tasks](https://task.mqlang.org/book/guide/tasks.html): Headings as tasks, code blocks, meta blocks
+- [Dependencies](https://task.mqlang.org/book/guide/dependencies.html): depends
+- [Parallel Execution](https://task.mqlang.org/book/guide/parallel.html): parallel, --parallel, -j, -k
+- [Conditions](https://task.mqlang.org/book/guide/conditions.html): if expressions
+- [Retries and Timeouts](https://task.mqlang.org/book/guide/retries-timeouts.html): retries, retry_delay, timeout
+- [Passing Output Between Tasks](https://task.mqlang.org/book/guide/output.html): capture, MX_OUTPUT_<TASK>
+- [Importing Tasks](https://task.mqlang.org/book/guide/imports.html): imports
+- [Caching and Watch Mode](https://task.mqlang.org/book/guide/cache-watch.html): sources, outputs, --watch
+- [Parameters, Env and Working Directory](https://task.mqlang.org/book/guide/params-env.html): params, env, dir
+- [Interactive TUI](https://task.mqlang.org/book/guide/tui.html): mq-task tui
+- [Dependency Graph](https://task.mqlang.org/book/guide/graph.html): mq-task graph
+- [Meta keys](https://task.mqlang.org/book/reference/meta.html): All meta keys
+- [CLI](https://task.mqlang.org/book/reference/cli.html): Commands and options
+- [Exit codes](https://task.mqlang.org/book/reference/exit-codes.html): Exit code behaviour
+
+## Source
+
+- [GitHub](https://github.com/harehare/mq-task)

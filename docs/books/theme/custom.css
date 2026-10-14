@@ -1,5 +1,132 @@
-:root { --mq-accent: #67b0e8; }
-.content main { max-width: 860px; }
-.content a { color: var(--mq-accent); }
-code.hljs, pre code { font-size: 0.9em; }
-table { width: 100%; }
+/* mq-task book theme: same palette as the landing page and mqlang.org.
+   Sidebar, menu bar and content share one background so the page reads as a single surface. */
+
+:root {
+  --mq-accent: #67b8e3;
+  --mq-accent-bright: #85d4ff;
+  --content-max-width: 860px;
+}
+
+/* Light */
+.light,
+html:not(.js) {
+  --bg: #ffffff;
+  --fg: #1e293b;
+  --sidebar-bg: #ffffff;
+  --sidebar-fg: #334155;
+  --sidebar-non-existent: #94a3b8;
+  --sidebar-active: #0369a1;
+  --sidebar-spacer: #e2e8f0;
+  --scrollbar: #cbd5e1;
+  --icons: #64748b;
+  --icons-hover: #0369a1;
+  --links: #0369a1;
+  --inline-code-color: #0369a1;
+  --theme-popup-bg: #ffffff;
+  --theme-popup-border: #cbd5e1;
+  --theme-hover: #f1f5f9;
+  --quote-bg: #f1f5f9;
+  --quote-border: #67b8e3;
+  --table-border-color: #e2e8f0;
+  --table-header-bg: #f1f5f9;
+  --table-alternate-bg: #f8fafc;
+  --searchbar-border-color: #cbd5e1;
+  --searchbar-bg: #ffffff;
+  --searchbar-fg: #1e293b;
+  --searchresults-header-fg: #64748b;
+  --searchresults-border-color: #e2e8f0;
+  --searchresults-li-bg: #f1f5f9;
+  --search-mark-bg: #bae6fd;
+}
+
+/* Dark themes: navy is the default, the rest follow the same rule (sidebar == content) */
+.navy,
+.coal,
+.ayu {
+  --bg: #2a3444;
+  --fg: #e2e8f0;
+  --sidebar-bg: #2a3444;
+  --sidebar-fg: #cbd5e1;
+  --sidebar-non-existent: #64748b;
+  --sidebar-active: var(--mq-accent-bright);
+  --sidebar-spacer: #3d4a5c;
+  --scrollbar: #4a5568;
+  --icons: #94a3b8;
+  --icons-hover: var(--mq-accent-bright);
+  --links: var(--mq-accent-bright);
+  --inline-code-color: var(--mq-accent-bright);
+  --theme-popup-bg: #232e3d;
+  --theme-popup-border: #4a5568;
+  --theme-hover: #3d4a5c;
+  --quote-bg: #232e3d;
+  --quote-border: var(--mq-accent);
+  --table-border-color: #4a5568;
+  --table-header-bg: #3d4a5c;
+  --table-alternate-bg: #2f3a4c;
+  --searchbar-border-color: #4a5568;
+  --searchbar-bg: #232e3d;
+  --searchbar-fg: #e2e8f0;
+  --searchresults-header-fg: #94a3b8;
+  --searchresults-border-color: #4a5568;
+  --searchresults-li-bg: #232e3d;
+  --search-mark-bg: #1d6a96;
+}
+
+html,
+body {
+  background-color: var(--bg);
+  color: var(--fg);
+}
+
+#menu-bar,
+#menu-bar-sticky-container {
+  background-color: var(--bg);
+  border-bottom-color: var(--sidebar-spacer);
+}
+
+.sidebar {
+  background-color: var(--sidebar-bg);
+  border-right: 1px solid var(--sidebar-spacer);
+}
+
+.sidebar .sidebar-resize-handle {
+  background-color: transparent;
+}
+
+.chapter li.chapter-item a.active {
+  color: var(--sidebar-active);
+  font-weight: 600;
+}
+
+/* Code: one step darker than the page in dark themes, one step lighter in light */
+pre,
+.content pre > code,
+pre > .buttons {
+  background-color: #1e293b;
+}
+.light pre,
+.light .content pre > code {
+  background-color: #f1f5f9;
+}
+pre {
+  border: 1px solid var(--sidebar-spacer);
+  border-radius: 8px;
+}
+:not(pre) > code {
+  background-color: rgba(103, 184, 227, 0.12);
+  border-radius: 4px;
+}
+
+.content a {
+  color: var(--links);
+}
+.content main {
+  max-width: var(--content-max-width);
+}
+code.hljs,
+pre code {
+  font-size: 0.9em;
+}
+table {
+  width: 100%;
+}

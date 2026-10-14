@@ -3,64 +3,95 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>mq-task - a task runner for Markdown</title>
+<title>mq-task: a task runner for Markdown</title>
 <meta name="description" content="mq-task runs the code blocks in your Markdown files by section title. Dependencies, parallel execution, conditions, retries, caching and a TUI.">
-<meta property="og:title" content="mq-task - a task runner for Markdown">
+<meta property="og:title" content="mq-task: a task runner for Markdown">
 <meta property="og:description" content="Your README is the task file. Run code blocks by section title.">
 <meta property="og:image" content="https://task.mqlang.org/assets/og-image.png">
 <meta property="og:url" content="https://task.mqlang.org/">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@700&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#0f1720;--panel:#16212d;--fg:#e6edf3;--muted:#9fb0c0;--accent:#67b0e8;--border:#26364a;--code:#0b121a}
-@media (prefers-color-scheme: light){:root{--bg:#fff;--panel:#f4f7fa;--fg:#14202b;--muted:#51606f;--accent:#1565c0;--border:#d8e0e8;--code:#eef2f6}}
+:root{--bg:#2a3444;--panel:#3d4a5c;--panel-hi:#4a5568;--deep:#1e293b;--fg:#e2e8f0;--muted:#94a3b8;--accent:#67b8e3;--bright:#85d4ff;--border:rgba(74,85,104,.5)}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif}
-a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
-.wrap{max-width:1000px;margin:0 auto;padding:0 20px}
-nav{display:flex;align-items:center;gap:20px;padding:16px 0}
-nav .brand{display:flex;align-items:center;gap:10px;font-weight:700;color:var(--fg)}
-nav .brand img{width:28px;height:28px}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.65 Inter,system-ui,-apple-system,"Segoe UI",sans-serif}
+a{color:var(--bright);text-decoration:none}a:hover{text-decoration:underline}
+code{background:rgba(103,184,227,.12);color:var(--bright);padding:1px 6px;border-radius:4px;font-size:.9em}
+.wrap{max-width:1180px;margin:0 auto;padding:0 24px}
+nav{position:sticky;top:0;z-index:10;background:rgba(42,52,68,.9);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+nav .wrap{display:flex;align-items:center;gap:20px;height:64px}
+nav .brand{display:flex;align-items:center;gap:8px;font:700 1.4rem "Space Grotesk",sans-serif;color:var(--bright);letter-spacing:-.02em}
+nav .brand img{width:36px;height:36px}
 nav .sp{flex:1}
-.hero{padding:56px 0 32px;text-align:center}
-.hero h1{font-size:clamp(2rem,5vw,3.2rem);line-height:1.15;margin:0 0 16px}
-.hero p{color:var(--muted);font-size:1.15rem;max-width:640px;margin:0 auto 28px}
-.btn{display:inline-block;padding:10px 20px;border-radius:8px;border:1px solid var(--border);color:var(--fg);margin:4px}
-.gh{width:18px;height:18px;vertical-align:-3px;margin-right:8px}.navgh .gh{margin-right:6px}.btn:hover{border-color:var(--accent);text-decoration:none}.btn.primary{background:var(--accent);border-color:var(--accent);color:#06121c;font-weight:600}
-pre{background:var(--code);border:1px solid var(--border);border-radius:10px;padding:16px;overflow:auto;font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;margin:0}
-section{padding:36px 0}
-h2{font-size:1.6rem;margin:0 0 20px}
+nav a.link{color:var(--muted);font-size:.9rem}nav a.link:hover{color:var(--fg);text-decoration:none}
+.gh{width:18px;height:18px;vertical-align:-3px;margin-right:8px}
+.hero{padding:80px 0 56px;background:linear-gradient(to bottom,rgba(103,184,227,.06),transparent)}
+.hero .wrap{display:grid;grid-template-columns:1fr 1.15fr;gap:48px;align-items:center}
+.hero h1{font:700 clamp(2.4rem,5vw,4rem)/1.02 "Space Grotesk",sans-serif;letter-spacing:-.04em;margin:0 0 20px}
+.hero h1 span{background:linear-gradient(90deg,var(--bright),var(--accent));-webkit-background-clip:text;background-clip:text;color:transparent}
+.hero p{color:var(--muted);font-size:1.15rem;margin:0 0 28px;max-width:520px}
+.btn{display:inline-block;padding:10px 20px;border-radius:8px;border:1px solid var(--panel-hi);color:var(--fg);margin:0 8px 8px 0}
+.btn:hover{border-color:var(--accent);text-decoration:none}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--deep);font-weight:600}
+.install{margin-top:8px}
+.term{background:var(--deep);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:0 20px 50px rgba(0,0,0,.35)}
+.term .bar{display:flex;gap:6px;padding:10px 14px;background:rgba(61,74,92,.5)}
+.term .bar i{width:12px;height:12px;border-radius:50%;background:var(--panel-hi)}
+.term .bar i:nth-child(1){background:#ef4444aa}.term .bar i:nth-child(2){background:#cbd5e1aa}.term .bar i:nth-child(3){background:#67b8e3aa}
+.term img{display:block;width:100%;height:auto}
+pre{background:var(--deep);border:1px solid var(--border);border-radius:12px;padding:18px;overflow:auto;font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;margin:0;color:#cbd5e1}
+section{padding:56px 0}
+.center{text-align:center;max-width:680px;margin:0 auto 40px}
+h2{font-size:2rem;margin:0 0 12px;letter-spacing:-.02em}
+.lead{color:var(--muted)}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
-.card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:18px}
+.card{background:var(--panel);border-radius:10px;padding:22px;transition:background .2s}
+.card:hover{background:var(--panel-hi)}
 .card h3{margin:0 0 6px;font-size:1.05rem}
 .card p{margin:0;color:var(--muted);font-size:.95rem}
-.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;align-items:start}
-.demo img{width:100%;border-radius:12px;border:1px solid var(--border)}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:32px;align-items:center}
 footer{border-top:1px solid var(--border);padding:28px 0;color:var(--muted);font-size:.9rem;text-align:center}
+@media(max-width:860px){.hero .wrap{grid-template-columns:1fr}.hero{padding-top:48px}}
 </style>
 </head>
 <body>
-<div class="wrap">
-  <nav>
+<nav>
+  <div class="wrap">
     <a class="brand" href="/"><img src="assets/logo.svg" alt="">mq-task</a>
+    <a class="link" href="#features">Features</a>
     <span class="sp"></span>
-    <a href="book/">Docs</a>
-    <a href="https://mqlang.org/">mq</a>
-    <a class="navgh" href="https://github.com/harehare/mq-task"><svg class="gh" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61-.546-1.385-1.335-1.755-1.335-1.755-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 21.795 24 17.295 24 12c0-6.63-5.37-12-12-12"/></svg>GitHub</a>
-  </nav>
+    <a class="link" href="book/">Docs</a>
+    <a class="link" href="https://mqlang.org/">mq</a>
+    <a class="link" href="https://github.com/harehare/mq-task"><svg class="gh" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61-.546-1.385-1.335-1.755-1.335-1.755-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 21.795 24 17.295 24 12c0-6.63-5.37-12-12-12"/></svg>GitHub</a>
+  </div>
+</nav>
 
-  <header class="hero">
-    <h1>Your README is the task file.</h1>
-    <p>mq-task runs the code blocks in your Markdown by section title, with dependencies, parallel execution, conditions, retries and caching.</p>
-    <a class="btn primary" href="book/start/quickstart.html">Get started</a>
-    <a class="btn" href="book/">Read the docs</a>
-    <a class="btn" href="https://github.com/harehare/mq-task"><svg class="gh" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61-.546-1.385-1.335-1.755-1.335-1.755-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 21.795 24 17.295 24 12c0-6.63-5.37-12-12-12"/></svg>View on GitHub</a>
-  </header>
+<header class="hero">
+  <div class="wrap">
+    <div>
+      <h1>Your README is<br>the <span>task file.</span></h1>
+      <p>mq-task runs the code blocks in your Markdown by section title, with dependencies, parallel execution, conditions, retries and caching.</p>
+      <a class="btn primary" href="book/start/quickstart.html">Get started</a>
+      <a class="btn" href="book/">Read the docs</a>
+      <a class="btn" href="https://github.com/harehare/mq-task"><svg class="gh" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61-.546-1.385-1.335-1.755-1.335-1.755-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 21.795 24 17.295 24 12c0-6.63-5.37-12-12-12"/></svg>View on GitHub</a>
+      <pre class="install">cargo install --git https://github.com/harehare/mq-task.git</pre>
+    </div>
+    <div class="term">
+      <div class="bar"><i></i><i></i><i></i></div>
+      <img src="assets/demo.gif" alt="mq-task demo">
+    </div>
+  </div>
+</header>
 
-  <section class="two">
+<section>
+  <div class="wrap two">
     <div>
       <h2>Write tasks as Markdown</h2>
-      <p style="color:var(--muted)">A heading is a task, code blocks are its commands, and a <code>meta</code> block adds behaviour. The document stays readable on GitHub.</p>
+      <p class="lead">A heading is a task, code blocks are its commands, and a <code>meta</code> block adds behaviour. The document stays readable on GitHub.</p>
     </div>
 <pre>## build
 
@@ -78,36 +109,38 @@ parallel = true
 ```bash
 echo "all checks passed"
 ```</pre>
-  </section>
+  </div>
+</section>
 
-  <section class="demo">
-    <img src="assets/demo.gif" alt="mq-task demo">
-  </section>
-
-  <section>
-    <h2>Features</h2>
+<section id="features">
+  <div class="wrap">
+    <div class="center"><h2>Features</h2><p class="lead">Everything a task runner needs, without leaving Markdown.</p></div>
     <div class="grid">
       <div class="card"><h3>Dependencies</h3><p>Automatic ordering, shared deps run once, cycles detected.</p></div>
-      <div class="card"><h3>Parallel execution</h3><p>Fan-out / fan-in with <code>-j</code> limits and fail-fast or <code>-k</code> keep-going.</p></div>
+      <div class="card"><h3>Parallel execution</h3><p>Fan-out and fan-in with <code>-j</code> limits, fail-fast or <code>-k</code> keep-going.</p></div>
       <div class="card"><h3>Conditions</h3><p><code>if</code> on env, OS, files or commands on <code>PATH</code>.</p></div>
       <div class="card"><h3>Retries &amp; timeouts</h3><p>Handle flaky steps; whole process trees are stopped on timeout.</p></div>
       <div class="card"><h3>Output passing</h3><p>Capture a task's stdout for its dependents.</p></div>
       <div class="card"><h3>Imports</h3><p>Compose task files: <code>checks:lint</code>.</p></div>
-      <div class="card"><h3>Caching &amp; watch</h3><p>Skip up-to-date tasks with <code>sources</code>/<code>outputs</code>; re-run on change.</p></div>
+      <div class="card"><h3>Caching &amp; watch</h3><p>Skip up-to-date tasks with <code>sources</code> and <code>outputs</code>; re-run on change.</p></div>
       <div class="card"><h3>Graph &amp; completions</h3><p>Text or Mermaid dependency graph, shell completions.</p></div>
       <div class="card"><h3>Interactive TUI</h3><p>Search, details, argument prompts and live per-task progress.</p></div>
     </div>
-  </section>
+  </div>
+</section>
 
-  <section>
+<section>
+  <div class="wrap center" style="margin-bottom:0">
     <h2>Any language</h2>
-    <p style="color:var(--muted)">Bash, Python, Node, Ruby, Go, jq, mq. Configure a runtime per fence language in <code>mq-task.toml</code>.</p>
-  </section>
+    <p class="lead">Bash, Python, Node, Ruby, Go, jq, mq. Configure a runtime per fence language in <code>mq-task.toml</code>.</p>
+  </div>
+</section>
 
-  <footer>
+<footer>
+  <div class="wrap">
     MIT licensed · Built on <a href="https://mqlang.org/">mq</a> ·
     <a href="https://github.com/harehare/mq-task">github.com/harehare/mq-task</a>
-  </footer>
-</div>
+  </div>
+</footer>
 </body>
 </html>

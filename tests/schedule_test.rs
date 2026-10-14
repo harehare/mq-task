@@ -441,17 +441,7 @@ fn a_failure_stops_the_run_and_returns_the_exit_code(#[case] jobs: usize) {
     assert!(!started(&r, "after"));
     assert!(!started(&r, "root"));
     assert!(r.rec.stdout("after").is_empty());
-}
-
-#[test]
-fn parallel_fail_fast_reports_unstarted_tasks_as_cancelled() {
-    let sections = vec![
-        bash("bad", &[], "exit 1"),
-        bash("after", &["bad"], "true"),
-        bash("root", &["after"], "true"),
-    ];
-    let r = run(&sections, "root", 4, false);
-    assert!(r.result.is_err());
+    // Tasks that never ran are reported, so a UI does not show them pending.
     assert!(cancelled(&r, "after"));
     assert!(cancelled(&r, "root"));
 }
@@ -516,6 +506,8 @@ fn a_pre_raised_cancel_flag_runs_nothing() {
     assert!(matches!(r.result, Err(Error::Cancelled)));
     assert!(!started(&r, "a"));
     assert!(r.rec.stdout("a").is_empty());
+    assert!(cancelled(&r, "a"));
+    assert!(cancelled(&r, "b"));
 }
 
 #[rstest]

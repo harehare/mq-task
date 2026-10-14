@@ -205,15 +205,21 @@ pub fn run_plan(exec: &Executor, plan: &Plan, opts: &ScheduleOptions) -> Result<
 
     if jobs == 1 {
         let mut blocked = vec![false; n];
+        // Tell the observer that every task from `from` on was not run.
+        let report_unreached = |from: usize, reason: &str| {
+            for node in &plan.nodes[from..] {
+                opts.observer.status(
+                    &node.section.title,
+                    &TaskStatus::Cancelled {
+                        reason: reason.into(),
+                    },
+                );
+            }
+        };
         for i in 0..n {
             let name = &plan.nodes[i].section.title;
             if cancel.load(Ordering::SeqCst) {
-                opts.observer.status(
-                    name,
-                    &TaskStatus::Cancelled {
-                        reason: "aborted".into(),
-                    },
-                );
+                report_unreached(i, "aborted");
                 return Err(first_err.take().unwrap_or(Error::Cancelled));
             }
             if plan.nodes[i].after.iter().any(|&d| blocked[d]) {
@@ -232,6 +238,7 @@ pub fn run_plan(exec: &Executor, plan: &Plan, opts: &ScheduleOptions) -> Result<
                 Err(e) => {
                     blocked[i] = true;
                     if !opts.keep_going {
+                        report_unreached(i + 1, "a dependency failed or the run was aborted");
                         return Err(e);
                     }
                     first_err.get_or_insert(e);

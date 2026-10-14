@@ -108,7 +108,7 @@ echo "Second arg: $MX_ARG_1"
 
 ### Environment variables and working directory
 
-Like `just`, you can set environment variables and a working directory for a task at invocation time — no declaration needed in the Markdown file:
+Like `just`, you can set environment variables and a working directory for a task at invocation time, with no declaration needed in the Markdown file:
 
 ```bash
 # Set one or more environment variables (repeatable)
@@ -202,13 +202,13 @@ env = ["REGION=prod"]
 ```
 
 ```bash
-echo "$REGION"   # prod — the task's own meta wins
+echo "$REGION"   # prod (the task's own meta wins)
 ```
 
 ## build
 
 ```bash
-echo "$REGION"   # staging — falls back to the document-wide default
+echo "$REGION"   # staging (falls back to the document-wide default)
 ```
 ````
 
@@ -329,7 +329,7 @@ timeout = "5m"       # per attempt; exit code 124 when exceeded
 ```
 ````
 
-Durations accept `ms`, `s`, `m` and `h` (a bare number is seconds). Only runtime failures are retried — missing runtimes or parameters fail immediately. A task with a `timeout` runs in its own process group so the whole process tree is stopped; for that reason it cannot read from the terminal.
+Durations accept `ms`, `s`, `m` and `h` (a bare number is seconds). Only runtime failures are retried; missing runtimes or parameters fail immediately. A task with a `timeout` runs in its own process group so the whole process tree is stopped; for that reason it cannot read from the terminal.
 
 ### Passing output between tasks
 
@@ -398,7 +398,7 @@ cargo build --release
 
 Fingerprints are stored in `.mq-task/cache.json` in the directory `mq-task` runs from (consider git-ignoring `.mq-task/`). `--no-cache` ignores them.
 
-`--watch`/`-w` re-runs the task whenever any `sources` of the task or its dependencies — or the task file itself — change:
+`--watch`/`-w` re-runs the task whenever any `sources` of the task or its dependencies, or the task file itself, change:
 
 ```bash
 mq-task test --watch
@@ -427,7 +427,7 @@ ci [parallel]
 | `↑`/`↓`, `j`/`k` | move |
 | `/` | search (matches titles, aliases, descriptions) |
 | `Enter` | run inside the TUI (prompts for arguments when a param is required) |
-| `a` | run with arguments (`name=value`, positional; quote with `"…"`) |
+| `a` | run with arguments (`name=value`, positional; quote values containing spaces) |
 | `x` | leave the TUI and run in the terminal (interactive stdin works) |
 | `q`/`Esc` | quit |
 
@@ -557,7 +557,7 @@ command = "mq"
 execution_mode = "arg"  # mq uses query as argument
 ```
 
-Use `execution_mode = "stdin"` only when a command needs the code piped in literally (e.g. `psql`, `redis-cli`) — the task script then can't also read from the terminal.
+Use `execution_mode = "stdin"` only when a command needs the code piped in literally (e.g. `psql`, `redis-cli`). The task script then can't also read from the terminal.
 
 You can also mix both formats:
 
@@ -582,7 +582,7 @@ mq-task run Build
 mq-task run --file tasks.md Build
 ```
 
-`default_task` (top-level, outside `[runtimes]`) sets which task runs when `mq-task` is invoked with no task name — see [Aliases and the default task](#aliases-and-the-default-task).
+`default_task` (top-level, outside `[runtimes]`) sets which task runs when `mq-task` is invoked with no task name. See [Aliases and the default task](#aliases-and-the-default-task).
 
 ## Exit codes
 

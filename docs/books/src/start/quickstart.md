@@ -22,7 +22,7 @@ mq-task -f tasks.md hello   # use another file
 
 ## Passing arguments
 
-Arguments after `--` are exposed as `MX_ARGS` (space-joined) and `MX_ARG_0`, `MX_ARG_1`, …
+Arguments after `--` are exposed as `MX_ARGS` (space-joined) and `MX_ARG_0`, and so on
 
 ````markdown
 ## greet

@@ -30,7 +30,7 @@ execution_mode = "arg"
 | Mode | Behaviour |
 |---|---|
 | `file` (default) | Write the code to a temp file and pass it as an argument. stdin stays interactive. |
-| `stdin` | Pipe the code into the command's stdin. The script itself cannot read the terminal. Use for `psql`, `redis-cli`, … |
+| `stdin` | Pipe the code into the command's stdin. The script itself cannot read the terminal. Use for `psql`, `redis-cli` and similar clients |
 | `arg` | Pass the code as a command-line argument (e.g. `jq`, `mq`). |
 
 ## `default_task`

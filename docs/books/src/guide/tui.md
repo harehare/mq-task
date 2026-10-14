@@ -11,7 +11,7 @@ A searchable task list with a details pane (description, dependencies, params, o
 | `↑`/`↓`, `j`/`k` | move |
 | `/` | search titles, aliases, descriptions |
 | `Enter` | run inside the TUI (prompts when a param is required) |
-| `a` | run with arguments (`name=value`, positional; quote with `"…"`) |
+| `a` | run with arguments (`name=value`, positional; quote values containing spaces) |
 | `x` | leave the TUI and run in the terminal (interactive stdin works) |
 | `q`/`Esc` | quit |
 

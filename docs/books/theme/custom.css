@@ -1,9 +1,9 @@
-/* mq-task book theme: same palette as the landing page and mqlang.org.
+/* mq-task book theme: same green palette as the landing page.
    Sidebar, menu bar and content share one background so the page reads as a single surface. */
 
 :root {
-  --mq-accent: #67b8e3;
-  --mq-accent-bright: #85d4ff;
+  --mq-accent: #3DCB7A;
+  --mq-accent-bright: #6EE7A0;
   --content-max-width: 860px;
 }
 
@@ -11,65 +11,65 @@
 .light,
 html:not(.js) {
   --bg: #ffffff;
-  --fg: #1e293b;
+  --fg: #0f1914;
   --sidebar-bg: #ffffff;
-  --sidebar-fg: #334155;
-  --sidebar-non-existent: #94a3b8;
-  --sidebar-active: #0369a1;
-  --sidebar-spacer: #e2e8f0;
-  --scrollbar: #cbd5e1;
-  --icons: #64748b;
-  --icons-hover: #0369a1;
-  --links: #0369a1;
-  --inline-code-color: #0369a1;
+  --sidebar-fg: #2d3d34;
+  --sidebar-non-existent: #8fa498;
+  --sidebar-active: #17803f;
+  --sidebar-spacer: #e8f0ea;
+  --scrollbar: #c3d3c8;
+  --icons: #6f8576;
+  --icons-hover: #17803f;
+  --links: #17803f;
+  --inline-code-color: #17803f;
   --theme-popup-bg: #ffffff;
-  --theme-popup-border: #cbd5e1;
-  --theme-hover: #f1f5f9;
-  --quote-bg: #f1f5f9;
-  --quote-border: #67b8e3;
-  --table-border-color: #e2e8f0;
-  --table-header-bg: #f1f5f9;
-  --table-alternate-bg: #f8fafc;
-  --searchbar-border-color: #cbd5e1;
+  --theme-popup-border: #c3d3c8;
+  --theme-hover: #f1f5f0;
+  --quote-bg: #f1f5f0;
+  --quote-border: #3DCB7A;
+  --table-border-color: #e8f0ea;
+  --table-header-bg: #f1f5f0;
+  --table-alternate-bg: #f7faf7;
+  --searchbar-border-color: #c3d3c8;
   --searchbar-bg: #ffffff;
-  --searchbar-fg: #1e293b;
-  --searchresults-header-fg: #64748b;
-  --searchresults-border-color: #e2e8f0;
-  --searchresults-li-bg: #f1f5f9;
-  --search-mark-bg: #bae6fd;
+  --searchbar-fg: #0f1914;
+  --searchresults-header-fg: #6f8576;
+  --searchresults-border-color: #e8f0ea;
+  --searchresults-li-bg: #f1f5f0;
+  --search-mark-bg: #bbf0d0;
 }
 
 /* Dark themes: navy is the default, the rest follow the same rule (sidebar == content) */
 .navy,
 .coal,
 .ayu {
-  --bg: #2a3444;
-  --fg: #e2e8f0;
-  --sidebar-bg: #2a3444;
-  --sidebar-fg: #cbd5e1;
-  --sidebar-non-existent: #64748b;
+  --bg: #14201a;
+  --fg: #e8f0ea;
+  --sidebar-bg: #14201a;
+  --sidebar-fg: #c3d3c8;
+  --sidebar-non-existent: #6f8576;
   --sidebar-active: var(--mq-accent-bright);
-  --sidebar-spacer: #3d4a5c;
-  --scrollbar: #4a5568;
-  --icons: #94a3b8;
+  --sidebar-spacer: #24372c;
+  --scrollbar: #2f4639;
+  --icons: #8fa498;
   --icons-hover: var(--mq-accent-bright);
   --links: var(--mq-accent-bright);
   --inline-code-color: var(--mq-accent-bright);
-  --theme-popup-bg: #232e3d;
-  --theme-popup-border: #4a5568;
-  --theme-hover: #3d4a5c;
-  --quote-bg: #232e3d;
+  --theme-popup-bg: #1b2c23;
+  --theme-popup-border: #2f4639;
+  --theme-hover: #24372c;
+  --quote-bg: #1b2c23;
   --quote-border: var(--mq-accent);
-  --table-border-color: #4a5568;
-  --table-header-bg: #3d4a5c;
-  --table-alternate-bg: #2f3a4c;
-  --searchbar-border-color: #4a5568;
-  --searchbar-bg: #232e3d;
-  --searchbar-fg: #e2e8f0;
-  --searchresults-header-fg: #94a3b8;
-  --searchresults-border-color: #4a5568;
-  --searchresults-li-bg: #232e3d;
-  --search-mark-bg: #1d6a96;
+  --table-border-color: #2f4639;
+  --table-header-bg: #24372c;
+  --table-alternate-bg: #1f3027;
+  --searchbar-border-color: #2f4639;
+  --searchbar-bg: #1b2c23;
+  --searchbar-fg: #e8f0ea;
+  --searchresults-header-fg: #8fa498;
+  --searchresults-border-color: #2f4639;
+  --searchresults-li-bg: #1b2c23;
+  --search-mark-bg: #17803f;
 }
 
 html,
@@ -102,18 +102,18 @@ body {
 pre,
 .content pre > code,
 pre > .buttons {
-  background-color: #1e293b;
+  background-color: #0f1914;
 }
 .light pre,
 .light .content pre > code {
-  background-color: #f1f5f9;
+  background-color: #f1f5f0;
 }
 pre {
   border: 1px solid var(--sidebar-spacer);
   border-radius: 8px;
 }
 :not(pre) > code {
-  background-color: rgba(103, 184, 227, 0.12);
+  background-color: rgba(61, 203, 122, 0.12);
   border-radius: 4px;
 }
 

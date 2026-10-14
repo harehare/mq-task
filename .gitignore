@@ -93,3 +93,6 @@ example.html
 .serena
 
 work
+
+# Copied from assets/ by the docs workflow; created locally for previewing docs/index.html
+docs/assets

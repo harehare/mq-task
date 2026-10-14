@@ -15,47 +15,53 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@700&display=swap" rel="stylesheet">
 <style>
-:root{--bg:#2a3444;--panel:#3d4a5c;--panel-hi:#4a5568;--deep:#1e293b;--fg:#e2e8f0;--muted:#94a3b8;--accent:#67b8e3;--bright:#85d4ff;--border:rgba(74,85,104,.5)}
+:root{--bg:#14201a;--panel:#24372c;--panel-hi:#2f4639;--deep:#0f1914;--fg:#e8f0ea;--muted:#8fa498;--accent:#3DCB7A;--bright:#6EE7A0;--border:rgba(47,70,57,.5)}
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
 body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.65 Inter,system-ui,-apple-system,"Segoe UI",sans-serif}
 a{color:var(--bright);text-decoration:none}a:hover{text-decoration:underline}
-code{background:rgba(103,184,227,.12);color:var(--bright);padding:1px 6px;border-radius:4px;font-size:.9em}
+code{background:rgba(61,203,122,.12);color:var(--bright);padding:1px 6px;border-radius:2px;font-size:.9em}
 .wrap{max-width:1180px;margin:0 auto;padding:0 24px}
-nav{position:sticky;top:0;z-index:10;background:rgba(42,52,68,.9);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+nav{position:sticky;top:0;z-index:10;background:rgba(20,32,26,.9);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
 nav .wrap{display:flex;align-items:center;gap:20px;height:64px}
 nav .brand{display:flex;align-items:center;gap:8px;font:700 1.4rem "Space Grotesk",sans-serif;color:var(--bright);letter-spacing:-.02em}
+nav .brand:hover{text-decoration:none}
 nav .brand img{width:36px;height:36px}
 nav .sp{flex:1}
 nav a.link{color:var(--muted);font-size:.9rem}nav a.link:hover{color:var(--fg);text-decoration:none}
 .gh{width:18px;height:18px;vertical-align:-3px;margin-right:8px}
-.hero{padding:80px 0 56px;background:linear-gradient(to bottom,rgba(103,184,227,.06),transparent)}
-.hero .wrap{display:grid;grid-template-columns:1fr 1.15fr;gap:48px;align-items:center}
+.hero{padding:80px 0 56px}
+.hero .wrap{display:grid;grid-template-columns:minmax(0,1fr);gap:48px}
+.hero .wrap>div:first-child{max-width:760px;margin:0 auto;text-align:center}
+.hero .wrap>.term{width:100%;max-width:1100px;margin:0 auto}
 .hero h1{font:700 clamp(2.4rem,5vw,4rem)/1.02 "Space Grotesk",sans-serif;letter-spacing:-.04em;margin:0 0 20px}
-.hero h1 span{background:linear-gradient(90deg,var(--bright),var(--accent));-webkit-background-clip:text;background-clip:text;color:transparent}
-.hero p{color:var(--muted);font-size:1.15rem;margin:0 0 28px;max-width:520px}
-.btn{display:inline-block;padding:10px 20px;border-radius:8px;border:1px solid var(--panel-hi);color:var(--fg);margin:0 8px 8px 0}
-.btn:hover{border-color:var(--accent);text-decoration:none}
+.hero h1 span{color:var(--accent)}
+.hero p{color:var(--muted);font-size:1.15rem;margin:0 auto 28px;max-width:600px}
+.btn{display:inline-block;padding:10px 20px;border-radius:2px;border:1px solid var(--panel-hi);color:var(--fg);margin:0 8px 8px 0;transition:background-color .2s,border-color .2s,color .2s,transform .2s}
+.btn:hover{border-color:var(--accent);color:var(--accent);text-decoration:none;transform:translateY(-2px)}
+.btn:active{transform:scale(.98)}
+@media(prefers-reduced-motion:reduce){.btn{transition:none}.btn:hover{transform:none}}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--deep);font-weight:600}
-.install{margin-top:8px}
-.term{background:var(--deep);border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:0 20px 50px rgba(0,0,0,.35)}
-.term .bar{display:flex;gap:6px;padding:10px 14px;background:rgba(61,74,92,.5)}
+.btn.primary:hover{background:var(--panel);border-color:var(--accent);color:var(--accent)}
+.install{display:inline-block;max-width:100%;margin-top:8px;text-align:left}
+.term{background:var(--deep);border:1px solid var(--border);border-radius:8px;overflow:hidden;box-shadow:0 20px 50px rgba(0,0,0,.35)}
+.term .bar{display:flex;gap:6px;padding:10px 14px;background:rgba(36,55,44,.5)}
 .term .bar i{width:12px;height:12px;border-radius:50%;background:var(--panel-hi)}
-.term .bar i:nth-child(1){background:#ef4444aa}.term .bar i:nth-child(2){background:#cbd5e1aa}.term .bar i:nth-child(3){background:#67b8e3aa}
+.term .bar i:nth-child(1){background:#ef4444aa}.term .bar i:nth-child(2){background:#c3d3c8aa}.term .bar i:nth-child(3){background:#3DCB7Aaa}
 .term img{display:block;width:100%;height:auto}
-pre{background:var(--deep);border:1px solid var(--border);border-radius:12px;padding:18px;overflow:auto;font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;margin:0;color:#cbd5e1}
+pre{background:var(--deep);border:1px solid var(--border);border-radius:8px;padding:18px;overflow:auto;font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;margin:0;color:#c3d3c8}
 section{padding:56px 0}
 .center{text-align:center;max-width:680px;margin:0 auto 40px}
 h2{font-size:2rem;margin:0 0 12px;letter-spacing:-.02em}
 .lead{color:var(--muted)}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}
-.card{background:var(--panel);border-radius:10px;padding:22px;transition:background .2s}
+.card{background:var(--panel);border-radius:8px;padding:22px;transition:background .2s}
 .card:hover{background:var(--panel-hi)}
 .card h3{margin:0 0 6px;font-size:1.05rem}
 .card p{margin:0;color:var(--muted);font-size:.95rem}
 .two{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:32px;align-items:center}
 footer{border-top:1px solid var(--border);padding:28px 0;color:var(--muted);font-size:.9rem;text-align:center}
-@media(max-width:860px){.hero .wrap{grid-template-columns:1fr}.hero{padding-top:48px}}
+@media(max-width:860px){.hero{padding-top:48px}}
 </style>
 </head>
 <body>
@@ -64,7 +70,7 @@ footer{border-top:1px solid var(--border);padding:28px 0;color:var(--muted);font
     <a class="brand" href="/"><img src="assets/logo.svg" alt="">mq-task</a>
     <a class="link" href="#features">Features</a>
     <span class="sp"></span>
-    <a class="link" href="book/">Docs</a>
+    <a class="link" href="book/">Documentation</a>
     <a class="link" href="https://mqlang.org/">mq</a>
     <a class="link" href="https://github.com/harehare/mq-task"><svg class="gh" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61-.546-1.385-1.335-1.755-1.335-1.755-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 21.795 24 17.295 24 12c0-6.63-5.37-12-12-12"/></svg>GitHub</a>
   </div>
@@ -78,7 +84,7 @@ footer{border-top:1px solid var(--border);padding:28px 0;color:var(--muted);font
       <a class="btn primary" href="book/start/quickstart.html">Get started</a>
       <a class="btn" href="book/">Read the docs</a>
       <a class="btn" href="https://github.com/harehare/mq-task"><svg class="gh" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.3 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61-.546-1.385-1.335-1.755-1.335-1.755-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 21.795 24 17.295 24 12c0-6.63-5.37-12-12-12"/></svg>View on GitHub</a>
-      <pre class="install">cargo install --git https://github.com/harehare/mq-task.git</pre>
+      <pre class="install">curl -sSL https://raw.githubusercontent.com/harehare/mq-task/refs/heads/main/bin/install.sh | bash</pre>
     </div>
     <div class="term">
       <div class="bar"><i></i><i></i><i></i></div>

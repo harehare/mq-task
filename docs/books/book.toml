@@ -3,7 +3,7 @@ authors = ["Takahiro Sato"]
 description = "mq-task documentation: a task runner that executes code blocks in Markdown files by section title."
 language = "en"
 src = "src"
-title = "mq-task: a Markdown task runner"
+title = "mq-task — a Markdown task runner"
 
 [output.html]
 additional-css = ["theme/custom.css"]

@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" xml:space="preserve" viewBox="0 0 1200 630" width="1200" height="630">
+  <defs>
+    <clipPath id="card">
+      <rect x="664" y="65" width="490" height="500" rx="8"/>
+    </clipPath>
+  </defs>
+
+  <!-- Palette: ground #14201a, panel #1b2c23, line #2a3d32, text #e8f0ea, muted #8fa498, one accent #3DCB7A -->
+  <rect width="1200" height="630" fill="#14201a"/>
+
+  <!-- Logo: checkbox whose tick is the right half of an M -->
+  <g transform="translate(26, 100) scale(1.7)" fill="none" stroke="#3DCB7A" stroke-linejoin="miter" stroke-linecap="butt">
+    <path d="M58 18 L16 18 L16 84 L82 84 L82 46" stroke-width="8"/>
+    <path d="M28 74 L28 44 L46 62 L90 12" stroke-width="9" stroke-miterlimit="6"/>
+  </g>
+
+  <!-- Brand: one text run so "-task" shares the baseline and tracking of "mq" -->
+  <text x="206" y="206"
+    font-family="'IBM Plex Mono', monospace" font-size="84" font-weight="700"
+    letter-spacing="-2" fill="#e8f0ea">mq-task</text>
+
+  <!-- Tagline as a checklist -->
+  <rect x="61" y="282" width="26" height="26" rx="3" fill="#3DCB7A"/>
+  <path d="M66.5 295 L72 300.5 L81.5 289.5" fill="none" stroke="#14201a" stroke-width="3" stroke-linejoin="miter"/>
+  <text x="104" y="308" font-family="'IBM Plex Mono', monospace" font-size="34" font-weight="700" fill="#e8f0ea">Markdown,</text>
+
+  <rect x="62.5" y="326.5" width="23" height="23" rx="2" fill="none" stroke="#3DCB7A" stroke-width="3"/>
+  <rect x="70" y="334" width="8" height="8" fill="#3DCB7A"/>
+  <text x="104" y="352" font-family="'IBM Plex Mono', monospace" font-size="34" font-weight="700" fill="#e8f0ea">but it <tspan fill="#3DCB7A">runs.</tspan></text>
+
+  <!-- Description -->
+  <text x="60" y="414" font-family="'IBM Plex Sans', Arial, sans-serif" font-size="20" fill="#8fa498">Run the code blocks in your Markdown by section title,</text>
+  <text x="60" y="442" font-family="'IBM Plex Sans', Arial, sans-serif" font-size="20" fill="#8fa498">with dependencies, parallel execution, and caching.</text>
+
+  <!-- Command -->
+  <rect x="60.5" y="472.5" width="260" height="48" rx="4" fill="#1b2c23" stroke="#2a3d32"/>
+  <text x="82" y="503" font-family="'IBM Plex Mono', monospace" font-size="17" fill="#3DCB7A">$</text>
+  <text x="102" y="503" font-family="'IBM Plex Mono', monospace" font-size="17" font-weight="500" fill="#e8f0ea">mq-task test</text>
+
+  <!-- README card -->
+  <rect x="664.5" y="65.5" width="489" height="499" rx="8" fill="#1b2c23" stroke="#2a3d32"/>
+  <g clip-path="url(#card)">
+    <text x="688" y="94" font-family="'IBM Plex Mono', monospace" font-size="14" fill="#8fa498">README.md</text>
+    <line x1="664" y1="109.5" x2="1154" y2="109.5" stroke="#2a3d32"/>
+
+    <!-- format: done -->
+    <rect x="690" y="138" width="26" height="26" rx="3" fill="#3DCB7A"/>
+    <path d="M696 151 L701.5 156.5 L711 145.5" fill="none" stroke="#14201a" stroke-width="3" stroke-linejoin="miter"/>
+    <text x="732" y="158" font-family="'IBM Plex Mono', monospace" font-size="20" font-weight="500" fill="#e8f0ea">## format</text>
+    <text x="1130" y="157" text-anchor="end" font-family="'IBM Plex Mono', monospace" font-size="14" fill="#8fa498">done</text>
+    <line x1="688" y1="184.5" x2="1130" y2="184.5" stroke="#24372c"/>
+
+    <!-- lint: done -->
+    <rect x="690" y="204" width="26" height="26" rx="3" fill="#3DCB7A"/>
+    <path d="M696 217 L701.5 222.5 L711 211.5" fill="none" stroke="#14201a" stroke-width="3" stroke-linejoin="miter"/>
+    <text x="732" y="224" font-family="'IBM Plex Mono', monospace" font-size="20" font-weight="500" fill="#e8f0ea">## lint</text>
+    <text x="1130" y="223" text-anchor="end" font-family="'IBM Plex Mono', monospace" font-size="14" fill="#8fa498">done</text>
+    <line x1="688" y1="250.5" x2="1130" y2="250.5" stroke="#24372c"/>
+
+    <!-- test: running -->
+    <rect x="691.5" y="270.5" width="23" height="23" rx="2" fill="none" stroke="#3DCB7A" stroke-width="3"/>
+    <rect x="699" y="278" width="8" height="8" fill="#3DCB7A"/>
+    <text x="732" y="290" font-family="'IBM Plex Mono', monospace" font-size="20" font-weight="700" fill="#e8f0ea">## test</text>
+    <text x="1130" y="289" text-anchor="end" font-family="'IBM Plex Mono', monospace" font-size="14" fill="#3DCB7A">running</text>
+    <line x1="688" y1="316.5" x2="1130" y2="316.5" stroke="#24372c"/>
+
+    <!-- deploy: queued -->
+    <rect x="691.5" y="336.5" width="23" height="23" rx="2" fill="none" stroke="#3a5244" stroke-width="3"/>
+    <text x="732" y="356" font-family="'IBM Plex Mono', monospace" font-size="20" font-weight="500" fill="#5b7466">## deploy</text>
+    <text x="1130" y="355" text-anchor="end" font-family="'IBM Plex Mono', monospace" font-size="14" fill="#5b7466">queued</text>
+
+    <!-- Run output -->
+    <rect x="664" y="420" width="490" height="145" fill="#0f1914"/>
+    <text x="688" y="456" font-family="'IBM Plex Mono', monospace" font-size="16" fill="#3DCB7A">$</text>
+    <text x="708" y="456" font-family="'IBM Plex Mono', monospace" font-size="16" fill="#e8f0ea">mq-task test</text>
+    <text x="688" y="488" font-family="'IBM Plex Mono', monospace" font-size="15" fill="#8fa498">format   done   0.4s</text>
+    <text x="688" y="512" font-family="'IBM Plex Mono', monospace" font-size="15" fill="#8fa498">lint     done   1.2s</text>
+    <text x="688" y="536" font-family="'IBM Plex Mono', monospace" font-size="15" fill="#e8f0ea">test     running</text>
+    <rect x="836" y="523" width="9" height="16" fill="#3DCB7A"/>
+  </g>
+</svg>

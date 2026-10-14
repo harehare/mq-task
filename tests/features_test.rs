@@ -677,3 +677,10 @@ fn invalid_meta_is_reported() {
     assert!(stderr(&out).contains("meta"), "{}", stderr(&out));
 }
 
+#[test]
+fn completions_are_generated() {
+    let dir = workdir("completions");
+    let out = mq_task(&dir, &["completions", "zsh"]);
+    assert!(out.status.success());
+    assert!(stdout(&out).contains("mq-task"));
+}

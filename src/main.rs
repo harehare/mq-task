@@ -1,6 +1,6 @@
 //! mq_task - Markdown-based task runner CLI
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand};
 use colored::*;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -228,6 +228,12 @@ enum Commands {
         format: GraphFormat,
     },
 
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        shell: clap_complete::Shell,
+    },
+
     /// Generate a sample configuration file
     Init {
         /// Output path for configuration file
@@ -309,6 +315,10 @@ fn dispatch(cli: Cli) -> Result<()> {
             config,
             format,
         }) => show_graph(file, config, task, format)?,
+        Some(Commands::Completions { shell }) => {
+            let mut cmd = Cli::command();
+            clap_complete::generate(shell, &mut cmd, "mq-task", &mut std::io::stdout());
+        }
         Some(Commands::Init { output }) => init_config(output)?,
         None => {
             // If no subcommand, check if task is provided

@@ -26,6 +26,7 @@ It is implemented using [mq](https://github.com/harehare/mq), a jq-like command-
 - Importing tasks from other Markdown files
 - Skip up-to-date tasks (`sources`/`outputs`) and `--watch` mode
 - Dependency graph output (`graph`) and shell completions
+- Interactive TUI with search, details, argument prompts, per-task progress and a log pane
 - Named task parameters with defaults, plus positional args
 - Per-run `--env`/`--dir` overrides, plus `meta`-declared defaults for environment variables and working directory (per task or document-wide)
 - Default task, aliases, and private (hidden) tasks
@@ -413,6 +414,20 @@ ci [parallel]
     └── build
 ```
 
+### Interactive TUI
+
+`mq-task tui` shows a searchable task list with a details pane (description, dependencies, params, options, code).
+
+| Key | Action |
+|---|---|
+| `↑`/`↓`, `j`/`k` | move |
+| `/` | search (matches titles, aliases, descriptions) |
+| `Enter` | run inside the TUI (prompts for arguments when a param is required) |
+| `a` | run with arguments (`name=value`, positional; quote with `"…"`) |
+| `x` | leave the TUI and run in the terminal (interactive stdin works) |
+| `q`/`Esc` | quit |
+
+While a task runs, the left pane shows per-task progress (`○` pending, spinner running, `✔`, `✘`, `⊘`, `↻` retry) and the right pane the log. `Tab` switches between the combined log and the selected task's log, `PgUp`/`PgDn` scroll, `q`/`Ctrl+C` aborts, and `r` re-runs. The execution flags (`--parallel`, `-j`, `-k`, `--no-cache`) apply to the TUI too.
 
 ### Shell completions
 

@@ -208,6 +208,9 @@ enum Commands {
         /// Include private tasks (name starts with `_` or `meta` has private = true)
         #[arg(short, long)]
         all: bool,
+
+        #[command(flatten)]
+        flags: ExecFlags,
     },
 
     /// Print the dependency graph of a task (or of all tasks)
@@ -308,7 +311,8 @@ fn dispatch(cli: Cli) -> Result<()> {
             env,
             dir,
             all,
-        }) => run_tui(file, config, lang, dry_run, env, dir, all)?,
+            flags,
+        }) => run_tui(file, config, lang, dry_run, env, dir, all, flags)?,
         Some(Commands::Graph {
             task,
             file,
@@ -447,16 +451,23 @@ fn run_tui(
     env: Vec<String>,
     dir: Option<PathBuf>,
     show_all: bool,
+    flags: ExecFlags,
 ) -> Result<()> {
     let config = load_config(config_path)?;
     mq_task::tui::run_tui(
         markdown_path,
         config,
-        lang_filter,
-        dry_run,
-        env,
-        dir,
-        show_all,
+        mq_task::tui::TuiOptions {
+            lang_filter,
+            dry_run,
+            env,
+            dir,
+            show_all,
+            parallel: flags.parallel,
+            jobs: flags.jobs,
+            keep_going: flags.keep_going,
+            no_cache: flags.no_cache,
+        },
     )?;
     Ok(())
 }

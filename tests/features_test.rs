@@ -621,6 +621,50 @@ echo x >> runs.log
 }
 
 #[test]
+fn graph_prints_tree_and_mermaid() {
+    let dir = workdir("graph");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## lint
+
+```bash
+true
+```
+
+## test
+
+```bash
+true
+```
+
+## ci
+
+```meta
+depends = ["lint", "test"]
+parallel = true
+```
+
+```bash
+true
+```
+"#,
+    );
+    let out = mq_task(&dir, &["graph", "ci", "-f", "tasks.md"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("ci [parallel]"), "{}", text);
+    assert!(text.contains("├── lint") && text.contains("└── test"));
+
+    let out = mq_task(
+        &dir,
+        &["graph", "ci", "-f", "tasks.md", "--format", "mermaid"],
+    );
+    assert!(stdout(&out).starts_with("graph TD"));
+}
+
+#[test]
 fn invalid_meta_is_reported() {
     let dir = workdir("badmeta");
     write(

@@ -13,6 +13,7 @@ use crate::config::Config;
 use crate::error::{Error, Result};
 use crate::events::{ConsoleObserver, RunObserver};
 use crate::exec::Executor;
+use crate::graph::{self, GraphFormat};
 use crate::schedule::{self, ScheduleOptions, build_plan};
 use crate::util::parse_duration;
 
@@ -646,6 +647,21 @@ impl Runner {
             }
         }
         Ok(targets)
+    }
+
+    /// Render the dependency graph of `task` (or of every public task).
+    pub fn dependency_graph<P: AsRef<Path>>(
+        &mut self,
+        markdown_path: P,
+        task: Option<&str>,
+        format: GraphFormat,
+    ) -> Result<String> {
+        let sections = self.load_sections(markdown_path)?;
+        if let Some(name) = task {
+            // Fail loudly on unknown tasks and cycles.
+            build_plan(&sections, name, false)?;
+        }
+        Ok(graph::render(&sections, task, format))
     }
 
     /// List all available tasks (sections) in a Markdown file

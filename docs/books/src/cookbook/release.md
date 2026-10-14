@@ -26,7 +26,7 @@ cargo build --release
 
 ```meta
 depends = ["version", "build"]
-if = 'env.GITHUB_ACTIONS'
+if = 'flag("GITHUB_ACTIONS")'
 ```
 
 ```bash

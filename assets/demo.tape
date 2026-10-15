@@ -17,6 +17,28 @@ Type "clear"
 Enter
 Show
 
+# TUI: live dependency graph
+Type `mq-task tui`
+Enter
+Sleep 1s
+
+Type `/ci`
+Enter
+Sleep 0.5s
+
+Enter
+Sleep 8s
+
+# Back to the list, then quit the TUI
+Type `q`
+Sleep 0.5s
+
+Type `q`
+Sleep 0.5s
+
+Ctrl+L
+Sleep 0.3s
+
 Type `mq-task`
 Enter
 Sleep 1.5s
@@ -44,18 +66,3 @@ Sleep 2.5s
 Type `mq-task deploy -- env=prod`
 Enter
 Sleep 2.5s
-
-# TUI: live dependency graph
-Type `mq-task tui`
-Enter
-Sleep 1s
-
-Type `/ci`
-Enter
-Sleep 0.5s
-
-Enter
-Sleep 8s
-
-Type `q`
-Sleep 0.5s

@@ -25,9 +25,9 @@ It is implemented using [mq](https://github.com/harehare/mq), a jq-like command-
 - Task dependencies with automatic execution ordering
 - Parallel execution of independent dependencies, joined before the dependent task runs
 - Loops (`for` over a list, a glob or a matrix), dependency calls with arguments, and `defer` cleanup
-- Conditions (`if`), retries, timeouts, and passing a task's output to its dependents
+- Conditions (`if`), retries, timeouts, `ignore_error`, confirmation `prompt`s, and passing a task's output to its dependents
 - Importing tasks from other Markdown files
-- Skip up-to-date tasks (`sources`/`outputs`) and `--watch` mode
+- Skip up-to-date tasks (`sources`/`outputs` or custom `status` commands) and `--watch` mode
 - Dependency graph output (`graph`) and shell completions
 - Interactive TUI with search, details, argument prompts, per-task progress and a log pane
 - Named task parameters with defaults, plus positional args

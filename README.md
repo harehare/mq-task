@@ -42,13 +42,13 @@ It is implemented using [mq](https://github.com/harehare/mq), a jq-like command-
 ### Quick Install
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/harehare/mq-task/refs/heads/main/bin/install.sh | bash
+curl -sSL https://task.mqlang.org/install.sh | bash
 ```
 
 The installer will:
-- Download the latest mq binary for your platform
+- Download the latest mq-task binary for your platform and verify its checksum
 - Install it to `~/.local/bin/`
-- Update your shell profile to add mq to your PATH
+- Update your shell profile to add `~/.local/bin` to your PATH
 
 ### Cargo
 

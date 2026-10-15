@@ -5,7 +5,7 @@
 ## Docs
 
 - [Introduction](https://task.mqlang.org/book/): Overview and features
-- [Install](https://task.mqlang.org/book/start/install.html): Install with Cargo
+- [Install](https://task.mqlang.org/book/start/install.html): Install with the install script (curl -sSL https://task.mqlang.org/install.sh | bash) or Cargo
 - [Quick Start](https://task.mqlang.org/book/start/quickstart.html): Define and run a first task
 - [Configuration](https://task.mqlang.org/book/start/configuration.html): mq-task.toml runtimes and execution modes
 - [Writing Tasks](https://task.mqlang.org/book/guide/tasks.html): Headings as tasks, code blocks, meta blocks

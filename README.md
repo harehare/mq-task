@@ -166,20 +166,6 @@ mq-task deploy                        # runs in services/api
 mq-task deploy --dir services/worker  # runs in services/worker instead
 ```
 
-#### `.env` files
-
-`dotenv` loads variables from `.env`-style files, per task or (in the preamble `meta` block) for every task:
-
-````markdown
-## deploy
-
-```meta
-dotenv = [".env", ".env.local"]
-```
-````
-
-Paths are relative to the task's working directory and missing files are ignored. Later files win, `env` in `meta` and `--env` override them, and a variable already set in the process environment is not overridden. Lines are `KEY=value` (optionally `export`-prefixed, quoted, with `#` comments); there is no `$VAR` expansion.
-
 #### Document-wide defaults
 
 A `meta` block placed **before the first heading** in the file applies to every task, not just one. It's useful for defaults you'd otherwise have to repeat in each task's own `meta` block:
@@ -299,97 +285,6 @@ echo "all checks passed"
 
 To run several tasks at once, define an aggregate task that depends on them (as `ci` above).
 
-### Loops
-
-`for` runs a task once per item. Iterations see the item as `MX_ITEM` (and `MX_INDEX`); `as` adds a second name for it.
-
-````markdown
-## convert
-
-```meta
-for = { glob = "assets/*.png" }   # or a list: ["a", "b"]
-```
-
-```bash
-convert "$MX_ITEM" "${MX_ITEM%.png}.webp"
-```
-
-## build
-
-```meta
-for = { matrix = { os = ["linux", "macos"], arch = ["x64", "arm64"] } }
-parallel = true   # run iterations concurrently
-```
-
-```bash
-echo "building for $MX_OS/$MX_ARCH"
-```
-````
-
-- Iterations run sequentially unless `parallel = true` (or `--parallel`/`-j N`); the first failure aborts, `--keep-going` runs the rest
-- Each iteration is cached, retried and timed out on its own; tasks that depend on a looped task wait for all iterations
-- Matrix axes are exposed as `MX_<AXIS>`; with `capture = true` dependents see all iterations' output joined by newlines
-- A loop with no items is skipped
-
-### Calling a dependency with arguments
-
-````markdown
-## deploy
-
-```meta
-params = ["env", "region=us"]
-```
-
-```bash
-echo "deploying to $MX_PARAM_ENV ($MX_PARAM_REGION)"
-```
-
-## release
-
-```meta
-depends = ["deploy staging", "deploy env=prod 'region=eu west'"]
-```
-````
-
-Arguments are bound like command-line arguments (`name=value` or positional; quote values containing spaces). The same task called with different arguments runs once per distinct list.
-
-### Cleanup with `defer`
-
-Tasks listed in `defer` run after the task body, whether it succeeded or failed:
-
-````markdown
-## integration
-
-```meta
-defer = ["cleanup"]
-```
-
-```bash
-docker compose up -d
-./run-integration-tests.sh
-```
-````
-
-Deferred tasks run in the order listed, only once the task has actually started (not when it is skipped), and may take arguments (`"notify status=done"`). If the body succeeded but a deferred task fails, the task fails.
-
-### Confirmation prompts
-
-`prompt` asks before a task runs; `--yes`/`-y` answers yes without asking (needed for parallel runs, the TUI and CI):
-
-````markdown
-## deploy
-
-```meta
-prompt = "Deploy to production?"
-```
-
-```bash
-./deploy.sh
-```
-````
-
-Anything other than `y`/`yes` declines and fails the task. A looped task asks once, and tasks skipped by `if` or because they are up to date never ask.
-
 ### Conditions
 
 `if` skips a task when its condition is false. A skipped task does **not** block the tasks that depend on it.
@@ -436,8 +331,6 @@ timeout = "5m"       # per attempt; exit code 124 when exceeded
 ````
 
 Durations accept `ms`, `s`, `m` and `h` (a bare number is seconds). Only runtime failures are retried; missing runtimes or parameters fail immediately. A task with a `timeout` runs in its own process group so the whole process tree is stopped; for that reason it cannot read from the terminal.
-
-Set `ignore_error = true` to let a task fail without failing the run: the failure (after retries) is reported on stderr, dependents still run and the exit code stays `0`. Missing runtimes/parameters and cancellation are never ignored.
 
 ### Passing output between tasks
 
@@ -506,22 +399,6 @@ cargo build --release
 
 Fingerprints are stored in `.mq-task/cache.json` in the directory `mq-task` runs from (consider git-ignoring `.mq-task/`). `--no-cache` ignores them.
 
-For custom checks, `status` lists shell commands; the task is skipped when all of them exit `0`:
-
-````markdown
-## install
-
-```meta
-status = ["test -d node_modules"]
-```
-
-```bash
-npm ci
-```
-````
-
-Commands run in the task's working directory and environment. `status` is checked before `sources`/`outputs`, and `--no-cache` ignores it.
-
 `--watch`/`-w` re-runs the task whenever any `sources` of the task or its dependencies, or the task file itself, change:
 
 ```bash
@@ -555,7 +432,7 @@ ci [parallel]
 | `x` | leave the TUI and run in the terminal (interactive stdin works) |
 | `q`/`Esc` | quit |
 
-While a task runs, the top pane draws the dependency graph as a left-to-right workflow (one stage per column, each task showing its state `○` pending, spinner running, `✔`, `✘`, `⊘`, `↻` retry and its elapsed time) and the bottom pane the log. Arrow keys (or `hjkl`) move the selection, `v` switches to a flat task list, `Tab` switches between the combined log and the selected task's log, `PgUp`/`PgDn` scroll, `q`/`Ctrl+C` aborts, and `r` re-runs. The execution flags (`--parallel`, `-j`, `-k`, `--no-cache`, `--yes`) apply to the TUI too.
+While a task runs, the top pane draws the dependency graph as a left-to-right workflow (one stage per column, each task showing its state `○` pending, spinner running, `✔`, `✘`, `⊘`, `↻` retry and its elapsed time) and the bottom pane the log. Arrow keys (or `hjkl`) move the selection, `v` switches to a flat task list, `Tab` switches between the combined log and the selected task's log, `PgUp`/`PgDn` scroll, `q`/`Ctrl+C` aborts, and `r` re-runs. The execution flags (`--parallel`, `-j`, `-k`, `--no-cache`) apply to the TUI too.
 
 ### Shell completions
 

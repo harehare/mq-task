@@ -431,7 +431,7 @@ ci [parallel]
 | `x` | leave the TUI and run in the terminal (interactive stdin works) |
 | `q`/`Esc` | quit |
 
-While a task runs, the left pane shows per-task progress (`○` pending, spinner running, `✔`, `✘`, `⊘`, `↻` retry) and the right pane the log. `Tab` switches between the combined log and the selected task's log, `PgUp`/`PgDn` scroll, `q`/`Ctrl+C` aborts, and `r` re-runs. The execution flags (`--parallel`, `-j`, `-k`, `--no-cache`) apply to the TUI too.
+While a task runs, the top pane draws the dependency graph as a left-to-right workflow (one stage per column, each task showing its state `○` pending, spinner running, `✔`, `✘`, `⊘`, `↻` retry and its elapsed time) and the bottom pane the log. Arrow keys (or `hjkl`) move the selection, `v` switches to a flat task list, `Tab` switches between the combined log and the selected task's log, `PgUp`/`PgDn` scroll, `q`/`Ctrl+C` aborts, and `r` re-runs. The execution flags (`--parallel`, `-j`, `-k`, `--no-cache`) apply to the TUI too.
 
 ### Shell completions
 

@@ -5,7 +5,7 @@ Require echo
 Set Shell "zsh"
 Set FontSize 24
 Set Width 1200
-Set Height 600
+Set Height 800
 Set TypingSpeed 50ms
 Set FontFamily "Hack Nerd Font"
 Set Padding 16
@@ -44,3 +44,18 @@ Sleep 2.5s
 Type `mq-task deploy -- env=prod`
 Enter
 Sleep 2.5s
+
+# TUI: live dependency graph
+Type `mq-task tui`
+Enter
+Sleep 1s
+
+Type `/ci`
+Enter
+Sleep 0.5s
+
+Enter
+Sleep 8s
+
+Type `q`
+Sleep 0.5s

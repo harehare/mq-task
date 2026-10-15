@@ -13,6 +13,7 @@
 - [Parallel Execution](https://task.mqlang.org/book/guide/parallel.html): parallel, --parallel, -j, -k
 - [Loops](https://task.mqlang.org/book/guide/loops.html): for, as, glob, matrix, MX_ITEM, MX_INDEX
 - [Cleanup with defer](https://task.mqlang.org/book/guide/defer.html): defer
+- [Confirmation Prompts](https://task.mqlang.org/book/guide/prompts.html): prompt, --yes, -y
 - [Conditions](https://task.mqlang.org/book/guide/conditions.html): if expressions
 - [Retries and Timeouts](https://task.mqlang.org/book/guide/retries-timeouts.html): retries, retry_delay, timeout
 - [Passing Output Between Tasks](https://task.mqlang.org/book/guide/output.html): capture, MX_OUTPUT_<TASK>

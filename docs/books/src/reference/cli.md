@@ -32,3 +32,4 @@ mq-task [OPTIONS] [TASK] [-- <ARGS>...] [COMMAND]
 | `-j, --jobs <N>` | Max concurrent tasks |
 | `-k, --keep-going` | Continue independent tasks after a failure |
 | `--no-cache` | Ignore up-to-date checks |
+| `-y`, `--yes` | Answer yes to every `prompt` |

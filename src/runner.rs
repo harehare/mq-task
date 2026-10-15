@@ -185,6 +185,9 @@ struct TaskMeta {
     /// Treat a failed run (after retries) as success
     #[serde(default)]
     ignore_error: bool,
+    /// Ask for confirmation before running, e.g. `prompt = "Deploy to production?"`
+    #[serde(default)]
+    prompt: Option<String>,
 }
 
 /// A named task parameter, e.g. `params = ["env=staging", "verbose"]`.
@@ -278,6 +281,10 @@ pub struct Section {
     /// fail the task, block its dependents or change the exit code
     #[serde(default)]
     pub ignore_error: bool,
+    /// Confirmation message; the task runs only after the user answers yes
+    /// (or `--yes` is given)
+    #[serde(default)]
+    pub prompt: Option<String>,
 }
 
 /// Document-wide settings found in the preamble `meta` block.
@@ -350,6 +357,11 @@ impl Runner {
     /// Enable or disable `sources`/`outputs` up-to-date checks (default: on)
     pub fn set_use_cache(&mut self, use_cache: bool) {
         self.exec.use_cache = use_cache;
+    }
+
+    /// Answer yes to every `prompt` without asking (`--yes`).
+    pub fn set_assume_yes(&mut self, assume_yes: bool) {
+        self.exec.assume_yes = assume_yes;
     }
 
     /// Set environment variables injected into every task process for this run,
@@ -599,6 +611,7 @@ impl Runner {
             loop_var: meta.loop_var,
             defer: meta.defer,
             ignore_error: meta.ignore_error,
+            prompt: meta.prompt,
         })
     }
 
@@ -1821,5 +1834,11 @@ true
         assert!(sections[0].ignore_error);
         let md = "## t\n\n```bash\ntrue\n```\n";
         assert!(!parse(md).unwrap()[0].ignore_error);
+    }
+
+    #[test]
+    fn parses_prompt() {
+        let md = "## t\n\n```meta\nprompt = \"Really?\"\n```\n\n```bash\ntrue\n```\n";
+        assert_eq!(parse(md).unwrap()[0].prompt.as_deref(), Some("Really?"));
     }
 }

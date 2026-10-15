@@ -1194,3 +1194,163 @@ true
     let out = mq_task(&dir, &["-f", "tasks.md", "needs-param"]);
     assert!(!out.status.success());
 }
+
+/// Run `mq-task` with `input` written to its stdin.
+fn mq_task_stdin(dir: &Path, args: &[&str], input: &str) -> Output {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mq-task"))
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+const PROMPT_TASKS: &str = r#"
+## deploy
+
+```meta
+prompt = "Deploy to production?"
+```
+
+```bash
+echo deploying
+```
+
+## each
+
+```meta
+prompt = "Run for all?"
+for = ["a", "b", "c"]
+```
+
+```bash
+echo "item $MX_ITEM"
+```
+"#;
+
+#[test]
+fn prompt_runs_the_task_only_when_confirmed() {
+    let dir = workdir("prompt");
+    write(&dir, "tasks.md", PROMPT_TASKS);
+
+    let yes = mq_task_stdin(&dir, &["-f", "tasks.md", "deploy"], "y\n");
+    assert!(yes.status.success(), "{}", stderr(&yes));
+    assert!(stdout(&yes).contains("deploying"));
+    assert!(stderr(&yes).contains("Deploy to production?"));
+
+    let no = mq_task_stdin(&dir, &["-f", "tasks.md", "deploy"], "n\n");
+    assert!(!no.status.success());
+    assert!(!stdout(&no).contains("deploying"));
+    assert!(stderr(&no).contains("not confirmed"), "{}", stderr(&no));
+
+    // EOF counts as "no".
+    let eof = mq_task(&dir, &["-f", "tasks.md", "deploy"]);
+    assert!(!eof.status.success());
+    assert!(!stdout(&eof).contains("deploying"));
+}
+
+#[test]
+fn yes_flag_skips_prompts() {
+    let dir = workdir("prompt-yes");
+    write(&dir, "tasks.md", PROMPT_TASKS);
+    for flag in ["--yes", "-y"] {
+        let out = mq_task(&dir, &["-f", "tasks.md", "deploy", flag]);
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert!(stdout(&out).contains("deploying"));
+    }
+}
+
+#[test]
+fn a_looped_task_is_confirmed_once() {
+    let dir = workdir("prompt-loop");
+    write(&dir, "tasks.md", PROMPT_TASKS);
+    let out = mq_task_stdin(&dir, &["-f", "tasks.md", "each"], "y\n");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    for item in ["a", "b", "c"] {
+        assert!(text.contains(&format!("item {}", item)), "{}", text);
+    }
+}
+
+#[test]
+fn prompts_cannot_be_asked_in_parallel_runs() {
+    let dir = workdir("prompt-parallel");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## deploy
+
+```meta
+prompt = "Sure?"
+```
+
+```bash
+echo deploying
+```
+
+## all
+
+```meta
+depends = ["deploy"]
+parallel = true
+```
+
+```bash
+echo done
+```
+"#,
+    );
+    let out = mq_task_stdin(&dir, &["-f", "tasks.md", "all"], "y\n");
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("--yes"), "{}", stderr(&out));
+    assert!(!stdout(&out).contains("deploying"));
+
+    let out = mq_task(&dir, &["-f", "tasks.md", "all", "--yes"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("deploying"));
+}
+
+#[test]
+fn dry_run_does_not_prompt() {
+    let dir = workdir("prompt-dry");
+    write(&dir, "tasks.md", PROMPT_TASKS);
+    let out = mq_task(&dir, &["-f", "tasks.md", "deploy", "--dry-run"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("[dry-run] prompt: Deploy to production?"));
+}
+
+#[test]
+fn a_skipped_task_does_not_prompt() {
+    let dir = workdir("prompt-skipped");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## deploy
+
+```meta
+prompt = "Sure?"
+if = 'flag("NEVER_SET_FLAG")'
+```
+
+```bash
+echo deploying
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "deploy"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!stderr(&out).contains("Sure?"));
+}

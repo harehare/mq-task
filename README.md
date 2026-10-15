@@ -358,6 +358,24 @@ docker compose up -d
 
 Deferred tasks run in the order listed, only once the task has actually started (not when it is skipped), and may take arguments (`"notify status=done"`). If the body succeeded but a deferred task fails, the task fails.
 
+### Confirmation prompts
+
+`prompt` asks before a task runs; `--yes`/`-y` answers yes without asking (needed for parallel runs, the TUI and CI):
+
+````markdown
+## deploy
+
+```meta
+prompt = "Deploy to production?"
+```
+
+```bash
+./deploy.sh
+```
+````
+
+Anything other than `y`/`yes` declines and fails the task. A looped task asks once, and tasks skipped by `if` or because they are up to date never ask.
+
 ### Conditions
 
 `if` skips a task when its condition is false. A skipped task does **not** block the tasks that depend on it.
@@ -507,7 +525,7 @@ ci [parallel]
 | `x` | leave the TUI and run in the terminal (interactive stdin works) |
 | `q`/`Esc` | quit |
 
-While a task runs, the top pane draws the dependency graph as a left-to-right workflow (one stage per column, each task showing its state `○` pending, spinner running, `✔`, `✘`, `⊘`, `↻` retry and its elapsed time) and the bottom pane the log. Arrow keys (or `hjkl`) move the selection, `v` switches to a flat task list, `Tab` switches between the combined log and the selected task's log, `PgUp`/`PgDn` scroll, `q`/`Ctrl+C` aborts, and `r` re-runs. The execution flags (`--parallel`, `-j`, `-k`, `--no-cache`) apply to the TUI too.
+While a task runs, the top pane draws the dependency graph as a left-to-right workflow (one stage per column, each task showing its state `○` pending, spinner running, `✔`, `✘`, `⊘`, `↻` retry and its elapsed time) and the bottom pane the log. Arrow keys (or `hjkl`) move the selection, `v` switches to a flat task list, `Tab` switches between the combined log and the selected task's log, `PgUp`/`PgDn` scroll, `q`/`Ctrl+C` aborts, and `r` re-runs. The execution flags (`--parallel`, `-j`, `-k`, `--no-cache`, `--yes`) apply to the TUI too.
 
 ### Shell completions
 

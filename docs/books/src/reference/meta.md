@@ -13,6 +13,7 @@ A fenced block with the language `meta` (TOML) in a task section. Unknown or inv
 | `retries` | integer | Extra attempts after a failure |
 | `retry_delay` | duration | Wait between attempts (default `1s`) |
 | `timeout` | duration | Per-attempt limit; exit `124` |
+| `prompt` | string | Ask for confirmation before running ([Prompts](../guide/prompts.md)) |
 | `ignore_error` | bool | Treat a failed run as success ([Retries and Timeouts](../guide/retries-timeouts.md#ignoring-failures)) |
 | `capture` | bool | Expose stdout as `MX_OUTPUT_<TASK>` to dependents |
 | `sources` | array of globs | Input files for up-to-date checks and `--watch` |

@@ -31,6 +31,10 @@ struct ExecFlags {
     /// Ignore `sources`/`outputs` up-to-date checks and always run tasks
     #[arg(long)]
     no_cache: bool,
+
+    /// Answer yes to every `prompt` without asking
+    #[arg(short = 'y', long)]
+    yes: bool,
 }
 
 /// Everything needed to run one task from the command line.
@@ -362,7 +366,7 @@ fn build_runner(
     dry_run: bool,
     env: &[String],
     dir: Option<PathBuf>,
-    no_cache: bool,
+    flags: &ExecFlags,
 ) -> Result<Runner> {
     let mut config = load_config(config_path)?;
 
@@ -375,7 +379,8 @@ fn build_runner(
     runner.set_dry_run(dry_run);
     runner.set_env_overrides(Runner::parse_env_overrides(env)?);
     runner.set_working_dir(dir);
-    runner.set_use_cache(!no_cache);
+    runner.set_use_cache(!flags.no_cache);
+    runner.set_assume_yes(flags.yes);
     Ok(runner)
 }
 
@@ -388,7 +393,7 @@ fn run_task(req: RunRequest) -> Result<()> {
         req.dry_run,
         &req.env,
         req.dir,
-        req.flags.no_cache,
+        &req.flags,
     )?;
 
     let options = || RunOptions {
@@ -467,6 +472,7 @@ fn run_tui(
             jobs: flags.jobs,
             keep_going: flags.keep_going,
             no_cache: flags.no_cache,
+            yes: flags.yes,
         },
     )?;
     Ok(())

@@ -4,12 +4,13 @@
 //! [`Executor`] holds no mq engine state, so it is `Sync` and can be shared
 //! by the worker threads of a parallel run.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::cache;
@@ -101,6 +102,10 @@ pub struct Executor {
     pub use_cache: bool,
     /// Distinguishes cache entries of different task files.
     pub cache_scope: String,
+    /// Answer yes to `prompt`s without asking.
+    pub assume_yes: bool,
+    /// Tasks already confirmed in this run, so a loop asks only once.
+    confirmed: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Executor {
@@ -114,6 +119,8 @@ impl Executor {
             global_dir: None,
             use_cache: true,
             cache_scope: String::new(),
+            assume_yes: false,
+            confirmed: Arc::default(),
         }
     }
 
@@ -323,6 +330,10 @@ impl Executor {
             return Ok(NodeOutcome::Skipped);
         }
 
+        if let Some(message) = &section.prompt {
+            self.confirm(section, message, io).map_err(fail)?;
+        }
+
         let started = Instant::now();
         let mut ignored = false;
         let body = match self.run_with_retries(p, &task_env, io) {
@@ -365,6 +376,36 @@ impl Executor {
             .capture
             .then(|| output.trim_end_matches(['\n', '\r']).to_string());
         Ok(NodeOutcome::Done { output })
+    }
+
+    /// Ask the user to confirm a task's `prompt`. Dry runs and `--yes` skip
+    /// the question; runs without a terminal (parallel, TUI) cannot ask.
+    fn confirm(&self, section: &Section, message: &str, io: &TaskIo) -> Result<()> {
+        if self.dry_run {
+            println!("[dry-run] prompt: {}", message);
+            return Ok(());
+        }
+        if self.assume_yes {
+            return Ok(());
+        }
+        let mut confirmed = self.confirmed.lock().unwrap_or_else(|e| e.into_inner());
+        if confirmed.contains(&section.title) {
+            return Ok(());
+        }
+        if io.piped {
+            return Err(Error::ConfirmationRequired(section.title.clone()));
+        }
+
+        eprint!("? {} [y/N] ", message);
+        let _ = std::io::stderr().flush();
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer).map_err(Error::Io)?;
+        if matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+            confirmed.insert(section.title.clone());
+            Ok(())
+        } else {
+            Err(Error::Declined(section.title.clone()))
+        }
     }
 
     /// Run a task's code blocks, retrying runtime failures per `retries`.

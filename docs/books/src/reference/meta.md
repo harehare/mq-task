@@ -21,6 +21,7 @@ A fenced block with the language `meta` (TOML) in a task section. Unknown or inv
 | `params` | array of strings | Named parameters (`name` required, `name=value` default) |
 | `env` | array of `KEY=VALUE` | Default environment variables |
 | `dir` | string | Working directory |
+| `dotenv` | array of paths | `.env` files to load ([guide](../guide/params-env.md#env-files)) |
 | `alias` | array of strings | Alternate names |
 | `private` | bool | Hide from listings |
 | `imports` | array of paths | Document-wide only: files to import |

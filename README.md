@@ -31,7 +31,7 @@ It is implemented using [mq](https://github.com/harehare/mq), a jq-like command-
 - Dependency graph output (`graph`) and shell completions
 - Interactive TUI with search, details, argument prompts, per-task progress and a log pane
 - Named task parameters with defaults, plus positional args
-- Per-run `--env`/`--dir` overrides, plus `meta`-declared defaults for environment variables and working directory (per task or document-wide)
+- Per-run `--env`/`--dir` overrides, plus `meta`-declared defaults for environment variables, `.env` files and working directory (per task or document-wide)
 - Default task, aliases, and private (hidden) tasks
 - Configurable runtimes for different programming languages, with real exit codes and interactive stdin
 - Support for custom heading levels
@@ -165,6 +165,20 @@ The CLI `--dir` flag overrides a `meta`-declared `dir` for that run:
 mq-task deploy                        # runs in services/api
 mq-task deploy --dir services/worker  # runs in services/worker instead
 ```
+
+#### `.env` files
+
+`dotenv` loads variables from `.env`-style files, per task or (in the preamble `meta` block) for every task:
+
+````markdown
+## deploy
+
+```meta
+dotenv = [".env", ".env.local"]
+```
+````
+
+Paths are relative to the task's working directory and missing files are ignored. Later files win, `env` in `meta` and `--env` override them, and a variable already set in the process environment is not overridden. Lines are `KEY=value` (optionally `export`-prefixed, quoted, with `#` comments); there is no `$VAR` expansion.
 
 #### Document-wide defaults
 

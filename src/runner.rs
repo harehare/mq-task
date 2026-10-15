@@ -130,6 +130,9 @@ struct GlobalMeta {
     /// Other task files whose tasks are made available as `<name>:<task>`
     #[serde(default)]
     imports: Vec<String>,
+    /// `.env` files loaded for every task
+    #[serde(default)]
+    dotenv: Vec<String>,
 }
 
 /// Task metadata parsed from a `meta` code block within a section
@@ -188,6 +191,9 @@ struct TaskMeta {
     /// Ask for confirmation before running, e.g. `prompt = "Deploy to production?"`
     #[serde(default)]
     prompt: Option<String>,
+    /// `.env` files loaded for this task, e.g. `dotenv = [".env", ".env.local"]`
+    #[serde(default)]
+    dotenv: Vec<String>,
 }
 
 /// A named task parameter, e.g. `params = ["env=staging", "verbose"]`.
@@ -285,6 +291,10 @@ pub struct Section {
     /// (or `--yes` is given)
     #[serde(default)]
     pub prompt: Option<String>,
+    /// `.env` files (relative to the task's working directory) whose
+    /// variables become part of the task's environment
+    #[serde(default)]
+    pub dotenv: Vec<String>,
 }
 
 /// Document-wide settings found in the preamble `meta` block.
@@ -293,6 +303,7 @@ struct Globals {
     env: Vec<(String, String)>,
     dir: Option<PathBuf>,
     imports: Vec<String>,
+    dotenv: Vec<String>,
 }
 
 /// Options for [`Runner::run_task_with_options`].
@@ -401,6 +412,7 @@ impl Runner {
         let globals = self.parse_global_meta(input.clone())?;
         self.exec.global_env = globals.env;
         self.exec.global_dir = globals.dir;
+        self.exec.global_dotenv = globals.dotenv;
         self.imports = globals.imports;
 
         let query = format!("{}\n | nodes | sections_with_code()", SECTIONS_QUERY);
@@ -427,6 +439,7 @@ impl Runner {
         let globals = self.parse_global_meta(input)?;
         self.exec.global_env = globals.env;
         self.exec.global_dir = globals.dir;
+        self.exec.global_dotenv = globals.dotenv;
         self.exec.cache_scope = path.as_ref().to_string_lossy().into_owned();
         Ok(sections)
     }
@@ -453,6 +466,7 @@ impl Runner {
             env: self.exec.global_env.clone(),
             dir: self.exec.global_dir.clone(),
             imports: std::mem::take(&mut self.imports),
+            dotenv: self.exec.global_dotenv.clone(),
         };
 
         let base = path.parent().unwrap_or_else(|| Path::new("."));
@@ -516,6 +530,7 @@ impl Runner {
             env: Self::parse_env_overrides(&meta.env)?,
             dir: meta.dir.map(PathBuf::from),
             imports: meta.imports,
+            dotenv: meta.dotenv,
         })
     }
 
@@ -612,6 +627,7 @@ impl Runner {
             defer: meta.defer,
             ignore_error: meta.ignore_error,
             prompt: meta.prompt,
+            dotenv: meta.dotenv,
         })
     }
 
@@ -854,6 +870,9 @@ fn apply_globals(sections: &mut [Section], globals: &Globals) {
         if section.dir.is_none() {
             section.dir = globals.dir.clone();
         }
+        let mut dotenv = globals.dotenv.clone();
+        dotenv.append(&mut section.dotenv);
+        section.dotenv = dotenv;
     }
 }
 
@@ -1686,6 +1705,7 @@ echo "deploying"
             env: vec![("G".into(), "1".into()), ("K".into(), "global".into())],
             dir: Some(PathBuf::from("gdir")),
             imports: Vec::new(),
+            dotenv: vec![".env".into()],
         };
         let mut with_dir = named("a", &[], &[]);
         with_dir.env = vec![("K".into(), "task".into())];
@@ -1840,5 +1860,14 @@ true
     fn parses_prompt() {
         let md = "## t\n\n```meta\nprompt = \"Really?\"\n```\n\n```bash\ntrue\n```\n";
         assert_eq!(parse(md).unwrap()[0].prompt.as_deref(), Some("Really?"));
+    }
+
+    #[test]
+    fn parses_dotenv_in_tasks_and_preamble() {
+        let md = "```meta\ndotenv = [\".env\"]\n```\n\n## t\n\n```meta\ndotenv = [\".env.local\"]\n```\n\n```bash\ntrue\n```\n";
+        let mut runner = Runner::with_default_config();
+        let sections = runner.extract_sections(md).unwrap();
+        assert_eq!(runner.exec.global_dotenv, vec![".env"]);
+        assert_eq!(sections[0].dotenv, vec![".env.local"]);
     }
 }

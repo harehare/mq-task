@@ -98,6 +98,8 @@ pub struct Executor {
     /// Document-wide `meta` defaults of the main file.
     pub global_env: Vec<(String, String)>,
     pub global_dir: Option<PathBuf>,
+    /// Document-wide `dotenv` files of the main file.
+    pub global_dotenv: Vec<String>,
     /// Honor `sources`/`outputs` up-to-date checks.
     pub use_cache: bool,
     /// Distinguishes cache entries of different task files.
@@ -117,6 +119,7 @@ impl Executor {
             working_dir: None,
             global_env: Vec::new(),
             global_dir: None,
+            global_dotenv: Vec::new(),
             use_cache: true,
             cache_scope: String::new(),
             assume_yes: false,
@@ -133,10 +136,43 @@ impl Executor {
             .or(self.global_dir.as_deref())
     }
 
-    /// Env for a task before `--env` overrides: document defaults, the
-    /// task's own `meta`, then bound params.
+    /// Variables from the document-wide and the task's `dotenv` files, in
+    /// the order the files are listed (later files win). Missing files are
+    /// ignored. A variable already set in the process environment is left
+    /// alone, as with most dotenv loaders.
+    fn dotenv_vars(&self, section: &Section) -> Result<Vec<(String, String)>> {
+        let dir = self.effective_dir(section);
+        let mut vars: Vec<(String, String)> = Vec::new();
+        for file in self.global_dotenv.iter().chain(&section.dotenv) {
+            let path = match dir {
+                Some(d) if !Path::new(file).is_absolute() => d.join(file),
+                _ => PathBuf::from(file),
+            };
+            let content = match fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => {
+                    return Err(Error::Invalid(format!("dotenv {}: {}", path.display(), e)));
+                }
+            };
+            let parsed = crate::util::parse_dotenv(&content)
+                .map_err(|e| Error::Invalid(format!("dotenv {}: {}", path.display(), e)))?;
+            for (key, value) in parsed {
+                if std::env::var_os(&key).is_some() {
+                    continue;
+                }
+                vars.retain(|(k, _)| *k != key);
+                vars.push((key, value));
+            }
+        }
+        Ok(vars)
+    }
+
+    /// Env for a task before `--env` overrides: `dotenv` files, document
+    /// defaults, the task's own `meta`, then bound params.
     fn task_env(&self, section: &Section, args: &[String]) -> Result<Vec<(String, String)>> {
-        let mut env = self.global_env.clone();
+        let mut env = self.dotenv_vars(section)?;
+        env.extend(self.global_env.clone());
         env.extend(section.env.clone());
         env.extend(Self::bind_params(&section.params, args, &section.title)?);
         Ok(env)

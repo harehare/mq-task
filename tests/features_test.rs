@@ -1354,3 +1354,122 @@ echo deploying
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(!stderr(&out).contains("Sure?"));
 }
+
+#[test]
+fn dotenv_files_provide_task_environment() {
+    let dir = workdir("dotenv");
+    write(
+        &dir,
+        ".env",
+        "FROM_ENV_FILE=file\nSHARED=from-dotenv\nQUOTED=\"a b\"\n# comment\n",
+    );
+    write(&dir, ".env.local", "FROM_ENV_FILE=local\n");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+```meta
+dotenv = [".env"]
+```
+
+## show
+
+```meta
+dotenv = [".env.local", ".env.missing"]
+env = ["SHARED=from-meta"]
+```
+
+```bash
+echo "file=$FROM_ENV_FILE shared=$SHARED quoted=$QUOTED"
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "show"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    // Later files win, `meta` env beats dotenv, a missing file is ignored.
+    assert!(
+        stdout(&out).contains("file=local shared=from-meta quoted=a b"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn the_process_environment_and_cli_override_dotenv() {
+    let dir = workdir("dotenv-precedence");
+    write(&dir, ".env", "GREETING=from-dotenv\n");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## show
+
+```meta
+dotenv = [".env"]
+```
+
+```bash
+echo "greeting=$GREETING"
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "show"]);
+    assert!(stdout(&out).contains("greeting=from-dotenv"));
+
+    let out = Command::new(env!("CARGO_BIN_EXE_mq-task"))
+        .args(["-f", "tasks.md", "show"])
+        .env("GREETING", "from-process")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(stdout(&out).contains("greeting=from-process"));
+
+    let out = Command::new(env!("CARGO_BIN_EXE_mq-task"))
+        .args(["-f", "tasks.md", "show", "--env", "GREETING=from-cli"])
+        .env("GREETING", "from-process")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(stdout(&out).contains("greeting=from-cli"));
+}
+
+#[test]
+fn dotenv_paths_are_relative_to_the_task_directory() {
+    let dir = workdir("dotenv-dir");
+    fs::create_dir_all(dir.join("svc")).unwrap();
+    write(&dir.join("svc"), ".env", "WHERE=svc\n");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## show
+
+```meta
+dir = "svc"
+dotenv = [".env"]
+```
+
+```bash
+echo "where=$WHERE"
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "show"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("where=svc"));
+}
+
+#[test]
+fn a_malformed_dotenv_file_is_an_error() {
+    let dir = workdir("dotenv-bad");
+    write(&dir, ".env", "GOOD=1\nthis is not valid\n");
+    write(
+        &dir,
+        "tasks.md",
+        "## show\n\n```meta\ndotenv = [\".env\"]\n```\n\n```bash\necho hi\n```\n",
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "show"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("line 2"), "{}", stderr(&out));
+    assert!(!stdout(&out).contains("hi"));
+}

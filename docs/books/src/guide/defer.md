@@ -1,6 +1,6 @@
 # Cleanup with `defer`
 
-`defer` lists tasks that run **after** a task's body finishes, whether it succeeded or failed — a place for cleanup that must not be skipped.
+`defer` lists tasks that run **after** a task's body finishes, whether it succeeded or failed. Use it for cleanup that must not be skipped.
 
 ````markdown
 ## cleanup

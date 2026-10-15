@@ -14,7 +14,7 @@ use crate::error::{Error, Result};
 use crate::events::{ConsoleObserver, RunObserver};
 use crate::exec::Executor;
 use crate::graph::{self, GraphFormat};
-use crate::schedule::{self, ScheduleOptions, build_plan};
+use crate::schedule::{self, ScheduleOptions, build_plan, split_words};
 use crate::util::parse_duration;
 
 const SECTIONS_QUERY: &str = include_str!("../sections.mq");
@@ -707,14 +707,44 @@ fn namespace_sections(sections: &mut [Section], namespace: &str) {
         .collect();
     let qualify = |name: &str| format!("{}:{}", namespace, name);
 
+    // A call is a task name optionally followed by arguments.
+    let qualify_call = |spec: &str| -> String {
+        if local.contains(spec.trim()) {
+            return qualify(spec.trim());
+        }
+        let words = split_words(spec);
+        for n in (1..=words.len()).rev() {
+            let name = words[..n].join(" ");
+            if local.contains(&name) {
+                let args = words[n..].iter().map(|w| quote_word(w));
+                return std::iter::once(qualify(&name))
+                    .chain(args)
+                    .collect::<Vec<_>>()
+                    .join(" ");
+            }
+        }
+        spec.to_string()
+    };
+
     for section in sections {
         section.title = qualify(&section.title);
         section.aliases = section.aliases.iter().map(|a| qualify(a)).collect();
-        for dep in &mut section.depends {
-            if local.contains(dep.as_str()) {
-                *dep = qualify(dep);
-            }
+        for dep in section.depends.iter_mut() {
+            *dep = qualify_call(dep);
         }
+    }
+}
+
+/// Quote a word for [`split_words`] when it would not survive unquoted.
+fn quote_word(word: &str) -> String {
+    let plain =
+        !word.is_empty() && !word.contains(|c: char| c.is_whitespace() || c == '"' || c == '\'');
+    if plain {
+        word.to_string()
+    } else if word.contains('"') {
+        format!("'{}'", word)
+    } else {
+        format!("\"{}\"", word)
     }
 }
 
@@ -1518,5 +1548,42 @@ echo "deploying"
         assert_eq!(sections[0].dir, Some(PathBuf::from("own")));
         assert_eq!(sections[1].dir, Some(PathBuf::from("gdir")));
         assert_eq!(sections[1].env.len(), 2);
+    }
+
+    #[test]
+    fn namespacing_qualifies_calls_with_arguments() {
+        let mut sections = vec![
+            Section {
+                title: "build".into(),
+                ..Default::default()
+            },
+            Section {
+                title: "Build App".into(),
+                ..Default::default()
+            },
+            Section {
+                title: "ci".into(),
+                depends: vec![
+                    "build env=prod".into(),
+                    "Build App x=1".into(),
+                    "other:task a=b".into(),
+                    "build".into(),
+                ],
+                ..Default::default()
+            },
+        ];
+        namespace_sections(&mut sections, "ns");
+        assert_eq!(
+            sections[2].depends,
+            vec![
+                "ns:build env=prod",
+                "ns:Build App x=1",
+                "other:task a=b",
+                "ns:build"
+            ]
+        );
+        let found = schedule::resolve_call(&sections, &sections[2].depends[1]).unwrap();
+        assert_eq!(found.0.title, "ns:Build App");
+        assert_eq!(found.1, vec!["x=1"]);
     }
 }

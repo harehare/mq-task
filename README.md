@@ -24,6 +24,7 @@ It is implemented using [mq](https://github.com/harehare/mq), a jq-like command-
 - Execute code blocks from specific sections in Markdown files
 - Task dependencies with automatic execution ordering
 - Parallel execution of independent dependencies, joined before the dependent task runs
+- Calling dependencies with arguments (`depends = ["deploy env=prod"]`)
 - Conditions (`if`), retries, timeouts, and passing a task's output to its dependents
 - Importing tasks from other Markdown files
 - Skip up-to-date tasks (`sources`/`outputs`) and `--watch` mode
@@ -283,6 +284,28 @@ echo "all checks passed"
 - In parallel runs stdin is closed for tasks; interactive tasks should run sequentially. Dry-run is always sequential
 
 To run several tasks at once, define an aggregate task that depends on them (as `ci` above).
+
+### Calling a dependency with arguments
+
+````markdown
+## deploy
+
+```meta
+params = ["env", "region=us"]
+```
+
+```bash
+echo "deploying to $MX_PARAM_ENV ($MX_PARAM_REGION)"
+```
+
+## release
+
+```meta
+depends = ["deploy staging", "deploy env=prod 'region=eu west'"]
+```
+````
+
+Arguments are bound like command-line arguments (`name=value` or positional; quote values containing spaces). The same task called with different arguments runs once per distinct list.
 
 ### Conditions
 

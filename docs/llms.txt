@@ -1,6 +1,6 @@
 # mq-task
 
-> mq-task is a task runner that executes code blocks in Markdown files, selected by section title. Built on mq (https://mqlang.org/). Supports dependencies, parallel execution, conditions, retries, timeouts, output passing, imports, caching, watch mode, a dependency graph, shell completions and an interactive TUI.
+> mq-task is a task runner that executes code blocks in Markdown files, selected by section title. Built on mq (https://mqlang.org/). Supports dependencies (with arguments), parallel execution, conditions, retries, timeouts, output passing, imports, caching, watch mode, a dependency graph, shell completions and an interactive TUI.
 
 ## Docs
 

@@ -60,9 +60,12 @@ pub enum NodeOutcome {
 /// Inputs for [`Executor::run_node`].
 pub struct NodeParams<'a> {
     pub section: &'a Section,
+    /// Name this execution is reported and cached under; the task title,
+    /// extended with `[...]` for loop iterations and calls with arguments.
+    pub label: &'a str,
     pub args: &'a [String],
     pub lang_filter: Option<&'a str>,
-    /// Extra env (e.g. `MX_OUTPUT_*` from dependencies).
+    /// Extra env (e.g. `MX_OUTPUT_*` from dependencies, loop variables).
     pub extra_env: Vec<(String, String)>,
     pub dependency: bool,
 }
@@ -255,10 +258,11 @@ impl Executor {
     }
 
     /// Execute one task with its full lifecycle: `if`, up-to-date check,
-    /// retries and timeout. Reports progress to `io.observer`.
+    /// retries and timeout. Reports progress to
+    /// `io.observer`.
     pub fn run_node(&self, p: &NodeParams, io: &TaskIo) -> Result<NodeOutcome> {
         let section = p.section;
-        let name = section.title.as_str();
+        let name = p.label;
         let observer = io.observer;
 
         observer.status(
@@ -305,7 +309,7 @@ impl Executor {
         let fingerprint = (self.use_cache && !self.dry_run && !section.sources.is_empty())
             .then(|| cache::fingerprint(section, &full_env, p.args, dir));
         if let Some(fp) = &fingerprint
-            && cache::is_fresh(&self.cache_scope, section, fp, dir)
+            && cache::is_fresh_named(&self.cache_scope, name, section, fp, dir)
         {
             observer.status(
                 name,
@@ -316,34 +320,9 @@ impl Executor {
             return Ok(NodeOutcome::Skipped);
         }
 
-        let max_attempts = section.retries.saturating_add(1);
         let started = Instant::now();
-        let mut attempt = 1;
-        let output = loop {
-            let attempt_io = TaskIo {
-                deadline: section.timeout.map(|t| Instant::now() + t),
-                ..*io
-            };
-            match self.run_blocks(section, p.args, p.lang_filter, &task_env, &attempt_io) {
-                Ok(out) => break out,
-                Err(e) if attempt < max_attempts && is_retriable(&e) => {
-                    let delay = section.retry_delay.unwrap_or(Duration::from_secs(1));
-                    observer.status(
-                        name,
-                        &TaskStatus::Retrying {
-                            attempt,
-                            max: max_attempts,
-                            delay,
-                        },
-                    );
-                    if !sleep_unless_cancelled(delay, io.cancel) {
-                        return Err(fail(Error::Cancelled));
-                    }
-                    attempt += 1;
-                }
-                Err(e) => return Err(fail(e)),
-            }
-        };
+        let body = self.run_with_retries(p, &task_env, io);
+        let output = body.map_err(fail)?;
 
         if let Some(fp) = &fingerprint {
             cache::record(&self.cache_scope, name, fp);
@@ -360,6 +339,43 @@ impl Executor {
             .capture
             .then(|| output.trim_end_matches(['\n', '\r']).to_string());
         Ok(NodeOutcome::Done { output })
+    }
+
+    /// Run a task's code blocks, retrying runtime failures per `retries`.
+    fn run_with_retries(
+        &self,
+        p: &NodeParams,
+        task_env: &[(String, String)],
+        io: &TaskIo,
+    ) -> Result<String> {
+        let section = p.section;
+        let max_attempts = section.retries.saturating_add(1);
+        let mut attempt = 1;
+        loop {
+            let attempt_io = TaskIo {
+                deadline: section.timeout.map(|t| Instant::now() + t),
+                ..*io
+            };
+            match self.run_blocks(section, p.args, p.lang_filter, task_env, &attempt_io) {
+                Ok(out) => return Ok(out),
+                Err(e) if attempt < max_attempts && is_retriable(&e) => {
+                    let delay = section.retry_delay.unwrap_or(Duration::from_secs(1));
+                    io.observer.status(
+                        p.label,
+                        &TaskStatus::Retrying {
+                            attempt,
+                            max: max_attempts,
+                            delay,
+                        },
+                    );
+                    if !sleep_unless_cancelled(delay, io.cancel) {
+                        return Err(Error::Cancelled);
+                    }
+                    attempt += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     /// Execute a single code block, outside any task lifecycle.

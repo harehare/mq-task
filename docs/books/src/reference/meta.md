@@ -4,7 +4,7 @@ A fenced block with the language `meta` (TOML) in a task section. Unknown or inv
 
 | Key | Type | Description |
 |---|---|---|
-| `depends` | array of strings | Tasks to run first |
+| `depends` | array of strings | Tasks to run first; each may carry arguments (`"deploy env=prod"`) |
 | `parallel` | bool | Run `depends` concurrently |
 | `if` | string | Condition; task skipped when false |
 | `retries` | integer | Extra attempts after a failure |

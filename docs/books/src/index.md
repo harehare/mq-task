@@ -30,7 +30,7 @@ mq-task ci
 ## Features
 
 - Run code blocks from any section, in any language with a configured runtime
-- Task dependencies, with parallel fan-out / fan-in
+- Task dependencies, with parallel fan-out / fan-in and calls with arguments
 - Conditions (`if`), retries, timeouts, and output passing between tasks
 - Import tasks from other Markdown files
 - Skip up-to-date tasks (`sources` / `outputs`) and `--watch` mode

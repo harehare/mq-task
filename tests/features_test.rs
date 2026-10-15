@@ -771,3 +771,39 @@ depends = ["bad", "later"]
     assert!(err.contains("later not run"), "{}", err);
     assert!(err.contains("all not run"), "{}", err);
 }
+
+#[test]
+fn dependencies_can_be_called_with_arguments() {
+    let dir = workdir("dep-args");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## deploy
+
+```meta
+params = ["env", "region=us"]
+```
+
+```bash
+echo "deploy $MX_PARAM_ENV $MX_PARAM_REGION"
+```
+
+## all
+
+```meta
+depends = ["deploy staging", "deploy env=prod 'region=eu west'"]
+```
+
+```bash
+echo done
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "all"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    let a = text.find("deploy staging us").expect(&text);
+    let b = text.find("deploy prod eu west").expect(&text);
+    assert!(a < b);
+}

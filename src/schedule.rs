@@ -1,13 +1,14 @@
 //! Dependency planning and (parallel) execution of a task graph.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 
 use crate::error::{Error, Result};
 use crate::events::{RunObserver, TaskStatus};
 use crate::exec::{Executor, NodeOutcome, NodeParams, TaskIo, output_var};
-use crate::runner::Section;
+use crate::runner::{LoopSpec, Section};
 
 /// Look a task up by title or alias.
 pub fn find_section<'a>(sections: &'a [Section], name: &str) -> Option<&'a Section> {
@@ -65,30 +66,53 @@ pub fn resolve_call<'a>(sections: &'a [Section], spec: &str) -> Option<(&'a Sect
     })
 }
 
-/// One task execution in a plan. A task normally appears once; a task
-/// depended upon with different arguments appears once per distinct argument
-/// list.
+/// Directories used to resolve a task's working directory at plan time
+/// (needed to expand `for` globs). Mirrors [`Executor::effective_dir`]:
+/// the CLI `--dir`, then the task's own `dir`, then the document default.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PlanContext<'a> {
+    pub working_dir: Option<&'a Path>,
+    pub global_dir: Option<&'a Path>,
+}
+
+impl<'a> PlanContext<'a> {
+    pub fn dir_for(&self, section: &'a Section) -> Option<&'a Path> {
+        self.working_dir
+            .or(section.dir.as_deref())
+            .or(self.global_dir)
+    }
+}
+
+/// One task execution in a plan. A task normally appears once; a task with
+/// `for` appears once per item, and a task depended upon with different
+/// arguments appears once per distinct argument list.
 #[derive(Debug)]
 pub struct PlanNode<'a> {
     pub section: &'a Section,
     /// Unique display name: the task title, followed by `[...]` when the
-    /// node was called with arguments.
+    /// node was called with arguments or is one iteration of a loop.
     pub label: String,
     /// Arguments the task was called with by its dependent. The requested
     /// task takes its arguments from the command line instead.
     pub args: Vec<String>,
-    /// True for the task the user asked to run.
+    /// Loop variables of this iteration (`MX_ITEM`, `MX_INDEX`, ...).
+    pub vars: Vec<(String, String)>,
+    /// True for the task(s) the user asked to run.
     pub requested: bool,
+    /// When set the node is reported as skipped with this reason instead of
+    /// running (a loop without items).
+    pub skip: Option<String>,
     /// Declared dependencies (`depends`), as node indices.
     pub deps: Vec<usize>,
     /// Everything that must finish before this node starts: the declared
     /// dependencies plus ordering edges that keep non-`parallel` tasks'
-    /// dependencies sequential.
+    /// dependencies (and loop iterations) sequential.
     pub after: BTreeSet<usize>,
 }
 
 /// Tasks to run, ordered so every prerequisite precedes its dependents.
-/// The requested task is always the last node.
+/// The requested task is always the last node (a looped requested task
+/// occupies the last nodes, one per iteration).
 #[derive(Debug)]
 pub struct Plan<'a> {
     pub nodes: Vec<PlanNode<'a>>,
@@ -134,26 +158,145 @@ impl Plan<'_> {
     }
 }
 
+/// One iteration of a `for` loop.
+struct Iteration {
+    /// Text shown in the node label.
+    label: String,
+    vars: Vec<(String, String)>,
+}
+
+/// Name of the environment variable holding a loop variable.
+pub fn loop_var(name: &str) -> String {
+    let upper: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("MX_{}", upper)
+}
+
+/// Expand a task's `for` into its iterations.
+fn expand_loop(section: &Section, spec: &LoopSpec, ctx: &PlanContext) -> Vec<Iteration> {
+    let alias = section.loop_var.as_deref().map(loop_var);
+    let item = |index: usize, value: String| {
+        let mut vars = vec![
+            ("MX_ITEM".to_string(), value.clone()),
+            ("MX_INDEX".to_string(), index.to_string()),
+        ];
+        if let Some(name) = &alias
+            && name != "MX_ITEM"
+        {
+            vars.push((name.clone(), value.clone()));
+        }
+        Iteration { label: value, vars }
+    };
+
+    match spec {
+        LoopSpec::List(items) => items
+            .iter()
+            .enumerate()
+            .map(|(i, v)| item(i, v.clone()))
+            .collect(),
+        LoopSpec::Glob(patterns) => {
+            let dir = ctx.dir_for(section);
+            let mut found: Vec<String> = Vec::new();
+            for pattern in patterns {
+                let full = match dir {
+                    Some(d) if !Path::new(pattern).is_absolute() => {
+                        d.join(pattern).to_string_lossy().into_owned()
+                    }
+                    _ => pattern.clone(),
+                };
+                let Ok(paths) = glob::glob(&full) else {
+                    continue;
+                };
+                for path in paths.flatten() {
+                    // Items are relative to the directory the task runs in.
+                    let rel = dir.and_then(|d| path.strip_prefix(d).ok()).unwrap_or(&path);
+                    found.push(rel.to_string_lossy().into_owned());
+                }
+            }
+            found.sort();
+            found.dedup();
+            found
+                .into_iter()
+                .enumerate()
+                .map(|(i, v)| item(i, v))
+                .collect()
+        }
+        LoopSpec::Matrix(axes) => {
+            let mut combos: Vec<Vec<(String, String)>> = vec![Vec::new()];
+            for (axis, values) in axes {
+                combos = combos
+                    .into_iter()
+                    .flat_map(|prefix| {
+                        values.iter().map(move |v| {
+                            let mut next = prefix.clone();
+                            next.push((axis.clone(), v.clone()));
+                            next
+                        })
+                    })
+                    .collect();
+            }
+            if axes.is_empty() {
+                combos.clear();
+            }
+            combos
+                .into_iter()
+                .enumerate()
+                .map(|(i, combo)| {
+                    let label = combo
+                        .iter()
+                        .map(|(k, v)| format!("{}={}", k, v))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    let mut vars = vec![("MX_INDEX".to_string(), i.to_string())];
+                    vars.extend(combo.into_iter().map(|(k, v)| (loop_var(&k), v)));
+                    Iteration { label, vars }
+                })
+                .collect()
+        }
+    }
+}
+
 /// Build the plan for `target`.
 ///
 /// A task without `parallel` runs its dependencies one after another in
 /// declaration order (every task newly pulled in by a later dependency waits
 /// for the previous dependency). With `parallel` -- or `force_parallel` --
-/// only the real dependency edges constrain the order.
+/// only the real dependency edges constrain the order. The iterations of a
+/// `for` loop follow the same rule.
 pub fn build_plan<'a>(
     sections: &'a [Section],
     target: &str,
     force_parallel: bool,
 ) -> Result<Plan<'a>> {
-    struct Builder<'a> {
+    build_plan_in(sections, target, force_parallel, &PlanContext::default())
+}
+
+/// Like [`build_plan`], resolving `for` globs against the directories in
+/// `ctx`.
+pub fn build_plan_in<'a>(
+    sections: &'a [Section],
+    target: &str,
+    force_parallel: bool,
+    ctx: &PlanContext<'a>,
+) -> Result<Plan<'a>> {
+    struct Builder<'a, 'c> {
         sections: &'a [Section],
         force_parallel: bool,
+        ctx: &'c PlanContext<'a>,
         nodes: Vec<PlanNode<'a>>,
         index: HashMap<String, Vec<usize>>,
         in_progress: HashSet<&'a str>,
     }
 
-    impl<'a> Builder<'a> {
+    impl<'a> Builder<'a, '_> {
         /// Plan the call `spec` (a task name with optional arguments) and
         /// return the nodes that represent it: one, or one per iteration.
         fn visit(&mut self, spec: &str) -> Result<Vec<usize>> {
@@ -203,16 +346,63 @@ pub fn build_plan<'a>(
 
             self.in_progress.remove(title);
 
-            let id = self.nodes.len();
-            self.nodes.push(PlanNode {
-                section,
-                label: base_label.clone(),
-                args,
-                requested: false,
-                deps,
-                after,
-            });
-            let ids = vec![id];
+            let iterations = section
+                .for_each
+                .as_ref()
+                .map(|spec| expand_loop(section, spec, self.ctx));
+
+            let mut ids = Vec::new();
+            match iterations {
+                None => {
+                    ids.push(self.nodes.len());
+                    self.nodes.push(PlanNode {
+                        section,
+                        label: base_label.clone(),
+                        args,
+                        vars: Vec::new(),
+                        requested: false,
+                        skip: None,
+                        deps,
+                        after,
+                    });
+                }
+                Some(iterations) if iterations.is_empty() => {
+                    ids.push(self.nodes.len());
+                    self.nodes.push(PlanNode {
+                        section,
+                        label: base_label.clone(),
+                        args,
+                        vars: Vec::new(),
+                        requested: false,
+                        skip: Some("for: no items".into()),
+                        deps,
+                        after,
+                    });
+                }
+                Some(iterations) => {
+                    let mut seen = HashSet::new();
+                    for it in iterations {
+                        if !seen.insert(it.label.clone()) {
+                            continue;
+                        }
+                        let mut node_after = after.clone();
+                        if !parallel && let Some(&last) = ids.last() {
+                            node_after.insert(last);
+                        }
+                        ids.push(self.nodes.len());
+                        self.nodes.push(PlanNode {
+                            section,
+                            label: format!("{}[{}]", base_label, it.label),
+                            args: args.clone(),
+                            vars: it.vars,
+                            requested: false,
+                            skip: None,
+                            deps: deps.clone(),
+                            after: node_after,
+                        });
+                    }
+                }
+            }
             self.index.insert(base_label, ids.clone());
             Ok(ids)
         }
@@ -221,6 +411,7 @@ pub fn build_plan<'a>(
     let mut builder = Builder {
         sections,
         force_parallel,
+        ctx,
         nodes: Vec::new(),
         index: HashMap::new(),
         in_progress: HashSet::new(),
@@ -264,8 +455,8 @@ pub fn run_plan(exec: &Executor, plan: &Plan, opts: &ScheduleOptions) -> Result<
     let ancestors: Vec<Vec<usize>> = (0..n).map(|i| plan.ancestors(i)).collect();
 
     // Captured stdout per node, exposed to dependents as MX_OUTPUT_<TASK>.
-    // When a task ran several times (with different arguments) the outputs
-    // are joined with newlines in plan order.
+    // When a task ran several times (a loop, or different arguments) the
+    // outputs are joined with newlines in plan order.
     let mut outputs: Vec<Option<String>> = vec![None; n];
     let extra_env_for = |i: usize, outputs: &[Option<String>]| -> Vec<(String, String)> {
         let mut grouped: Vec<(String, String)> = Vec::new();
@@ -280,12 +471,28 @@ pub fn run_plan(exec: &Executor, plan: &Plan, opts: &ScheduleOptions) -> Result<
                 None => grouped.push((var, out.clone())),
             }
         }
+        grouped.extend(plan.nodes[i].vars.iter().cloned());
         grouped
     };
 
     let run_one = |i: usize, extra_env: Vec<(String, String)>| -> Result<NodeOutcome> {
         let node = &plan.nodes[i];
         let section = node.section;
+        if let Some(reason) = &node.skip {
+            opts.observer.status(
+                &node.label,
+                &TaskStatus::Started {
+                    dependency: !node.requested,
+                },
+            );
+            opts.observer.status(
+                &node.label,
+                &TaskStatus::Skipped {
+                    reason: reason.clone(),
+                },
+            );
+            return Ok(NodeOutcome::Skipped);
+        }
         let io = TaskIo {
             name: &node.label,
             observer: opts.observer,
@@ -602,6 +809,17 @@ mod tests {
         assert!(build_plan(&sections, "root", false).is_ok());
     }
 
+    fn looped(title: &str, spec: LoopSpec) -> Section {
+        Section {
+            for_each: Some(spec),
+            ..sec(title, &[], false)
+        }
+    }
+
+    fn list(items: &[&str]) -> LoopSpec {
+        LoopSpec::List(items.iter().map(|s| s.to_string()).collect())
+    }
+
     fn with_code(mut s: Section) -> Section {
         s.codes = vec![crate::runner::CodeBlock {
             lang: "bash".into(),
@@ -643,6 +861,124 @@ mod tests {
         assert_eq!((s.title.as_str(), args), ("Build", vec!["other".into()]));
 
         assert!(resolve_call(&sections, "nope x").is_none());
+    }
+
+    #[test]
+    fn a_loop_becomes_one_node_per_item_in_order() {
+        let sections = vec![with_code(looped("t", list(&["a", "b", "c"])))];
+        let plan = build_plan(&sections, "t", false).unwrap();
+        assert_eq!(names(&plan), vec!["t[a]", "t[b]", "t[c]"]);
+        assert!(plan.nodes.iter().all(|n| n.requested));
+        assert!(plan.nodes[0].after.is_empty());
+        assert_eq!(plan.nodes[1].after, BTreeSet::from([0]));
+        assert_eq!(plan.nodes[2].after, BTreeSet::from([1]));
+        assert_eq!(
+            plan.nodes[1].vars,
+            vec![
+                ("MX_ITEM".to_string(), "b".to_string()),
+                ("MX_INDEX".to_string(), "1".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn parallel_loops_leave_iterations_unordered() {
+        let mut s = with_code(looped("t", list(&["a", "b"])));
+        s.parallel = true;
+        let sections = vec![s];
+        let plan = build_plan(&sections, "t", false).unwrap();
+        assert!(plan.nodes.iter().all(|n| n.after.is_empty()));
+
+        let sections = vec![with_code(looped("t", list(&["a", "b"])))];
+        let plan = build_plan(&sections, "t", true).unwrap();
+        assert!(plan.nodes.iter().all(|n| n.after.is_empty()));
+    }
+
+    #[test]
+    fn loop_aliases_and_duplicate_items() {
+        let mut s = with_code(looped("t", list(&["x", "x", "y"])));
+        s.loop_var = Some("file-name".into());
+        let sections = vec![s];
+        let plan = build_plan(&sections, "t", false).unwrap();
+        assert_eq!(names(&plan), vec!["t[x]", "t[y]"]);
+        assert!(
+            plan.nodes[0]
+                .vars
+                .contains(&("MX_FILE_NAME".to_string(), "x".to_string()))
+        );
+    }
+
+    #[test]
+    fn matrix_is_a_cross_product_with_named_variables() {
+        let spec = LoopSpec::Matrix(vec![
+            ("arch".into(), vec!["x64".into(), "arm".into()]),
+            ("os".into(), vec!["linux".into(), "mac".into()]),
+        ]);
+        let sections = vec![with_code(looped("t", spec))];
+        let plan = build_plan(&sections, "t", false).unwrap();
+        assert_eq!(
+            names(&plan),
+            vec![
+                "t[arch=x64,os=linux]",
+                "t[arch=x64,os=mac]",
+                "t[arch=arm,os=linux]",
+                "t[arch=arm,os=mac]"
+            ]
+        );
+        assert!(
+            plan.nodes[1]
+                .vars
+                .contains(&("MX_OS".to_string(), "mac".to_string()))
+        );
+        assert!(
+            plan.nodes[1]
+                .vars
+                .contains(&("MX_ARCH".to_string(), "x64".to_string()))
+        );
+    }
+
+    #[test]
+    fn an_empty_loop_is_a_single_skipped_node() {
+        let sections = vec![with_code(looped("t", list(&[])))];
+        let plan = build_plan(&sections, "t", false).unwrap();
+        assert_eq!(names(&plan), vec!["t"]);
+        assert!(plan.nodes[0].skip.is_some());
+    }
+
+    #[test]
+    fn dependents_wait_for_every_iteration() {
+        let sections = vec![
+            with_code(looped("each", list(&["a", "b"]))),
+            with_code(Section {
+                depends: vec!["each".into()],
+                ..sec("all", &[], false)
+            }),
+        ];
+        let plan = build_plan(&sections, "all", false).unwrap();
+        assert_eq!(names(&plan), vec!["each[a]", "each[b]", "all"]);
+        assert_eq!(plan.nodes[2].deps, vec![0, 1]);
+        assert!(plan.nodes[2].requested);
+        assert!(!plan.nodes[0].requested);
+    }
+
+    #[test]
+    fn globs_expand_relative_to_the_task_directory() {
+        let dir = std::env::temp_dir().join(format!("mq-task-glob-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("b.txt"), "").unwrap();
+        std::fs::write(dir.join("a.txt"), "").unwrap();
+        std::fs::write(dir.join("c.md"), "").unwrap();
+
+        let mut s = with_code(looped(
+            "t",
+            LoopSpec::Glob(vec!["*.txt".into(), "s*".into()]),
+        ));
+        s.dir = Some(dir.clone());
+        let sections = vec![s];
+        let plan = build_plan(&sections, "t", false).unwrap();
+        assert_eq!(names(&plan), vec!["t[a.txt]", "t[b.txt]", "t[sub]"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

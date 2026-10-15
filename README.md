@@ -24,7 +24,7 @@ It is implemented using [mq](https://github.com/harehare/mq), a jq-like command-
 - Execute code blocks from specific sections in Markdown files
 - Task dependencies with automatic execution ordering
 - Parallel execution of independent dependencies, joined before the dependent task runs
-- Calling dependencies with arguments (`depends = ["deploy env=prod"]`)
+- Loops: `for` over a list, a glob or a matrix
 - Conditions (`if`), retries, timeouts, and passing a task's output to its dependents
 - Importing tasks from other Markdown files
 - Skip up-to-date tasks (`sources`/`outputs`) and `--watch` mode
@@ -284,6 +284,38 @@ echo "all checks passed"
 - In parallel runs stdin is closed for tasks; interactive tasks should run sequentially. Dry-run is always sequential
 
 To run several tasks at once, define an aggregate task that depends on them (as `ci` above).
+
+### Loops
+
+`for` runs a task once per item. Iterations see the item as `MX_ITEM` (and `MX_INDEX`); `as` adds a second name for it.
+
+````markdown
+## convert
+
+```meta
+for = { glob = "assets/*.png" }   # or a list: ["a", "b"]
+```
+
+```bash
+convert "$MX_ITEM" "${MX_ITEM%.png}.webp"
+```
+
+## build
+
+```meta
+for = { matrix = { os = ["linux", "macos"], arch = ["x64", "arm64"] } }
+parallel = true   # run iterations concurrently
+```
+
+```bash
+echo "building for $MX_OS/$MX_ARCH"
+```
+````
+
+- Iterations run sequentially unless `parallel = true` (or `--parallel`/`-j N`); the first failure aborts, `--keep-going` runs the rest
+- Each iteration is cached, retried and timed out on its own; tasks that depend on a looped task wait for all iterations
+- Matrix axes are exposed as `MX_<AXIS>`; with `capture = true` dependents see all iterations' output joined by newlines
+- A loop with no items is skipped
 
 ### Calling a dependency with arguments
 

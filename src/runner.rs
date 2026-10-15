@@ -14,7 +14,7 @@ use crate::error::{Error, Result};
 use crate::events::{ConsoleObserver, RunObserver};
 use crate::exec::Executor;
 use crate::graph::{self, GraphFormat};
-use crate::schedule::{self, ScheduleOptions, build_plan, split_words};
+use crate::schedule::{self, PlanContext, ScheduleOptions, build_plan_in, split_words};
 use crate::util::parse_duration;
 
 const SECTIONS_QUERY: &str = include_str!("../sections.mq");
@@ -26,6 +26,94 @@ pub struct CodeBlock {
     pub lang: String,
     /// Code content
     pub code: String,
+}
+
+/// What a `for` loop iterates over.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum LoopSpec {
+    /// Literal items: `for = ["a", "b"]`
+    List(Vec<String>),
+    /// Paths matching these globs, relative to the task's directory:
+    /// `for = { glob = "src/*.md" }`
+    Glob(Vec<String>),
+    /// Every combination of the axes' values:
+    /// `for = { matrix = { os = ["linux", "macos"], arch = ["x64"] } }`
+    /// Axes are kept sorted by name.
+    Matrix(Vec<(String, Vec<String>)>),
+}
+
+impl LoopSpec {
+    /// Short description for graph output, e.g. `a, b, c` or `glob src/*.md`.
+    pub fn summary(&self) -> String {
+        match self {
+            LoopSpec::List(items) => {
+                let shown: Vec<&str> = items.iter().take(3).map(String::as_str).collect();
+                let more = if items.len() > 3 { ", ..." } else { "" };
+                format!("{}{}", shown.join(", "), more)
+            }
+            LoopSpec::Glob(patterns) => format!("glob {}", patterns.join(", ")),
+            LoopSpec::Matrix(axes) => format!(
+                "matrix {}",
+                axes.iter()
+                    .map(|(k, _)| k.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" x ")
+            ),
+        }
+    }
+
+    /// Interpret the TOML value of a `for` key.
+    fn from_toml(title: &str, value: &toml::Value) -> Result<Self> {
+        let invalid = |msg: &str| Error::Invalid(format!("task '{}': `for`: {}", title, msg));
+        let scalar = |v: &toml::Value| -> Result<String> {
+            match v {
+                toml::Value::String(s) => Ok(s.clone()),
+                toml::Value::Integer(i) => Ok(i.to_string()),
+                toml::Value::Float(f) => Ok(f.to_string()),
+                toml::Value::Boolean(b) => Ok(b.to_string()),
+                _ => Err(invalid("items must be strings, numbers or booleans")),
+            }
+        };
+        let list = |v: &toml::Value| -> Result<Vec<String>> {
+            match v {
+                toml::Value::Array(items) => items.iter().map(scalar).collect(),
+                _ => Err(invalid("expected an array")),
+            }
+        };
+        match value {
+            toml::Value::Array(_) => Ok(LoopSpec::List(list(value)?)),
+            toml::Value::Table(table) => {
+                if table.len() != 1 {
+                    return Err(invalid("expected exactly one of `glob` or `matrix`"));
+                }
+                let (key, v) = table.iter().next().expect("one entry");
+                match key.as_str() {
+                    "glob" => match v {
+                        toml::Value::String(s) => Ok(LoopSpec::Glob(vec![s.clone()])),
+                        other => Ok(LoopSpec::Glob(list(other)?)),
+                    },
+                    "matrix" => {
+                        let toml::Value::Table(axes) = v else {
+                            return Err(invalid("`matrix` must be a table of arrays"));
+                        };
+                        let mut out = Vec::new();
+                        for (axis, values) in axes {
+                            out.push((axis.clone(), list(values)?));
+                        }
+                        out.sort();
+                        Ok(LoopSpec::Matrix(out))
+                    }
+                    other => Err(invalid(&format!(
+                        "unknown key '{}' (expected `glob` or `matrix`)",
+                        other
+                    ))),
+                }
+            }
+            _ => Err(invalid(
+                "expected an array, `{ glob = ... }` or `{ matrix = ... }`",
+            )),
+        }
+    }
 }
 
 /// Document-wide defaults parsed from a `meta` code block that appears
@@ -85,6 +173,12 @@ struct TaskMeta {
     /// Globs of files the task produces; must exist for it to be skipped
     #[serde(default)]
     outputs: Vec<String>,
+    /// Run the task once per item: an array, `{ glob = ... }` or `{ matrix = ... }`
+    #[serde(default, rename = "for")]
+    for_each: Option<toml::Value>,
+    /// Extra environment variable name for the loop item, e.g. `as = "file"`
+    #[serde(default, rename = "as")]
+    loop_var: Option<String>,
 }
 
 /// A named task parameter, e.g. `params = ["env=staging", "verbose"]`.
@@ -163,6 +257,13 @@ pub struct Section {
     /// Output globs that must exist for the task to count as up to date
     #[serde(default)]
     pub outputs: Vec<String>,
+    /// `for` loop: the task runs once per item
+    #[serde(default)]
+    pub for_each: Option<LoopSpec>,
+    /// Name given to the loop item in addition to `MX_ITEM` (`as = "file"`
+    /// exposes `MX_FILE`)
+    #[serde(default)]
+    pub loop_var: Option<String>,
 }
 
 /// Document-wide settings found in the preamble `meta` block.
@@ -443,6 +544,18 @@ impl Runner {
         let env = Self::parse_env_overrides(&meta.env)?;
         let dir = meta.dir.map(PathBuf::from);
 
+        let for_each = meta
+            .for_each
+            .as_ref()
+            .map(|v| LoopSpec::from_toml(&title, v))
+            .transpose()?;
+        if meta.loop_var.is_some() && for_each.is_none() {
+            return Err(Error::Invalid(format!(
+                "task '{}': `as` requires `for`",
+                title
+            )));
+        }
+
         let codes: Vec<CodeBlock> = all_codes.into_iter().filter(|c| c.lang != "meta").collect();
 
         let description = dict.get(&Ident::from("description")).and_then(|v| match v {
@@ -468,6 +581,8 @@ impl Runner {
             capture: meta.capture,
             sources: meta.sources,
             outputs: meta.outputs,
+            for_each,
+            loop_var: meta.loop_var,
         })
     }
 
@@ -529,6 +644,21 @@ impl Runner {
             .execute_code(lang, code, args, &[], self.exec.working_dir.as_deref())
     }
 
+    /// Plan `target` with this runner's directories, so `for` globs resolve
+    /// where the tasks will run.
+    fn plan_for<'a>(
+        &'a self,
+        sections: &'a [Section],
+        target: &str,
+        force_parallel: bool,
+    ) -> Result<schedule::Plan<'a>> {
+        let ctx = PlanContext {
+            working_dir: self.exec.working_dir.as_deref(),
+            global_dir: self.exec.global_dir.as_deref(),
+        };
+        build_plan_in(sections, target, force_parallel, &ctx)
+    }
+
     /// Run a specific task by section title
     pub fn run_task<P: AsRef<Path>>(&mut self, markdown_path: P, task_name: &str) -> Result<()> {
         self.run_task_with_args(markdown_path, task_name, &[])
@@ -575,7 +705,7 @@ impl Runner {
         let sections = self.load_sections(markdown_path)?;
 
         let explicit_parallel = opts.parallel || opts.jobs.is_some_and(|j| j > 1);
-        let plan = build_plan(&sections, task_name, explicit_parallel)?;
+        let plan = self.plan_for(&sections, task_name, explicit_parallel)?;
 
         let wants_parallel = explicit_parallel || plan.nodes.iter().any(|n| n.section.parallel);
         // Dry-run output goes straight to stdout; keep it ordered.
@@ -633,7 +763,7 @@ impl Runner {
         task_name: &str,
     ) -> Result<Vec<WatchTarget>> {
         let sections = self.load_sections(markdown_path.as_ref())?;
-        let plan = build_plan(&sections, task_name, false)?;
+        let plan = self.plan_for(&sections, task_name, false)?;
 
         let mut targets = vec![WatchTarget {
             patterns: vec![markdown_path.as_ref().to_string_lossy().into_owned()],
@@ -660,7 +790,7 @@ impl Runner {
         let sections = self.load_sections(markdown_path)?;
         if let Some(name) = task {
             // Fail loudly on unknown tasks and cycles.
-            build_plan(&sections, name, false)?;
+            self.plan_for(&sections, name, false)?;
         }
         Ok(graph::render(&sections, task, format))
     }
@@ -755,7 +885,7 @@ impl Runner {
         sections: &'a [Section],
         target: &str,
     ) -> Result<Vec<&'a Section>> {
-        Ok(build_plan(sections, target, false)?
+        Ok(schedule::build_plan(sections, target, false)?
             .nodes
             .into_iter()
             .map(|n| n.section)
@@ -1548,6 +1678,78 @@ echo "deploying"
         assert_eq!(sections[0].dir, Some(PathBuf::from("own")));
         assert_eq!(sections[1].dir, Some(PathBuf::from("gdir")));
         assert_eq!(sections[1].env.len(), 2);
+    }
+
+    fn parse(markdown: &str) -> Result<Vec<Section>> {
+        Runner::with_default_config().extract_sections(markdown)
+    }
+
+    #[test]
+    fn parses_loop_specs() {
+        let md = r#"## list
+
+```meta
+for = ["a", 2, true]
+as = "thing"
+```
+
+```bash
+true
+```
+
+## globbed
+
+```meta
+for = { glob = ["a/*.md", "b/*.md"] }
+```
+
+```bash
+true
+```
+
+## matrix
+
+```meta
+for = { matrix = { os = ["linux", "mac"], arch = ["x64"] } }
+```
+
+```bash
+true
+```
+"#;
+        let sections = parse(md).unwrap();
+        assert_eq!(
+            sections[0].for_each,
+            Some(LoopSpec::List(vec!["a".into(), "2".into(), "true".into()]))
+        );
+        assert_eq!(sections[0].loop_var.as_deref(), Some("thing"));
+        assert_eq!(
+            sections[1].for_each,
+            Some(LoopSpec::Glob(vec!["a/*.md".into(), "b/*.md".into()]))
+        );
+        assert_eq!(
+            sections[2].for_each,
+            Some(LoopSpec::Matrix(vec![
+                ("arch".into(), vec!["x64".into()]),
+                ("os".into(), vec!["linux".into(), "mac".into()]),
+            ]))
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_loops() {
+        let wrap = |meta: &str| format!("## t\n\n```meta\n{}\n```\n\n```bash\ntrue\n```\n", meta);
+        for meta in [
+            "for = \"abc\"",
+            "for = { nope = [\"a\"] }",
+            "for = { glob = \"a\", matrix = {} }",
+            "for = [[\"nested\"]]",
+            "for = { matrix = [\"a\"] }",
+            "as = \"x\"",
+        ] {
+            let err = parse(&wrap(meta)).unwrap_err();
+            assert!(matches!(err, Error::Invalid(_)), "{}: {:?}", meta, err);
+        }
     }
 
     #[test]

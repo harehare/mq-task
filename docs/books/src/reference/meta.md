@@ -5,7 +5,9 @@ A fenced block with the language `meta` (TOML) in a task section. Unknown or inv
 | Key | Type | Description |
 |---|---|---|
 | `depends` | array of strings | Tasks to run first; each may carry arguments (`"deploy env=prod"`) |
-| `parallel` | bool | Run `depends` concurrently |
+| `parallel` | bool | Run `depends` (and loop iterations) concurrently |
+| `for` | array, `{ glob }` or `{ matrix }` | Run the task once per item ([Loops](../guide/loops.md)) |
+| `as` | string | Extra variable name for the loop item (`as = "file"` → `MX_FILE`) |
 | `if` | string | Condition; task skipped when false |
 | `retries` | integer | Extra attempts after a failure |
 | `retry_delay` | duration | Wait between attempts (default `1s`) |
@@ -20,4 +22,4 @@ A fenced block with the language `meta` (TOML) in a task section. Unknown or inv
 | `private` | bool | Hide from listings |
 | `imports` | array of paths | Document-wide only: files to import |
 
-Environment variables set for tasks: `MX_ARGS`, `MX_ARG_<N>`, `MX_PARAM_<NAME>`, `MX_OUTPUT_<TASK>`.
+Environment variables set for tasks: `MX_ARGS`, `MX_ARG_<N>`, `MX_PARAM_<NAME>`, `MX_OUTPUT_<TASK>`, and in loops `MX_ITEM`, `MX_INDEX`, `MX_<AXIS>`.

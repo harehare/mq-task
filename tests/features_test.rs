@@ -772,6 +772,191 @@ depends = ["bad", "later"]
     assert!(err.contains("all not run"), "{}", err);
 }
 
+fn lines(text: &str) -> Vec<String> {
+    text.lines().map(str::to_string).collect()
+}
+
+#[test]
+fn for_runs_the_task_once_per_item() {
+    let dir = workdir("for-list");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## greet
+
+```meta
+for = ["alice", "bob"]
+as = "who"
+```
+
+```bash
+echo "hi $MX_ITEM $MX_INDEX $MX_WHO"
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "greet"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    let hi: Vec<String> = lines(&text)
+        .into_iter()
+        .filter(|l| l.starts_with("hi "))
+        .collect();
+    assert_eq!(hi, vec!["hi alice 0 alice", "hi bob 1 bob"]);
+}
+
+#[test]
+fn for_matrix_and_glob_and_dependents() {
+    let dir = workdir("for-matrix");
+    fs::create_dir_all(dir.join("pkgs/one")).unwrap();
+    fs::create_dir_all(dir.join("pkgs/two")).unwrap();
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## build
+
+```meta
+for = { matrix = { os = ["linux", "mac"], arch = ["x64"] } }
+```
+
+```bash
+echo "build $MX_OS-$MX_ARCH"
+```
+
+## pkgs
+
+```meta
+for = { glob = "pkgs/*" }
+capture = true
+```
+
+```bash
+echo "pkg $MX_ITEM"
+```
+
+## all
+
+```meta
+depends = ["build", "pkgs"]
+```
+
+```bash
+echo "outputs: $MX_OUTPUT_PKGS" | tr '\n' ';'
+echo
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "all"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("build linux-x64"), "{}", text);
+    assert!(text.contains("build mac-x64"), "{}", text);
+    assert!(text.contains("pkg pkgs/one"), "{}", text);
+    assert!(text.contains("pkg pkgs/two"), "{}", text);
+    assert!(
+        text.contains("outputs: pkg pkgs/one;pkg pkgs/two"),
+        "{}",
+        text
+    );
+}
+
+#[test]
+fn for_loops_stop_at_the_first_failure_unless_keep_going() {
+    let dir = workdir("for-fail");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## each
+
+```meta
+for = ["a", "b", "c"]
+```
+
+```bash
+echo "ran $MX_ITEM"
+[ "$MX_ITEM" != "b" ] || exit 3
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "each"]);
+    assert_eq!(out.status.code(), Some(3));
+    let text = stdout(&out);
+    assert!(text.contains("ran a") && text.contains("ran b"));
+    assert!(!text.contains("ran c"), "{}", text);
+
+    let out = mq_task(&dir, &["-f", "tasks.md", "each", "--keep-going"]);
+    assert_eq!(out.status.code(), Some(3));
+    assert!(stdout(&out).contains("ran c"));
+}
+
+#[test]
+fn parallel_for_runs_iterations_concurrently() {
+    let dir = workdir("for-par");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## nap
+
+```meta
+for = ["1", "2", "3", "4"]
+parallel = true
+```
+
+```bash
+sleep 0.5
+```
+"#,
+    );
+    let started = Instant::now();
+    let out = mq_task(&dir, &["-f", "tasks.md", "nap", "-j", "4"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        started.elapsed().as_millis() < 1700,
+        "took {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn an_empty_loop_is_skipped_not_an_error() {
+    let dir = workdir("for-empty");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## none
+
+```meta
+for = { glob = "nothing/*" }
+```
+
+```bash
+echo should-not-run
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "none"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!stdout(&out).contains("should-not-run"));
+    assert!(stdout(&out).contains("no items"), "{}", stdout(&out));
+}
+
+#[test]
+fn invalid_for_is_reported() {
+    let dir = workdir("for-bad");
+    write(
+        &dir,
+        "tasks.md",
+        "## t\n\n```meta\nfor = \"nope\"\n```\n\n```bash\ntrue\n```\n",
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "t"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("`for`"), "{}", stderr(&out));
+}
+
 #[test]
 fn dependencies_can_be_called_with_arguments() {
     let dir = workdir("dep-args");
@@ -806,4 +991,34 @@ echo done
     let a = text.find("deploy staging us").expect(&text);
     let b = text.find("deploy prod eu west").expect(&text);
     assert!(a < b);
+}
+
+#[test]
+fn each_loop_iteration_is_cached_separately() {
+    let dir = workdir("for-cache");
+    fs::write(dir.join("in.txt"), "x").unwrap();
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## gen
+
+```meta
+for = ["a", "b"]
+sources = ["in.txt"]
+```
+
+```bash
+echo "gen $MX_ITEM"
+```
+"#,
+    );
+    let first = mq_task(&dir, &["-f", "tasks.md", "gen"]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    assert!(stdout(&first).contains("gen a") && stdout(&first).contains("gen b"));
+
+    let second = mq_task(&dir, &["-f", "tasks.md", "gen"]);
+    assert!(second.status.success());
+    assert!(!stdout(&second).contains("gen a"), "{}", stdout(&second));
+    assert!(stdout(&second).contains("up to date"));
 }

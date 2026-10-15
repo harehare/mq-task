@@ -35,7 +35,7 @@ jobs:
       - name: Copy assets
         run: |
           mkdir -p docs/assets
-          cp assets/logo.svg assets/demo.gif assets/og-image.png docs/assets/
+          cp assets/logo.svg assets/demo.gif assets/og-image.png assets/dependency-graph.png docs/assets/
       - name: Copy install script
         run: cp bin/install.sh docs/install.sh
       - name: Deploy

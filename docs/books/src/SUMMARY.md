@@ -10,6 +10,7 @@
   - [Dependencies](guide/dependencies.md)
   - [Parallel Execution](guide/parallel.md)
   - [Loops](guide/loops.md)
+  - [Cleanup with defer](guide/defer.md)
   - [Conditions](guide/conditions.md)
   - [Retries and Timeouts](guide/retries-timeouts.md)
   - [Passing Output Between Tasks](guide/output.md)

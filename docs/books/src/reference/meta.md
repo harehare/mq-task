@@ -8,6 +8,7 @@ A fenced block with the language `meta` (TOML) in a task section. Unknown or inv
 | `parallel` | bool | Run `depends` (and loop iterations) concurrently |
 | `for` | array, `{ glob }` or `{ matrix }` | Run the task once per item ([Loops](../guide/loops.md)) |
 | `as` | string | Extra variable name for the loop item (`as = "file"` → `MX_FILE`) |
+| `defer` | array of strings | Tasks run after this one, even on failure ([defer](../guide/defer.md)) |
 | `if` | string | Condition; task skipped when false |
 | `retries` | integer | Extra attempts after a failure |
 | `retry_delay` | duration | Wait between attempts (default `1s`) |

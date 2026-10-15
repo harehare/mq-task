@@ -18,6 +18,7 @@ use crate::config::{Config, ExecutionMode};
 use crate::error::{Error, Result};
 use crate::events::{NullObserver, RunObserver, Stream, TaskStatus};
 use crate::runner::{ParamDef, Section};
+use crate::schedule::Deferred;
 
 /// Maps a signal-killed process to the shell convention `128 + signal`.
 fn exit_code_from_status(status: &ExitStatus) -> i32 {
@@ -68,6 +69,8 @@ pub struct NodeParams<'a> {
     /// Extra env (e.g. `MX_OUTPUT_*` from dependencies, loop variables).
     pub extra_env: Vec<(String, String)>,
     pub dependency: bool,
+    /// Tasks to run after this one finishes, whatever its outcome.
+    pub defers: &'a [Deferred<'a>],
 }
 
 /// Name of the env var that exposes a captured task's stdout to dependents.
@@ -258,7 +261,7 @@ impl Executor {
     }
 
     /// Execute one task with its full lifecycle: `if`, up-to-date check,
-    /// retries and timeout. Reports progress to
+    /// retries, timeout and deferred tasks. Reports progress to
     /// `io.observer`.
     pub fn run_node(&self, p: &NodeParams, io: &TaskIo) -> Result<NodeOutcome> {
         let section = p.section;
@@ -322,7 +325,16 @@ impl Executor {
 
         let started = Instant::now();
         let body = self.run_with_retries(p, &task_env, io);
-        let output = body.map_err(fail)?;
+        // Deferred tasks run once the body is over, even when it failed.
+        let deferred = if p.defers.is_empty() {
+            Ok(())
+        } else {
+            self.run_deferred(p, io)
+        };
+        let output = match (body, deferred) {
+            (Ok(out), Ok(())) => out,
+            (Err(e), _) | (Ok(_), Err(e)) => return Err(fail(e)),
+        };
 
         if let Some(fp) = &fingerprint {
             cache::record(&self.cache_scope, name, fp);
@@ -376,6 +388,36 @@ impl Executor {
                 Err(e) => return Err(e),
             }
         }
+    }
+
+    /// Run the `defer` tasks of a node in the order they were declared.
+    /// They are immune to cancellation (cleanup must happen) and have no
+    /// timeout. Every task runs even if an earlier one fails; the first
+    /// error is returned and the rest are reported as output.
+    fn run_deferred(&self, p: &NodeParams, io: &TaskIo) -> Result<()> {
+        let never = AtomicBool::new(false);
+        let io = TaskIo {
+            cancel: &never,
+            deadline: None,
+            capture: false,
+            ..*io
+        };
+        let mut first: Option<Error> = None;
+        for d in p.defers {
+            let result = self.task_env(d.section, &d.args).and_then(|mut env| {
+                env.extend(p.extra_env.iter().cloned());
+                self.run_blocks(d.section, &d.args, None, &env, &io)
+            });
+            if let Err(e) = result {
+                io.observer.output(
+                    p.label,
+                    Stream::Stderr,
+                    &format!("defer '{}' failed: {}", d.section.title, e),
+                );
+                first.get_or_insert(e);
+            }
+        }
+        first.map_or(Ok(()), Err)
     }
 
     /// Execute a single code block, outside any task lifecycle.

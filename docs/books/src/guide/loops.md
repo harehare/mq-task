@@ -49,7 +49,7 @@ echo "hello $MX_NAME"   # same value as $MX_ITEM
 ## Execution
 
 - Iterations run one after another by default. With `parallel = true` (or `--parallel`/`-j N`) they run concurrently, subject to `-j`.
-- Each iteration is a separate run of the task: `if`, `retries`, `timeout`, and `sources`/`outputs` apply per iteration. The up-to-date check is recorded per item.
+- Each iteration is a separate run of the task: `if`, `retries`, `timeout`, `sources`/`outputs` and `defer` apply per iteration. The up-to-date check is recorded per item.
 - The first failing iteration aborts the run. With `--keep-going` the remaining iterations still run.
 - Tasks that depend on a looped task start after **all** its iterations finished, and a failed iteration fails the dependency.
 - With `capture = true`, dependents see the outputs of all iterations joined by newlines in `MX_OUTPUT_<TASK>`.

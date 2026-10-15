@@ -179,6 +179,9 @@ struct TaskMeta {
     /// Extra environment variable name for the loop item, e.g. `as = "file"`
     #[serde(default, rename = "as")]
     loop_var: Option<String>,
+    /// Tasks run after this one finishes, even if it failed
+    #[serde(default)]
+    defer: Vec<String>,
 }
 
 /// A named task parameter, e.g. `params = ["env=staging", "verbose"]`.
@@ -264,6 +267,10 @@ pub struct Section {
     /// exposes `MX_FILE`)
     #[serde(default)]
     pub loop_var: Option<String>,
+    /// Tasks (optionally with arguments) run after this one finishes,
+    /// whatever its outcome
+    #[serde(default)]
+    pub defer: Vec<String>,
 }
 
 /// Document-wide settings found in the preamble `meta` block.
@@ -583,6 +590,7 @@ impl Runner {
             outputs: meta.outputs,
             for_each,
             loop_var: meta.loop_var,
+            defer: meta.defer,
         })
     }
 
@@ -859,7 +867,7 @@ fn namespace_sections(sections: &mut [Section], namespace: &str) {
     for section in sections {
         section.title = qualify(&section.title);
         section.aliases = section.aliases.iter().map(|a| qualify(a)).collect();
-        for dep in section.depends.iter_mut() {
+        for dep in section.depends.iter_mut().chain(section.defer.iter_mut()) {
             *dep = qualify_call(dep);
         }
     }
@@ -1753,6 +1761,13 @@ true
     }
 
     #[test]
+    fn parses_defer() {
+        let md = "## t\n\n```meta\ndefer = [\"cleanup\", \"notify status=failed\"]\n```\n\n```bash\ntrue\n```\n";
+        let sections = parse(md).unwrap();
+        assert_eq!(sections[0].defer, vec!["cleanup", "notify status=failed"]);
+    }
+
+    #[test]
     fn namespacing_qualifies_calls_with_arguments() {
         let mut sections = vec![
             Section {
@@ -1771,6 +1786,7 @@ true
                     "other:task a=b".into(),
                     "build".into(),
                 ],
+                defer: vec!["build 'a b'".into()],
                 ..Default::default()
             },
         ];
@@ -1784,6 +1800,7 @@ true
                 "ns:build"
             ]
         );
+        assert_eq!(sections[2].defer, vec!["ns:build \"a b\""]);
         let found = schedule::resolve_call(&sections, &sections[2].depends[1]).unwrap();
         assert_eq!(found.0.title, "ns:Build App");
         assert_eq!(found.1, vec!["x=1"]);

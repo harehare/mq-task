@@ -51,7 +51,7 @@ pub fn split_words(spec: &str) -> Vec<String> {
 }
 
 /// Resolve a task call -- a task name optionally followed by arguments, as
-/// used by `depends` -- into the task and its arguments.
+/// used by `depends` and `defer` -- into the task and its arguments.
 ///
 /// The whole string is tried as a task name first, so titles containing
 /// spaces keep working; otherwise the longest leading run of words that names
@@ -83,6 +83,13 @@ impl<'a> PlanContext<'a> {
     }
 }
 
+/// A task whose code runs after another task's body, whatever its outcome.
+#[derive(Debug, Clone)]
+pub struct Deferred<'a> {
+    pub section: &'a Section,
+    pub args: Vec<String>,
+}
+
 /// One task execution in a plan. A task normally appears once; a task with
 /// `for` appears once per item, and a task depended upon with different
 /// arguments appears once per distinct argument list.
@@ -102,6 +109,8 @@ pub struct PlanNode<'a> {
     /// When set the node is reported as skipped with this reason instead of
     /// running (a loop without items).
     pub skip: Option<String>,
+    /// Tasks to run once this one finishes (`defer`).
+    pub defers: Vec<Deferred<'a>>,
     /// Declared dependencies (`depends`), as node indices.
     pub deps: Vec<usize>,
     /// Everything that must finish before this node starts: the declared
@@ -344,6 +353,21 @@ pub fn build_plan_in<'a>(
                 prev = ids;
             }
 
+            let mut defers = Vec::new();
+            for spec in &section.defer {
+                let (target, args) = resolve_call(self.sections, spec)
+                    .ok_or_else(|| Error::SectionNotFound(spec.clone()))?;
+                if !target.depends.is_empty() {
+                    return Err(Error::Invalid(format!(
+                        "task '{}': deferred task '{}' must not have dependencies",
+                        section.title, target.title
+                    )));
+                }
+                defers.push(Deferred {
+                    section: target,
+                    args,
+                });
+            }
             self.in_progress.remove(title);
 
             let iterations = section
@@ -362,6 +386,7 @@ pub fn build_plan_in<'a>(
                         vars: Vec::new(),
                         requested: false,
                         skip: None,
+                        defers,
                         deps,
                         after,
                     });
@@ -375,6 +400,7 @@ pub fn build_plan_in<'a>(
                         vars: Vec::new(),
                         requested: false,
                         skip: Some("for: no items".into()),
+                        defers: Vec::new(),
                         deps,
                         after,
                     });
@@ -397,6 +423,7 @@ pub fn build_plan_in<'a>(
                             vars: it.vars,
                             requested: false,
                             skip: None,
+                            defers: defers.clone(),
                             deps: deps.clone(),
                             after: node_after,
                         });
@@ -515,6 +542,7 @@ pub fn run_plan(exec: &Executor, plan: &Plan, opts: &ScheduleOptions) -> Result<
                 lang_filter: opts.lang_filter,
                 extra_env,
                 dependency: !node.requested,
+                defers: &node.defers,
             },
             &io,
         )
@@ -1005,5 +1033,34 @@ mod tests {
         let sections = vec![with_code(sec("a", &["ghost x=1"], false))];
         let err = build_plan(&sections, "a", false).unwrap_err();
         assert!(matches!(err, Error::SectionNotFound(s) if s == "ghost x=1"));
+    }
+
+    #[test]
+    fn defers_resolve_to_tasks_without_dependencies() {
+        let mut main = with_code(sec("main", &[], false));
+        main.defer = vec!["cleanup dir=/tmp/x".into()];
+        let sections = vec![main.clone(), with_code(sec("cleanup", &[], false))];
+        let plan = build_plan(&sections, "main", false).unwrap();
+        assert_eq!(plan.nodes[0].defers.len(), 1);
+        assert_eq!(plan.nodes[0].defers[0].section.title, "cleanup");
+        assert_eq!(plan.nodes[0].defers[0].args, vec!["dir=/tmp/x"]);
+        // A deferred task is not part of the plan itself.
+        assert_eq!(plan.nodes.len(), 1);
+
+        let sections = vec![main.clone()];
+        assert!(matches!(
+            build_plan(&sections, "main", false),
+            Err(Error::SectionNotFound(_))
+        ));
+
+        let sections = vec![
+            main,
+            with_code(sec("cleanup", &["other"], false)),
+            with_code(sec("other", &[], false)),
+        ];
+        assert!(matches!(
+            build_plan(&sections, "main", false),
+            Err(Error::Invalid(_))
+        ));
     }
 }

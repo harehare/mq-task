@@ -994,6 +994,84 @@ echo done
 }
 
 #[test]
+fn defer_runs_after_success_and_failure() {
+    let dir = workdir("defer");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## cleanup
+
+```meta
+params = ["note=done"]
+```
+
+```bash
+echo "cleanup $MX_PARAM_NOTE"
+```
+
+## ok
+
+```meta
+defer = ["cleanup after-ok"]
+```
+
+```bash
+echo body-ok
+```
+
+## boom
+
+```meta
+defer = ["cleanup after-boom"]
+```
+
+```bash
+echo body-boom
+exit 7
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "ok"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.find("body-ok").unwrap() < text.find("cleanup after-ok").unwrap());
+
+    let out = mq_task(&dir, &["-f", "tasks.md", "boom"]);
+    assert_eq!(out.status.code(), Some(7));
+    let text = stdout(&out);
+    assert!(text.find("body-boom").unwrap() < text.find("cleanup after-boom").unwrap());
+}
+
+#[test]
+fn a_failing_defer_fails_a_successful_task() {
+    let dir = workdir("defer-fail");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## cleanup
+
+```bash
+exit 9
+```
+
+## main
+
+```meta
+defer = ["cleanup"]
+```
+
+```bash
+echo body
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "main"]);
+    assert_eq!(out.status.code(), Some(9));
+}
+
+#[test]
 fn each_loop_iteration_is_cached_separately() {
     let dir = workdir("for-cache");
     fs::write(dir.join("in.txt"), "x").unwrap();

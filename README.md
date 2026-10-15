@@ -24,7 +24,7 @@ It is implemented using [mq](https://github.com/harehare/mq), a jq-like command-
 - Execute code blocks from specific sections in Markdown files
 - Task dependencies with automatic execution ordering
 - Parallel execution of independent dependencies, joined before the dependent task runs
-- Loops: `for` over a list, a glob or a matrix
+- Loops (`for` over a list, a glob or a matrix), dependency calls with arguments, and `defer` cleanup
 - Conditions (`if`), retries, timeouts, and passing a task's output to its dependents
 - Importing tasks from other Markdown files
 - Skip up-to-date tasks (`sources`/`outputs`) and `--watch` mode
@@ -338,6 +338,25 @@ depends = ["deploy staging", "deploy env=prod 'region=eu west'"]
 ````
 
 Arguments are bound like command-line arguments (`name=value` or positional; quote values containing spaces). The same task called with different arguments runs once per distinct list.
+
+### Cleanup with `defer`
+
+Tasks listed in `defer` run after the task body, whether it succeeded or failed:
+
+````markdown
+## integration
+
+```meta
+defer = ["cleanup"]
+```
+
+```bash
+docker compose up -d
+./run-integration-tests.sh
+```
+````
+
+Deferred tasks run in the order listed, only once the task has actually started (not when it is skipped), and may take arguments (`"notify status=done"`). If the body succeeded but a deferred task fails, the task fails.
 
 ### Conditions
 

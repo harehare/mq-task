@@ -270,6 +270,7 @@ fn node_with(
             lang_filter,
             extra_env: pairs(extra_env),
             dependency: false,
+            defers: &[],
         },
         &io,
     );
@@ -309,6 +310,7 @@ fn the_dependency_flag_is_forwarded() {
             lang_filter: None,
             extra_env: vec![],
             dependency: true,
+            defers: &[],
         },
         &io,
     )

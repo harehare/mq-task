@@ -45,6 +45,9 @@ fn badges(s: &Section) -> String {
     if let Some(spec) = &s.for_each {
         b.push(format!("for: {}", spec.summary()));
     }
+    if !s.defer.is_empty() {
+        b.push(format!("defer: {}", s.defer.join(", ")));
+    }
     if s.retries > 0 {
         b.push(format!("retries: {}", s.retries));
     }

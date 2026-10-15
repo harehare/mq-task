@@ -2,7 +2,7 @@
   <img src="assets/logo.svg" width="96" height="96" alt="mq-task logo" />
 
 <a href="https://task.mqlang.org">Visit the site 🌐</a>
-·
+—
 <a href="https://task.mqlang.org/book/">Read the book 📖</a>
 
   <h1>mq-task</h1>

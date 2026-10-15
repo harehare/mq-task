@@ -31,5 +31,5 @@ mq-task [OPTIONS] [TASK] [-- <ARGS>...] [COMMAND]
 | `--parallel` | Run dependencies concurrently |
 | `-j, --jobs <N>` | Max concurrent tasks |
 | `-k, --keep-going` | Continue independent tasks after a failure |
-| `--no-cache` | Ignore up-to-date checks |
+| `--no-cache` | Ignore up-to-date checks (`sources`/`outputs` and `status`) |
 | `-y`, `--yes` | Answer yes to every `prompt` |

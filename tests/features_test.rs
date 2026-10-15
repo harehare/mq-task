@@ -1473,3 +1473,70 @@ fn a_malformed_dotenv_file_is_an_error() {
     assert!(stderr(&out).contains("line 2"), "{}", stderr(&out));
     assert!(!stdout(&out).contains("hi"));
 }
+
+#[test]
+fn status_commands_decide_whether_a_task_is_up_to_date() {
+    let dir = workdir("status");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## build
+
+```meta
+status = ["test -f out.txt", "grep -q done out.txt"]
+```
+
+```bash
+echo building
+echo done > out.txt
+```
+"#,
+    );
+    // No output yet: status fails, the task runs and creates the file.
+    let first = mq_task(&dir, &["-f", "tasks.md", "build"]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    assert!(stdout(&first).contains("building"));
+
+    // Every status command passes now: skipped.
+    let second = mq_task(&dir, &["-f", "tasks.md", "build"]);
+    assert!(second.status.success());
+    assert!(!stdout(&second).contains("building"), "{}", stdout(&second));
+    assert!(stdout(&second).contains("up to date"));
+
+    // One failing command is enough to run the task again.
+    fs::write(dir.join("out.txt"), "stale").unwrap();
+    let third = mq_task(&dir, &["-f", "tasks.md", "build"]);
+    assert!(stdout(&third).contains("building"));
+
+    // --no-cache ignores status.
+    let forced = mq_task(&dir, &["-f", "tasks.md", "build", "--no-cache"]);
+    assert!(stdout(&forced).contains("building"));
+}
+
+#[test]
+fn status_runs_in_the_task_directory_with_its_environment() {
+    let dir = workdir("status-env");
+    fs::create_dir_all(dir.join("svc")).unwrap();
+    write(&dir.join("svc"), "marker", "");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## check
+
+```meta
+dir = "svc"
+env = ["WANT=1"]
+status = ['test -f marker && test "$WANT" = 1']
+```
+
+```bash
+echo ran
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "check"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!stdout(&out).contains("ran"), "{}", stdout(&out));
+}

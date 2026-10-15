@@ -506,6 +506,22 @@ cargo build --release
 
 Fingerprints are stored in `.mq-task/cache.json` in the directory `mq-task` runs from (consider git-ignoring `.mq-task/`). `--no-cache` ignores them.
 
+For custom checks, `status` lists shell commands; the task is skipped when all of them exit `0`:
+
+````markdown
+## install
+
+```meta
+status = ["test -d node_modules"]
+```
+
+```bash
+npm ci
+```
+````
+
+Commands run in the task's working directory and environment. `status` is checked before `sources`/`outputs`, and `--no-cache` ignores it.
+
 `--watch`/`-w` re-runs the task whenever any `sources` of the task or its dependencies, or the task file itself, change:
 
 ```bash

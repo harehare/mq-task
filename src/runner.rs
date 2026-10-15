@@ -194,6 +194,9 @@ struct TaskMeta {
     /// `.env` files loaded for this task, e.g. `dotenv = [".env", ".env.local"]`
     #[serde(default)]
     dotenv: Vec<String>,
+    /// Shell commands; the task is up to date when all of them exit 0
+    #[serde(default)]
+    status: Vec<String>,
 }
 
 /// A named task parameter, e.g. `params = ["env=staging", "verbose"]`.
@@ -295,6 +298,10 @@ pub struct Section {
     /// variables become part of the task's environment
     #[serde(default)]
     pub dotenv: Vec<String>,
+    /// Shell commands checked before running; when every one exits 0 the
+    /// task is considered up to date and skipped
+    #[serde(default)]
+    pub status: Vec<String>,
 }
 
 /// Document-wide settings found in the preamble `meta` block.
@@ -628,6 +635,7 @@ impl Runner {
             ignore_error: meta.ignore_error,
             prompt: meta.prompt,
             dotenv: meta.dotenv,
+            status: meta.status,
         })
     }
 
@@ -1869,5 +1877,14 @@ true
         let sections = runner.extract_sections(md).unwrap();
         assert_eq!(runner.exec.global_dotenv, vec![".env"]);
         assert_eq!(sections[0].dotenv, vec![".env.local"]);
+    }
+
+    #[test]
+    fn parses_status() {
+        let md = "## t\n\n```meta\nstatus = [\"test -f out.txt\", \"true\"]\n```\n\n```bash\ntrue\n```\n";
+        assert_eq!(
+            parse(md).unwrap()[0].status,
+            vec!["test -f out.txt", "true"]
+        );
     }
 }

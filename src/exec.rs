@@ -352,6 +352,19 @@ impl Executor {
 
         let mut full_env = task_env.clone();
         full_env.extend(self.env_overrides.iter().cloned());
+        if self.use_cache
+            && !self.dry_run
+            && !section.status.is_empty()
+            && self.status_is_up_to_date(section, p.args, &task_env, dir)
+        {
+            observer.status(
+                name,
+                &TaskStatus::Skipped {
+                    reason: "up to date (status)".into(),
+                },
+            );
+            return Ok(NodeOutcome::Skipped);
+        }
         let fingerprint = (self.use_cache && !self.dry_run && !section.sources.is_empty())
             .then(|| cache::fingerprint(section, &full_env, p.args, dir));
         if let Some(fp) = &fingerprint
@@ -412,6 +425,40 @@ impl Executor {
             .capture
             .then(|| output.trim_end_matches(['\n', '\r']).to_string());
         Ok(NodeOutcome::Done { output })
+    }
+
+    /// Run the task's `status` commands in its environment and directory.
+    /// The task is up to date only if every one of them exits 0.
+    fn status_is_up_to_date(
+        &self,
+        section: &Section,
+        args: &[String],
+        task_env: &[(String, String)],
+        dir: Option<&Path>,
+    ) -> bool {
+        section.status.iter().all(|cmd| {
+            #[cfg(unix)]
+            let mut command = {
+                let mut c = Command::new("sh");
+                c.arg("-c").arg(cmd);
+                c
+            };
+            #[cfg(not(unix))]
+            let mut command = {
+                let mut c = Command::new("cmd");
+                c.arg("/C").arg(cmd);
+                c
+            };
+            command
+                .envs(self.prepare_env_vars(args, task_env))
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            if let Some(dir) = dir {
+                command.current_dir(dir);
+            }
+            command.status().map(|s| s.success()).unwrap_or(false)
+        })
     }
 
     /// Ask the user to confirm a task's `prompt`. Dry runs and `--yes` skip

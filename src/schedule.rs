@@ -44,6 +44,21 @@ impl Plan<'_> {
         self.nodes.iter().map(|n| n.section.title.clone()).collect()
     }
 
+    /// Every task paired with the titles of its declared dependencies.
+    pub fn edges(&self) -> Vec<(String, Vec<String>)> {
+        self.nodes
+            .iter()
+            .map(|n| {
+                let deps = n
+                    .deps
+                    .iter()
+                    .map(|&d| self.nodes[d].section.title.clone())
+                    .collect();
+                (n.section.title.clone(), deps)
+            })
+            .collect()
+    }
+
     /// Transitive declared dependencies of `node` (excluding itself).
     fn ancestors(&self, node: usize) -> Vec<usize> {
         let mut seen = HashSet::new();
@@ -129,8 +144,8 @@ pub fn build_plan<'a>(
         index: HashMap::new(),
         in_progress: HashSet::new(),
     };
-    let root = find_section(sections, target)
-        .ok_or_else(|| Error::SectionNotFound(target.to_string()))?;
+    let root =
+        find_section(sections, target).ok_or_else(|| Error::SectionNotFound(target.to_string()))?;
     if root.codes.is_empty() && root.depends.is_empty() {
         return Err(Error::NoCommands(target.to_string()));
     }

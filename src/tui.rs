@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::{
     event::{
@@ -19,6 +19,7 @@ use crossterm::{
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
+    buffer::Buffer,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -54,6 +55,7 @@ const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 /// Messages from the run thread to the UI.
 enum UiEvent {
     Plan(Vec<String>),
+    Graph(Vec<(String, Vec<String>)>),
     Output {
         task: String,
         stream: Stream,
@@ -81,6 +83,10 @@ impl TuiObserver {
 impl RunObserver for TuiObserver {
     fn plan(&self, tasks: &[String]) {
         self.send(UiEvent::Plan(tasks.to_vec()));
+    }
+
+    fn graph(&self, edges: &[(String, Vec<String>)]) {
+        self.send(UiEvent::Graph(edges.to_vec()));
     }
 
     fn output(&self, task: &str, stream: Stream, line: &str) {
@@ -117,6 +123,10 @@ enum TaskState {
 struct TaskRow {
     name: String,
     state: TaskState,
+    /// Indices (into `RunView::tasks`) of the tasks this one depends on.
+    deps: Vec<usize>,
+    /// When the task last started, for the live elapsed time in the graph.
+    started: Option<Instant>,
 }
 
 struct LogLine {
@@ -133,6 +143,8 @@ struct RunView {
     selected: usize,
     /// Show the combined log instead of only the selected task's.
     all_logs: bool,
+    /// Draw the dependency graph instead of the flat task list.
+    graph: bool,
     /// Lines scrolled up from the bottom of the log.
     scroll: usize,
     result: Option<std::result::Result<(), String>>,
@@ -149,6 +161,8 @@ impl RunView {
         self.tasks.push(TaskRow {
             name: name.to_string(),
             state: TaskState::Pending,
+            deps: Vec::new(),
+            started: None,
         });
         self.tasks.len() - 1
     }
@@ -158,6 +172,13 @@ impl RunView {
             UiEvent::Plan(names) => {
                 for name in names {
                     self.index_of(&name);
+                }
+            }
+            UiEvent::Graph(edges) => {
+                for (task, deps) in edges {
+                    let i = self.index_of(&task);
+                    let deps: Vec<usize> = deps.iter().map(|d| self.index_of(d)).collect();
+                    self.tasks[i].deps = deps;
                 }
             }
             UiEvent::Output { task, stream, line } => {
@@ -174,7 +195,10 @@ impl RunView {
             UiEvent::Status { task, status } => {
                 let i = self.index_of(&task);
                 self.tasks[i].state = match status {
-                    TaskStatus::Started { .. } => TaskState::Running,
+                    TaskStatus::Started { .. } => {
+                        self.tasks[i].started = Some(Instant::now());
+                        TaskState::Running
+                    }
                     TaskStatus::Retrying { attempt, max, .. } => TaskState::Retrying(attempt, max),
                     TaskStatus::Succeeded { elapsed } => TaskState::Succeeded(elapsed),
                     TaskStatus::Skipped { reason } => TaskState::Skipped(reason),
@@ -201,6 +225,34 @@ impl RunView {
 
     fn is_running(&self) -> bool {
         self.result.is_none()
+    }
+
+    /// The graph is only worth drawing once the run has dependency edges.
+    fn graph_active(&self) -> bool {
+        self.graph && self.tasks.iter().any(|t| !t.deps.is_empty())
+    }
+
+    /// Move the selection. In the graph `dy` walks a column and `dx` hops
+    /// between columns; the flat list only has the vertical axis.
+    fn move_selection(&mut self, dx: isize, dy: isize) {
+        let n = self.tasks.len();
+        if n == 0 {
+            return;
+        }
+        let from = self.selected.min(n - 1);
+        let to = if self.graph_active() {
+            graph_move(&graph_layout(&self.tasks), from, dx, dy)
+        } else {
+            match dy {
+                1 => (from + 1) % n,
+                -1 => (from + n - 1) % n,
+                _ => from,
+            }
+        };
+        if to != self.selected {
+            self.selected = to;
+            self.scroll = 0;
+        }
     }
 
     fn visible_log(&self) -> Vec<&LogLine> {
@@ -382,6 +434,7 @@ impl App {
             log: Vec::new(),
             selected: 0,
             all_logs: true,
+            graph: true,
             scroll: 0,
             result: None,
             rx,
@@ -477,18 +530,11 @@ impl App {
                         // Re-run without re-prompting: arguments are not kept.
                         self.start_run(task, Vec::new());
                     }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        if !run.tasks.is_empty() {
-                            run.selected = (run.selected + 1) % run.tasks.len();
-                            run.scroll = 0;
-                        }
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        if !run.tasks.is_empty() {
-                            run.selected = (run.selected + run.tasks.len() - 1) % run.tasks.len();
-                            run.scroll = 0;
-                        }
-                    }
+                    KeyCode::Down | KeyCode::Char('j') => run.move_selection(0, 1),
+                    KeyCode::Up | KeyCode::Char('k') => run.move_selection(0, -1),
+                    KeyCode::Right | KeyCode::Char('l') => run.move_selection(1, 0),
+                    KeyCode::Left | KeyCode::Char('h') => run.move_selection(-1, 0),
+                    KeyCode::Char('v') => run.graph = !run.graph,
                     KeyCode::Tab => {
                         run.all_logs = !run.all_logs;
                         run.scroll = 0;
@@ -890,6 +936,376 @@ fn state_note(state: &TaskState) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Dependency graph
+// ---------------------------------------------------------------------------
+
+/// Rows a node box occupies, and the pitch between stacked boxes.
+const NODE_H: usize = 3;
+const ROW_PITCH: usize = NODE_H + 1;
+/// Blank columns between node boxes, where the connectors run.
+const COL_GAP: usize = 4;
+const MAX_NAME_W: usize = 28;
+/// Width reserved for the status note (`12.3s`, `↻ 1/3`, `skip`).
+const NOTE_W: usize = 6;
+
+/// Stage layout of the run: a task sits one column right of its deepest
+/// dependency, like the stages of a GitHub Actions workflow graph.
+struct GraphLayout {
+    /// Task indices of each column, top to bottom.
+    cols: Vec<Vec<usize>>,
+    /// `(column, row)` of every task.
+    pos: Vec<(usize, usize)>,
+}
+
+fn graph_layout(tasks: &[TaskRow]) -> GraphLayout {
+    let n = tasks.len();
+    let mut depth = vec![0usize; n];
+    // Longest path from a root. Plans are acyclic; the pass cap only guards
+    // against malformed input.
+    for _ in 0..n {
+        let mut changed = false;
+        for (i, t) in tasks.iter().enumerate() {
+            for &d in &t.deps {
+                if d != i && depth[i] < depth[d] + 1 {
+                    depth[i] = depth[d] + 1;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let ncols = depth.iter().max().map_or(0, |d| d + 1);
+    let mut cols: Vec<Vec<usize>> = vec![Vec::new(); ncols];
+    for (i, d) in depth.iter().enumerate() {
+        cols[*d].push(i);
+    }
+
+    // Order each column by the mean row of its dependencies so connectors
+    // cross as little as possible; ties keep plan order.
+    let mut row_of: Vec<Option<usize>> = vec![None; n];
+    for col in &mut cols {
+        let key = |i: usize| -> usize {
+            let rows: Vec<usize> = tasks[i].deps.iter().filter_map(|&d| row_of[d]).collect();
+            if rows.is_empty() {
+                0
+            } else {
+                rows.iter().sum::<usize>() * 1000 / rows.len()
+            }
+        };
+        col.sort_by_key(|&i| (key(i), i));
+        for (r, &i) in col.iter().enumerate() {
+            row_of[i] = Some(r);
+        }
+    }
+
+    let mut pos = vec![(0, 0); n];
+    for (c, col) in cols.iter().enumerate() {
+        for (r, &i) in col.iter().enumerate() {
+            pos[i] = (c, r);
+        }
+    }
+    GraphLayout { cols, pos }
+}
+
+/// Selection target after moving `dy` within a column or `dx` between columns.
+fn graph_move(layout: &GraphLayout, from: usize, dx: isize, dy: isize) -> usize {
+    let Some(&(c, r)) = layout.pos.get(from) else {
+        return from;
+    };
+    if dy != 0 {
+        let col = &layout.cols[c];
+        let r = (r as isize + dy).rem_euclid(col.len() as isize) as usize;
+        return col[r];
+    }
+    let nc = c as isize + dx;
+    if nc < 0 || nc as usize >= layout.cols.len() {
+        return from;
+    }
+    let col = &layout.cols[nc as usize];
+    col[r.min(col.len() - 1)]
+}
+
+fn text_width(s: &str) -> usize {
+    Span::raw(s).width()
+}
+
+/// Truncate `s` to at most `max` columns, ending in `…` when cut.
+fn fit(s: &str, max: usize) -> String {
+    if text_width(s) <= max {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    for c in s.chars() {
+        let mut next = out.clone();
+        next.push(c);
+        if text_width(&next) + 1 > max {
+            break;
+        }
+        out = next;
+    }
+    out.push('…');
+    out
+}
+
+fn graph_node_width(tasks: &[TaskRow]) -> usize {
+    let name_w = tasks
+        .iter()
+        .map(|t| text_width(&t.name))
+        .max()
+        .unwrap_or(0)
+        .min(MAX_NAME_W);
+    // border, pad, icon, space, name, space, note, pad, border
+    name_w + NOTE_W + 7
+}
+
+/// Total size of the drawn graph in cells.
+fn graph_size(layout: &GraphLayout, node_w: usize) -> (usize, usize) {
+    let cols = layout.cols.len();
+    let rows = layout.cols.iter().map(Vec::len).max().unwrap_or(0);
+    (
+        cols * node_w + cols.saturating_sub(1) * COL_GAP,
+        (rows * ROW_PITCH).saturating_sub(ROW_PITCH - NODE_H),
+    )
+}
+
+const UP: u8 = 1;
+const DOWN: u8 = 2;
+const LEFT: u8 = 4;
+const RIGHT: u8 = 8;
+
+fn connector(mask: u8) -> &'static str {
+    match mask {
+        0 => " ",
+        m if m == UP | DOWN || m == UP || m == DOWN => "│",
+        m if m == LEFT | RIGHT || m == LEFT || m == RIGHT => "─",
+        m if m == DOWN | RIGHT => "┌",
+        m if m == DOWN | LEFT => "┐",
+        m if m == UP | RIGHT => "└",
+        m if m == UP | LEFT => "┘",
+        m if m == UP | DOWN | RIGHT => "├",
+        m if m == UP | DOWN | LEFT => "┤",
+        m if m == LEFT | RIGHT | DOWN => "┬",
+        m if m == LEFT | RIGHT | UP => "┴",
+        _ => "┼",
+    }
+}
+
+/// Draw an orthogonal polyline into the connector canvas.
+fn draw_path(canvas: &mut [Vec<u8>], points: &[(usize, usize)]) {
+    for pair in points.windows(2) {
+        let ((x0, y0), (x1, y1)) = (pair[0], pair[1]);
+        let (toward, back) = if y0 == y1 {
+            if x1 >= x0 {
+                (RIGHT, LEFT)
+            } else {
+                (LEFT, RIGHT)
+            }
+        } else if y1 > y0 {
+            (DOWN, UP)
+        } else {
+            (UP, DOWN)
+        };
+        let cells: Vec<(usize, usize)> = if y0 == y1 {
+            let (a, b) = (x0.min(x1), x0.max(x1));
+            let mut xs: Vec<usize> = (a..=b).collect();
+            if x1 < x0 {
+                xs.reverse();
+            }
+            xs.into_iter().map(|x| (x, y0)).collect()
+        } else {
+            let (a, b) = (y0.min(y1), y0.max(y1));
+            let mut ys: Vec<usize> = (a..=b).collect();
+            if y1 < y0 {
+                ys.reverse();
+            }
+            ys.into_iter().map(|y| (x0, y)).collect()
+        };
+        let last = cells.len() - 1;
+        for (k, &(x, y)) in cells.iter().enumerate() {
+            if k > 0 {
+                canvas[y][x] |= back;
+            }
+            if k < last {
+                canvas[y][x] |= toward;
+            }
+        }
+    }
+}
+
+/// Short status note shown at the right of a node.
+fn node_note(t: &TaskRow) -> String {
+    match &t.state {
+        TaskState::Pending => String::new(),
+        TaskState::Running => t
+            .started
+            .map(|s| format!("{:.1}s", s.elapsed().as_secs_f64()))
+            .unwrap_or_default(),
+        TaskState::Retrying(a, m) => format!("↻ {}/{}", a, m),
+        TaskState::Succeeded(d) => format!("{:.1}s", d.as_secs_f64()),
+        TaskState::Skipped(_) => "skip".into(),
+        TaskState::Failed(_) => "fail".into(),
+        TaskState::Cancelled(_) => "cancel".into(),
+    }
+}
+
+fn node_color(state: &TaskState) -> Color {
+    match state {
+        TaskState::Pending | TaskState::Skipped(_) => Color::DarkGray,
+        TaskState::Running => Color::Cyan,
+        TaskState::Retrying(..) | TaskState::Cancelled(_) => Color::Yellow,
+        TaskState::Succeeded(_) => Color::Green,
+        TaskState::Failed(_) => Color::Red,
+    }
+}
+
+/// Write `text` at graph cell `(x, y)`, shifted by the scroll `offset` and
+/// clipped to `area`.
+fn put(
+    buf: &mut Buffer,
+    area: Rect,
+    offset: (usize, usize),
+    x: usize,
+    y: usize,
+    text: &str,
+    style: Style,
+) {
+    if y < offset.1 || y - offset.1 >= area.height as usize || x < offset.0 {
+        return;
+    }
+    let sx = x - offset.0;
+    if sx >= area.width as usize {
+        return;
+    }
+    let room = area.width as usize - sx;
+    buf.set_string(
+        area.x + sx as u16,
+        area.y + (y - offset.1) as u16,
+        fit(text, room),
+        style,
+    );
+}
+
+fn render_graph(buf: &mut Buffer, area: Rect, run: &RunView, layout: &GraphLayout, tick: usize) {
+    if area.width == 0 || area.height == 0 || run.tasks.is_empty() {
+        return;
+    }
+    let node_w = graph_node_width(&run.tasks);
+    let pitch = node_w + COL_GAP;
+    let (total_w, total_h) = graph_size(layout, node_w);
+    let selected = run.selected.min(run.tasks.len() - 1);
+
+    // Keep the selected node centred when the graph is larger than the pane.
+    let (sc, sr) = layout.pos[selected];
+    let scroll = |sel: usize, size: usize, view: usize, total: usize| {
+        if total <= view {
+            0
+        } else {
+            (sel + size / 2).saturating_sub(view / 2).min(total - view)
+        }
+    };
+    let offset = (
+        scroll(sc * pitch, node_w, area.width as usize, total_w),
+        scroll(sr * ROW_PITCH, NODE_H, area.height as usize, total_h),
+    );
+
+    // Connectors first, so boxes drawn afterwards cover the ends that tuck
+    // under their borders. An edge to the next column runs straight to a
+    // trunk in the gap before the dependent; edges into the same task share
+    // that trunk. An edge spanning more columns drops into the blank row
+    // below its source and travels there, so it never passes through a box.
+    let mut canvas = vec![vec![0u8; total_w]; total_h];
+    let mid = |row: usize| row * ROW_PITCH + 1;
+    for (i, t) in run.tasks.iter().enumerate() {
+        let (c, r) = layout.pos[i];
+        let (x_in, y_in) = (c * pitch, mid(r));
+        if x_in < 2 {
+            continue;
+        }
+        let trunk = x_in - 2;
+        for &d in &t.deps {
+            let (dc, dr) = layout.pos[d];
+            let (x_out, y_out) = (dc * pitch + node_w, mid(dr));
+            if dc >= c || x_out > trunk {
+                continue;
+            }
+            let mut path = vec![(x_out - 1, y_out)];
+            if dc + 1 < c {
+                let lane = y_out + 2;
+                path.extend([(x_out, y_out), (x_out, lane), (trunk, lane)]);
+            } else {
+                path.push((trunk, y_out));
+            }
+            path.extend([(trunk, y_in), (x_in, y_in)]);
+            draw_path(&mut canvas, &path);
+        }
+    }
+    let wire = Style::default().fg(Color::DarkGray);
+    for (y, row) in canvas.iter().enumerate() {
+        for (x, &mask) in row.iter().enumerate() {
+            if mask != 0 {
+                put(buf, area, offset, x, y, connector(mask), wire);
+            }
+        }
+    }
+
+    let name_w = node_w - NOTE_W - 7;
+    for (i, t) in run.tasks.iter().enumerate() {
+        let (c, r) = layout.pos[i];
+        let (x, y) = (c * pitch, r * ROW_PITCH);
+        let is_selected = i == selected;
+        let color = node_color(&t.state);
+        let mut edge = Style::default().fg(color);
+        if is_selected {
+            edge = edge.add_modifier(Modifier::BOLD);
+        }
+        let (tl, tr, bl, br, h, v) = if is_selected {
+            ("┏", "┓", "┗", "┛", "━", "┃")
+        } else {
+            ("┌", "┐", "└", "┘", "─", "│")
+        };
+        let bar = h.repeat(node_w - 2);
+        put(buf, area, offset, x, y, &format!("{tl}{bar}{tr}"), edge);
+        put(buf, area, offset, x, y + 1, v, edge);
+        put(buf, area, offset, x + node_w - 1, y + 1, v, edge);
+        put(buf, area, offset, x, y + 2, &format!("{bl}{bar}{br}"), edge);
+
+        let icon = state_span(&t.state, tick);
+        let name = fit(&t.name, name_w);
+        let pad = name_w - text_width(&name);
+        let note = node_note(t);
+        let note_pad = NOTE_W - text_width(&fit(&note, NOTE_W));
+        let mut name_style = Style::default();
+        if is_selected {
+            name_style = name_style.add_modifier(Modifier::BOLD);
+        }
+        let inner = format!(
+            " {} {}{} {}{} ",
+            icon.content,
+            name,
+            " ".repeat(pad),
+            " ".repeat(note_pad),
+            fit(&note, NOTE_W)
+        );
+        put(buf, area, offset, x + 1, y + 1, &inner, name_style);
+        // Re-paint the icon and note in their state colors.
+        put(buf, area, offset, x + 2, y + 1, &icon.content, icon.style);
+        let note_x = x + node_w - 2 - NOTE_W;
+        put(
+            buf,
+            area,
+            offset,
+            note_x,
+            y + 1,
+            &format!("{}{}", " ".repeat(note_pad), fit(&note, NOTE_W)),
+            Style::default().fg(Color::DarkGray),
+        );
+    }
+}
+
 fn draw_run(f: &mut ratatui::Frame, app: &mut App) {
     let tick = app.tick;
     let Some(run) = app.run.as_ref() else { return };
@@ -935,41 +1351,60 @@ fn draw_run(f: &mut ratatui::Frame, app: &mut App) {
         rows[0],
     );
 
-    let cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
-        .split(rows[1]);
+    if run.graph_active() {
+        let layout = graph_layout(&run.tasks);
+        let (_, graph_h) = graph_size(&layout, graph_node_width(&run.tasks));
+        // Leave at least two fifths of the body for the log.
+        let max_h = (rows[1].height * 3 / 5).max(5);
+        let height = (graph_h as u16 + 2).clamp(5, max_h).min(rows[1].height);
+        let parts = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(height), Constraint::Min(3)])
+            .split(rows[1]);
+        let block = Block::default().borders(Borders::ALL).title(" Graph ");
+        let inner = block.inner(parts[0]);
+        f.render_widget(block, parts[0]);
+        render_graph(f.buffer_mut(), inner, run, &layout, tick);
+        f.render_widget(log_widget(run, parts[1]), parts[1]);
+    } else {
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(35), Constraint::Percentage(65)])
+            .split(rows[1]);
 
-    let items: Vec<ListItem> = run
-        .tasks
-        .iter()
-        .map(|t| {
-            ListItem::new(Line::from(vec![
-                state_span(&t.state, tick),
-                Span::raw(" "),
-                Span::raw(t.name.clone()),
-                Span::styled(state_note(&t.state), Style::default().fg(Color::DarkGray)),
-            ]))
-        })
-        .collect();
-    let mut state = ListState::default();
-    if !run.tasks.is_empty() {
-        state.select(Some(run.selected.min(run.tasks.len() - 1)));
+        let items: Vec<ListItem> = run
+            .tasks
+            .iter()
+            .map(|t| {
+                ListItem::new(Line::from(vec![
+                    state_span(&t.state, tick),
+                    Span::raw(" "),
+                    Span::raw(t.name.clone()),
+                    Span::styled(state_note(&t.state), Style::default().fg(Color::DarkGray)),
+                ]))
+            })
+            .collect();
+        let mut state = ListState::default();
+        if !run.tasks.is_empty() {
+            state.select(Some(run.selected.min(run.tasks.len() - 1)));
+        }
+        f.render_stateful_widget(
+            List::new(items)
+                .block(Block::default().borders(Borders::ALL).title(" Tasks "))
+                .highlight_style(
+                    Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+                ),
+            cols[0],
+            &mut state,
+        );
+
+        f.render_widget(log_widget(run, cols[1]), cols[1]);
     }
-    f.render_stateful_widget(
-        List::new(items)
-            .block(Block::default().borders(Borders::ALL).title(" Tasks "))
-            .highlight_style(Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED)),
-        cols[0],
-        &mut state,
-    );
-
-    f.render_widget(log_widget(run, cols[1]), cols[1]);
 
     let help = if run.is_running() {
-        "↑/↓: select task   Tab: all/selected log   PgUp/PgDn: scroll   q/Ctrl+C: abort"
+        "↑↓←→ select  v graph/list  Tab log  PgUp/PgDn scroll  q abort"
     } else {
-        "↑/↓: select task   Tab: all/selected log   PgUp/PgDn: scroll   r: re-run   q/Enter: back"
+        "↑↓←→ select  v graph/list  Tab log  PgUp/PgDn scroll  r re-run  q back"
     };
     f.render_widget(
         Paragraph::new(help)
@@ -1098,6 +1533,7 @@ mod tests {
             log: Vec::new(),
             selected: 0,
             all_logs: true,
+            graph: true,
             scroll: 0,
             result: None,
             rx,
@@ -1203,6 +1639,7 @@ mod tests {
             log: Vec::new(),
             selected: 0,
             all_logs: false,
+            graph: true,
             scroll: 0,
             result: None,
             rx,
@@ -1232,6 +1669,204 @@ mod tests {
             status,
         });
         assert_eq!(view.tasks[0].state, expected);
+    }
+
+    fn graph_view(edges: &[(&str, &[&str])]) -> RunView {
+        let (_tx, mut view) = run_view();
+        let names: Vec<String> = edges.iter().map(|(n, _)| n.to_string()).collect();
+        view.apply(UiEvent::Plan(names));
+        view.apply(UiEvent::Graph(
+            edges
+                .iter()
+                .map(|(n, d)| (n.to_string(), d.iter().map(|s| s.to_string()).collect()))
+                .collect(),
+        ));
+        view
+    }
+
+    fn column_names(view: &RunView) -> Vec<Vec<&str>> {
+        graph_layout(&view.tasks)
+            .cols
+            .iter()
+            .map(|c| c.iter().map(|&i| view.tasks[i].name.as_str()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn graph_columns_follow_the_longest_dependency_path() {
+        let view = graph_view(&[
+            ("lint", &[]),
+            ("build", &[]),
+            ("test", &["build"]),
+            ("ci", &["lint", "test"]),
+        ]);
+        assert_eq!(
+            column_names(&view),
+            [vec!["lint", "build"], vec!["test"], vec!["ci"]]
+        );
+    }
+
+    #[test]
+    fn graph_columns_survive_a_cycle() {
+        let view = graph_view(&[("a", &["b"]), ("b", &["a"]), ("c", &["c"])]);
+        let layout = graph_layout(&view.tasks);
+        assert_eq!(layout.pos.len(), 3);
+    }
+
+    #[test]
+    fn graph_is_inactive_without_edges_or_when_toggled_off() {
+        let mut view = graph_view(&[("a", &[]), ("b", &[])]);
+        assert!(!view.graph_active());
+        let mut view2 = graph_view(&[("a", &[]), ("b", &["a"])]);
+        assert!(view2.graph_active());
+        view2.graph = false;
+        assert!(!view2.graph_active());
+        view.graph = true;
+        assert!(!view.graph_active());
+    }
+
+    #[test]
+    fn graph_navigation_moves_within_and_between_columns() {
+        let mut view = graph_view(&[
+            ("lint", &[]),
+            ("build", &[]),
+            ("test", &["build"]),
+            ("ci", &["lint", "test"]),
+        ]);
+        let selected = |v: &RunView| v.tasks[v.selected].name.clone();
+        assert_eq!(selected(&view), "lint");
+        view.move_selection(0, 1);
+        assert_eq!(selected(&view), "build");
+        view.move_selection(0, 1);
+        assert_eq!(selected(&view), "lint", "wraps within the column");
+        view.move_selection(1, 0);
+        assert_eq!(selected(&view), "test");
+        view.move_selection(1, 0);
+        assert_eq!(selected(&view), "ci");
+        view.move_selection(1, 0);
+        assert_eq!(selected(&view), "ci", "stops at the last column");
+        view.move_selection(-1, 0);
+        assert_eq!(selected(&view), "test");
+    }
+
+    #[test]
+    fn list_navigation_ignores_horizontal_moves() {
+        let mut view = graph_view(&[("a", &[]), ("b", &[])]);
+        view.move_selection(1, 0);
+        assert_eq!(view.selected, 0);
+        view.move_selection(0, -1);
+        assert_eq!(view.selected, 1);
+    }
+
+    #[test]
+    fn started_tasks_record_their_start_time() {
+        let (_tx, mut view) = run_view();
+        view.apply(UiEvent::Plan(vec!["a".into()]));
+        assert!(view.tasks[0].started.is_none());
+        view.apply(UiEvent::Status {
+            task: "a".into(),
+            status: TaskStatus::Started { dependency: false },
+        });
+        assert!(view.tasks[0].started.is_some());
+    }
+
+    #[rstest::rstest]
+    #[case("build", 10, "build")]
+    #[case("build", 5, "build")]
+    #[case("build-all", 5, "buil…")]
+    #[case("日本語テスト", 7, "日本語…")]
+    fn fit_truncates_by_display_width(#[case] s: &str, #[case] max: usize, #[case] expected: &str) {
+        assert_eq!(fit(s, max), expected);
+    }
+
+    #[test]
+    fn renders_the_dependency_graph() {
+        let mut view = graph_view(&[
+            ("lint", &[]),
+            ("build", &[]),
+            ("test", &["build"]),
+            ("ci", &["lint", "test"]),
+        ]);
+        view.apply(UiEvent::Status {
+            task: "lint".into(),
+            status: TaskStatus::Succeeded {
+                elapsed: Duration::from_millis(1500),
+            },
+        });
+        view.apply(UiEvent::Status {
+            task: "build".into(),
+            status: TaskStatus::Failed {
+                error: "boom".into(),
+            },
+        });
+
+        let layout = graph_layout(&view.tasks);
+        let area = Rect::new(0, 0, 80, 12);
+        let mut buf = Buffer::empty(area);
+        render_graph(&mut buf, area, &view, &layout, 0);
+        let lines: Vec<String> = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect();
+        let text = lines.join("\n");
+        assert!(text.contains("✔ lint"), "{text}");
+        assert!(text.contains("1.5s"), "{text}");
+        assert!(text.contains("✘ build"), "{text}");
+        assert!(text.contains("fail"), "{text}");
+        assert!(text.contains("○ ci"), "{text}");
+        // `lint -> ci` spans two columns and runs below the `test` box.
+        assert!(
+            !lines[1].contains("test ─") && !lines[1].contains("test  ─"),
+            "{text}"
+        );
+        assert!(lines[3].contains('└') && lines[3].contains('┘'), "{text}");
+        // Both prerequisites of `ci` merge onto one trunk before it.
+        assert!(lines[1].contains("┬─│ ○ ci"), "{text}");
+    }
+
+    #[test]
+    fn a_small_pane_scrolls_instead_of_panicking() {
+        let view = graph_view(&[("a", &[]), ("b", &["a"]), ("c", &["b"])]);
+        let layout = graph_layout(&view.tasks);
+        for (w, h) in [(0, 0), (1, 1), (10, 3), (30, 5)] {
+            let area = Rect::new(0, 0, w, h);
+            let mut buf = Buffer::empty(area);
+            render_graph(&mut buf, area, &view, &layout, 3);
+        }
+    }
+
+    #[test]
+    fn run_screen_draws_the_graph_with_the_log() {
+        let (tx, view) = run_view();
+        let mut a = app(vec![section("ci")]);
+        a.run = Some(view);
+        a.mode = Mode::Run;
+        tx.send(UiEvent::Plan(vec!["build".into(), "ci".into()]))
+            .unwrap();
+        tx.send(UiEvent::Graph(vec![
+            ("build".into(), vec![]),
+            ("ci".into(), vec!["build".into()]),
+        ]))
+        .unwrap();
+        a.run.as_mut().unwrap().drain();
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal.draw(|f| ui(f, &mut a)).unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(rendered.contains("Graph"));
+        assert!(rendered.contains("build"));
+        assert!(rendered.contains("Log"));
+        assert!(!rendered.contains("Tasks"));
     }
 
     #[test]

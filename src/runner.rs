@@ -606,6 +606,7 @@ impl Runner {
             }
         };
         observer.plan(&names);
+        observer.graph(&plan.edges());
         let no_cancel = AtomicBool::new(false);
         let cancel = opts.cancel.as_deref().unwrap_or(&no_cancel);
 

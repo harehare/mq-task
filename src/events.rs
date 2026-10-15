@@ -46,6 +46,9 @@ pub enum TaskStatus {
 pub trait RunObserver: Send + Sync {
     /// The full set of tasks (in execution order) this run will consider.
     fn plan(&self, _tasks: &[String]) {}
+    /// Declared dependencies of every planned task as `(task, depends_on)`,
+    /// for observers that draw the dependency graph.
+    fn graph(&self, _edges: &[(String, Vec<String>)]) {}
     /// One line of output from a task (without the trailing newline).
     fn output(&self, task: &str, stream: Stream, line: &str);
     fn status(&self, task: &str, status: &TaskStatus);
@@ -273,6 +276,7 @@ mod tests {
         NullObserver.status("t", &statuses[0]);
         NullObserver.output("t", Stream::Stdout, "ignored");
         NullObserver.plan(&["t".into()]);
+        NullObserver.graph(&[("t".into(), vec![])]);
     }
 
     proptest! {

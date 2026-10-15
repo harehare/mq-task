@@ -1100,3 +1100,97 @@ echo "gen $MX_ITEM"
     assert!(!stdout(&second).contains("gen a"), "{}", stdout(&second));
     assert!(stdout(&second).contains("up to date"));
 }
+
+#[test]
+fn ignore_error_lets_the_run_continue_with_exit_zero() {
+    let dir = workdir("ignore-error");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## flaky
+
+```meta
+ignore_error = true
+```
+
+```bash
+echo flaky-ran
+exit 5
+```
+
+## ci
+
+```meta
+depends = ["flaky"]
+```
+
+```bash
+echo ci-ran
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "ci"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("ci-ran"));
+    assert!(stderr(&out).contains("ignoring error"), "{}", stderr(&out));
+
+    // Running it directly succeeds too.
+    let out = mq_task(&dir, &["-f", "tasks.md", "flaky"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+}
+
+#[test]
+fn ignore_error_applies_after_retries_and_is_not_cached() {
+    let dir = workdir("ignore-error-retry");
+    fs::write(dir.join("in.txt"), "x").unwrap();
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## flaky
+
+```meta
+ignore_error = true
+retries = 1
+retry_delay = "10ms"
+sources = ["in.txt"]
+```
+
+```bash
+echo attempt
+exit 1
+```
+"#,
+    );
+    let first = mq_task(&dir, &["-f", "tasks.md", "flaky"]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    assert_eq!(stdout(&first).matches("attempt").count(), 2);
+
+    // The ignored failure is not remembered as "up to date".
+    let second = mq_task(&dir, &["-f", "tasks.md", "flaky"]);
+    assert_eq!(stdout(&second).matches("attempt").count(), 2);
+}
+
+#[test]
+fn ignore_error_does_not_hide_configuration_errors() {
+    let dir = workdir("ignore-error-config");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## needs-param
+
+```meta
+ignore_error = true
+params = ["required"]
+```
+
+```bash
+true
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "needs-param"]);
+    assert!(!out.status.success());
+}

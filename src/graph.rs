@@ -48,6 +48,9 @@ fn badges(s: &Section) -> String {
     if !s.defer.is_empty() {
         b.push(format!("defer: {}", s.defer.join(", ")));
     }
+    if s.ignore_error {
+        b.push("ignore_error".to_string());
+    }
     if s.retries > 0 {
         b.push(format!("retries: {}", s.retries));
     }

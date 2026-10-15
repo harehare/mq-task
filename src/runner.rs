@@ -182,6 +182,9 @@ struct TaskMeta {
     /// Tasks run after this one finishes, even if it failed
     #[serde(default)]
     defer: Vec<String>,
+    /// Treat a failed run (after retries) as success
+    #[serde(default)]
+    ignore_error: bool,
 }
 
 /// A named task parameter, e.g. `params = ["env=staging", "verbose"]`.
@@ -271,6 +274,10 @@ pub struct Section {
     /// whatever its outcome
     #[serde(default)]
     pub defer: Vec<String>,
+    /// A failed run (after retries and timeouts) is reported but does not
+    /// fail the task, block its dependents or change the exit code
+    #[serde(default)]
+    pub ignore_error: bool,
 }
 
 /// Document-wide settings found in the preamble `meta` block.
@@ -591,6 +598,7 @@ impl Runner {
             for_each,
             loop_var: meta.loop_var,
             defer: meta.defer,
+            ignore_error: meta.ignore_error,
         })
     }
 
@@ -1804,5 +1812,14 @@ true
         let found = schedule::resolve_call(&sections, &sections[2].depends[1]).unwrap();
         assert_eq!(found.0.title, "ns:Build App");
         assert_eq!(found.1, vec!["x=1"]);
+    }
+
+    #[test]
+    fn parses_ignore_error() {
+        let md = "## t\n\n```meta\nignore_error = true\n```\n\n```bash\ntrue\n```\n";
+        let sections = parse(md).unwrap();
+        assert!(sections[0].ignore_error);
+        let md = "## t\n\n```bash\ntrue\n```\n";
+        assert!(!parse(md).unwrap()[0].ignore_error);
     }
 }

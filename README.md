@@ -405,6 +405,8 @@ timeout = "5m"       # per attempt; exit code 124 when exceeded
 
 Durations accept `ms`, `s`, `m` and `h` (a bare number is seconds). Only runtime failures are retried; missing runtimes or parameters fail immediately. A task with a `timeout` runs in its own process group so the whole process tree is stopped; for that reason it cannot read from the terminal.
 
+Set `ignore_error = true` to let a task fail without failing the run: the failure (after retries) is reported on stderr, dependents still run and the exit code stays `0`. Missing runtimes/parameters and cancellation are never ignored.
+
 ### Passing output between tasks
 
 Set `capture = true` to expose a task's stdout (trailing newline removed) to the tasks that depend on it as `MX_OUTPUT_<TASK>` (the title upper-cased, other characters replaced with `_`). The output is still printed.

@@ -324,7 +324,18 @@ impl Executor {
         }
 
         let started = Instant::now();
-        let body = self.run_with_retries(p, &task_env, io);
+        let mut ignored = false;
+        let body = match self.run_with_retries(p, &task_env, io) {
+            // Only runtime failures are ignorable; cancellation and
+            // configuration errors still stop the run.
+            Err(e) if section.ignore_error && is_retriable(&e) => {
+                io.observer
+                    .output(name, Stream::Stderr, &format!("ignoring error: {}", e));
+                ignored = true;
+                Ok(String::new())
+            }
+            other => other,
+        };
         // Deferred tasks run once the body is over, even when it failed.
         let deferred = if p.defers.is_empty() {
             Ok(())
@@ -336,7 +347,10 @@ impl Executor {
             (Err(e), _) | (Ok(_), Err(e)) => return Err(fail(e)),
         };
 
-        if let Some(fp) = &fingerprint {
+        // A failure that was ignored must not be remembered as up to date.
+        if let Some(fp) = &fingerprint
+            && !ignored
+        {
             cache::record(&self.cache_scope, name, fp);
         }
 

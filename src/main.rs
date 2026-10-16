@@ -190,6 +190,10 @@ enum Commands {
         /// Include private tasks (name starts with `_` or `meta` has private = true)
         #[arg(short, long)]
         all: bool,
+
+        /// Print the tasks as JSON instead of text
+        #[arg(long)]
+        json: bool,
     },
 
     /// Interactively select and run a task using TUI
@@ -317,7 +321,8 @@ fn dispatch(cli: Cli) -> Result<()> {
             config,
             lang,
             all,
-        }) => list_tasks(file, config, lang, all)?,
+            json,
+        }) => list_tasks(file, config, lang, all, json)?,
         Some(Commands::Tui {
             file,
             config,
@@ -362,7 +367,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                     watch: cli.watch,
                     summary: cli.summary,
                 })?,
-                None => list_tasks(cli.file, cli.config, cli.lang, cli.all)?,
+                None => list_tasks(cli.file, cli.config, cli.lang, cli.all, false)?,
             }
         }
     }
@@ -516,6 +521,7 @@ fn list_tasks(
     config_path: Option<PathBuf>,
     lang_filter: Option<String>,
     show_all: bool,
+    json: bool,
 ) -> Result<()> {
     let config = load_config(config_path)?;
     let mut runner = Runner::new(config);
@@ -532,6 +538,11 @@ fn list_tasks(
                 .is_none_or(|lang| section.codes.iter().any(|code| code.lang == *lang))
         })
         .collect();
+
+    if json {
+        println!("{}", mq_task::summary::list_json(&filtered_sections));
+        return Ok(());
+    }
 
     if filtered_sections.is_empty() {
         if let Some(ref lang) = lang_filter {

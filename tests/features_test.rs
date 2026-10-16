@@ -1638,3 +1638,45 @@ true
     let missing = mq_task(&dir, &["-f", "tasks.md", "nope", "--summary"]);
     assert!(!missing.status.success());
 }
+
+#[test]
+fn list_json_prints_machine_readable_tasks() {
+    let dir = workdir("list-json");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## build
+
+Compile everything.
+
+```meta
+alias = ["b"]
+params = ["profile=dev"]
+```
+
+```bash
+true
+```
+
+## _hidden
+
+```bash
+true
+```
+"#,
+    );
+    let out = mq_task(&dir, &["list", "-f", "tasks.md", "--json"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let value: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    let tasks = value.as_array().unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0]["name"], "build");
+    assert_eq!(tasks[0]["description"], "Compile everything.");
+    assert_eq!(tasks[0]["aliases"][0], "b");
+    assert_eq!(tasks[0]["params"][0]["name"], "profile");
+
+    let all = mq_task(&dir, &["list", "-f", "tasks.md", "--json", "--all"]);
+    let value: serde_json::Value = serde_json::from_str(&stdout(&all)).unwrap();
+    assert_eq!(value.as_array().unwrap().len(), 2);
+}

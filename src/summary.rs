@@ -84,6 +84,35 @@ pub fn render(section: &Section) -> String {
     out
 }
 
+/// The tasks as a JSON array, for scripts and editors (`list --json`).
+pub fn list_json(sections: &[Section]) -> String {
+    let tasks: Vec<serde_json::Value> = sections
+        .iter()
+        .map(|s| {
+            let mut languages: Vec<&str> = Vec::new();
+            for code in &s.codes {
+                if !languages.contains(&code.lang.as_str()) {
+                    languages.push(&code.lang);
+                }
+            }
+            serde_json::json!({
+                "name": s.title,
+                "description": s.description.as_deref().map(str::trim).filter(|d| !d.is_empty()),
+                "aliases": s.aliases,
+                "depends": s.depends,
+                "params": s.params.iter().map(|p| serde_json::json!({
+                    "name": p.name,
+                    "default": p.default,
+                    "required": p.default.is_none(),
+                })).collect::<Vec<_>>(),
+                "private": s.private,
+                "languages": languages,
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&tasks).unwrap_or_else(|_| "[]".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,5 +168,33 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(render(&section), "t\n");
+    }
+
+    #[test]
+    fn lists_tasks_as_json() {
+        let sections = vec![Section {
+            title: "build".into(),
+            description: Some("  Build it. ".into()),
+            aliases: vec!["b".into()],
+            params: vec![ParamDef {
+                name: "profile".into(),
+                default: Some("dev".into()),
+            }],
+            codes: vec![CodeBlock {
+                lang: "bash".into(),
+                code: "true".into(),
+            }],
+            ..Default::default()
+        }];
+        let value: serde_json::Value = serde_json::from_str(&list_json(&sections)).unwrap();
+        let task = &value[0];
+        assert_eq!(task["name"], "build");
+        assert_eq!(task["description"], "Build it.");
+        assert_eq!(task["aliases"][0], "b");
+        assert_eq!(task["params"][0]["default"], "dev");
+        assert_eq!(task["params"][0]["required"], false);
+        assert_eq!(task["languages"][0], "bash");
+        assert_eq!(task["private"], false);
+        assert_eq!(list_json(&[]), "[]");
     }
 }

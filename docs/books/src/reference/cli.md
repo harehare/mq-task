@@ -9,7 +9,7 @@ mq-task [OPTIONS] [TASK] [-- <ARGS>...] [COMMAND]
 | Command | Description |
 |---|---|
 | `run` | Run a task |
-| `list` | List tasks (`-a/--all` includes private) |
+| `list` | List tasks (`-a/--all` includes private; `--json` prints `name`, `description`, `aliases`, `depends`, `params`, `private` and `languages` as JSON) |
 | `tui` | Select and run a task interactively |
 | `graph [TASK]` | Print the dependency graph (`--format text\|mermaid`) |
 | `completions <SHELL>` | Generate shell completions |

@@ -49,6 +49,9 @@ pub(crate) fn badge_list(s: &Section) -> Vec<String> {
     if !s.defer.is_empty() {
         b.push(format!("defer: {}", s.defer.join(", ")));
     }
+    if !s.requires.is_empty() {
+        b.push(format!("requires: {}", s.requires.join(", ")));
+    }
     if s.once {
         b.push("once".to_string());
     }

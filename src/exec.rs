@@ -352,6 +352,28 @@ impl Executor {
 
         let mut full_env = task_env.clone();
         full_env.extend(self.env_overrides.iter().cloned());
+
+        let missing: Vec<&str> = section
+            .requires
+            .iter()
+            .map(String::as_str)
+            .filter(|var| {
+                let value = full_env
+                    .iter()
+                    .rev()
+                    .find(|(k, _)| k == var)
+                    .map(|(_, v)| v.clone())
+                    .or_else(|| std::env::var(var).ok());
+                value.is_none_or(|v| v.is_empty())
+            })
+            .collect();
+        if !missing.is_empty() && !self.dry_run {
+            return Err(fail(Error::MissingVariable(
+                missing.join(", "),
+                section.title.clone(),
+            )));
+        }
+
         if self.use_cache
             && !self.dry_run
             && !section.status.is_empty()

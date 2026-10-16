@@ -761,3 +761,45 @@ fn an_empty_runtime_command_is_rejected() {
     let n = node(&exec, &s, &[], false);
     assert!(matches!(n.outcome, Err(Error::RuntimeNotFound(_))));
 }
+
+#[test]
+fn required_variables_must_be_set_and_not_empty() {
+    let mut s = bash("t", &[], "echo ran");
+    s.requires = vec!["MQ_TASK_TEST_REQ_A".into(), "MQ_TASK_TEST_REQ_B".into()];
+
+    let n = node(&executor(), &s, &[], false);
+    match &n.outcome {
+        Err(Error::MissingVariable(vars, task)) => {
+            assert_eq!(vars, "MQ_TASK_TEST_REQ_A, MQ_TASK_TEST_REQ_B");
+            assert_eq!(task, "t");
+        }
+        other => panic!("expected MissingVariable, got {other:?}"),
+    }
+    assert!(n.rec.stdout("t").is_empty());
+
+    // An empty value does not count; a value from `--env`/meta/extra env does.
+    let n = node_with(
+        &executor(),
+        &s,
+        &[],
+        false,
+        &AtomicBool::new(false),
+        &[("MQ_TASK_TEST_REQ_A", ""), ("MQ_TASK_TEST_REQ_B", "x")],
+        None,
+    );
+    assert!(
+        matches!(n.outcome, Err(Error::MissingVariable(ref v, _)) if v == "MQ_TASK_TEST_REQ_A")
+    );
+
+    let n = node_with(
+        &executor(),
+        &s,
+        &[],
+        false,
+        &AtomicBool::new(false),
+        &[("MQ_TASK_TEST_REQ_A", "1"), ("MQ_TASK_TEST_REQ_B", "2")],
+        None,
+    );
+    assert!(n.outcome.is_ok());
+    assert_eq!(n.rec.stdout("t"), vec!["ran"]);
+}

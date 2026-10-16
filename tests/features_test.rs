@@ -1680,3 +1680,49 @@ true
     let value: serde_json::Value = serde_json::from_str(&stdout(&all)).unwrap();
     assert_eq!(value.as_array().unwrap().len(), 2);
 }
+
+#[test]
+fn requires_checks_cli_env_dotenv_and_process_environment() {
+    let dir = workdir("requires");
+    write(&dir, ".env", "FROM_DOTENV=1\n");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## deploy
+
+```meta
+requires = ["API_TOKEN", "FROM_DOTENV"]
+dotenv = [".env"]
+```
+
+```bash
+echo "deploying with $API_TOKEN"
+```
+"#,
+    );
+    let missing = mq_task(&dir, &["-f", "tasks.md", "deploy"]);
+    assert!(!missing.status.success());
+    assert!(
+        stderr(&missing).contains("API_TOKEN"),
+        "{}",
+        stderr(&missing)
+    );
+    assert!(!stderr(&missing).contains("FROM_DOTENV"));
+    assert!(!stdout(&missing).contains("deploying"));
+
+    let cli = mq_task(
+        &dir,
+        &["-f", "tasks.md", "deploy", "--env", "API_TOKEN=abc"],
+    );
+    assert!(cli.status.success(), "{}", stderr(&cli));
+    assert!(stdout(&cli).contains("deploying with abc"));
+
+    let process = Command::new(env!("CARGO_BIN_EXE_mq-task"))
+        .args(["-f", "tasks.md", "deploy"])
+        .env("API_TOKEN", "from-process")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(stdout(&process).contains("deploying with from-process"));
+}

@@ -44,6 +44,28 @@ dir = "services/api"
 
 CLI `--env` / `--dir` override the `meta` defaults for that run.
 
+## Required variables
+
+`requires` fails a task early, before anything runs, when variables it needs are missing or empty:
+
+````markdown
+## deploy
+
+```meta
+requires = ["API_TOKEN", "REGION"]
+```
+
+```bash
+./deploy.sh
+```
+````
+
+```text
+Error: Task 'deploy' requires API_TOKEN, REGION to be set
+```
+
+Variables are looked up in `--env`, the task's `meta`, params and `dotenv` files, and the process environment. All missing names are reported at once. Tasks skipped by `if` are not checked, and `--dry-run` does not check at all.
+
 ## `.env` files
 
 `dotenv` loads variables from `.env`-style files. It works per task and, in a `meta` block before the first heading, for every task:

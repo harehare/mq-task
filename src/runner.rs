@@ -200,6 +200,9 @@ struct TaskMeta {
     /// Run only once per run, however it is called
     #[serde(default)]
     once: bool,
+    /// Variables that must be set (and not empty), e.g. `["API_TOKEN"]`
+    #[serde(default)]
+    requires: Vec<String>,
 }
 
 /// A named task parameter, e.g. `params = ["env=staging", "verbose"]`.
@@ -309,6 +312,10 @@ pub struct Section {
     /// different arguments; the first call wins
     #[serde(default)]
     pub once: bool,
+    /// Variables that must be set and not empty (in `--env`, `meta`,
+    /// params, `dotenv` or the process environment) for the task to run
+    #[serde(default)]
+    pub requires: Vec<String>,
 }
 
 /// Document-wide settings found in the preamble `meta` block.
@@ -644,6 +651,7 @@ impl Runner {
             dotenv: meta.dotenv,
             status: meta.status,
             once: meta.once,
+            requires: meta.requires,
         })
     }
 
@@ -1923,5 +1931,12 @@ true
     fn parses_once() {
         let md = "## t\n\n```meta\nonce = true\n```\n\n```bash\ntrue\n```\n";
         assert!(parse(md).unwrap()[0].once);
+    }
+
+    #[test]
+    fn parses_requires() {
+        let md =
+            "## t\n\n```meta\nrequires = [\"API_TOKEN\", \"REGION\"]\n```\n\n```bash\ntrue\n```\n";
+        assert_eq!(parse(md).unwrap()[0].requires, vec!["API_TOKEN", "REGION"]);
     }
 }

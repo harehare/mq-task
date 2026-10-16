@@ -21,6 +21,7 @@ A fenced block with the language `meta` (TOML) in a task section. Unknown or inv
 | `status` | array of strings | Shell commands; task skipped when all exit `0` ([guide](../guide/cache-watch.md#custom-up-to-date-checks-with-status)) |
 | `outputs` | array of paths | Files that must exist for the task to be considered up to date |
 | `params` | array of strings | Named parameters (`name` required, `name=value` default) |
+| `requires` | array of strings | Variables that must be set and not empty ([guide](../guide/params-env.md#required-variables)) |
 | `env` | array of `KEY=VALUE` | Default environment variables |
 | `dir` | string | Working directory |
 | `dotenv` | array of paths | `.env` files to load ([guide](../guide/params-env.md#env-files)) |

@@ -197,4 +197,63 @@ mod tests {
         assert_eq!(task["private"], false);
         assert_eq!(list_json(&[]), "[]");
     }
+
+    #[test]
+    fn lists_every_setting_that_is_present() {
+        let section = Section {
+            title: "t".into(),
+            env: vec![("A".into(), "1".into()), ("B".into(), "2".into())],
+            dir: Some("svc".into()),
+            dotenv: vec![".env".into()],
+            prompt: Some("sure?".into()),
+            sources: vec!["src/**".into()],
+            outputs: vec!["out".into()],
+            ..Default::default()
+        };
+        let text = render(&section);
+        for row in [
+            "  env      A=1, B=2\n",
+            "  dir      svc\n",
+            "  dotenv   .env\n",
+            "  options  prompt\n",
+            "  prompt   sure?\n",
+            "  sources  src/**\n",
+            "  outputs  out\n",
+        ] {
+            assert!(text.contains(row), "{}", text);
+        }
+    }
+
+    #[test]
+    fn multi_line_descriptions_are_indented_and_blank_ones_dropped() {
+        let section = Section {
+            title: "t".into(),
+            description: Some("first\n second ".into()),
+            ..Default::default()
+        };
+        assert_eq!(render(&section), "t\n  first\n  second\n");
+        let blank = Section {
+            title: "t".into(),
+            description: Some("   ".into()),
+            ..Default::default()
+        };
+        assert_eq!(render(&blank), "t\n");
+    }
+
+    #[test]
+    fn json_marks_private_tasks_and_missing_descriptions() {
+        let sections = vec![Section {
+            title: "_hidden".into(),
+            private: true,
+            params: vec![ParamDef {
+                name: "x".into(),
+                default: None,
+            }],
+            ..Default::default()
+        }];
+        let value: serde_json::Value = serde_json::from_str(&list_json(&sections)).unwrap();
+        assert_eq!(value[0]["private"], true);
+        assert!(value[0]["description"].is_null());
+        assert_eq!(value[0]["params"][0]["required"], true);
+    }
 }

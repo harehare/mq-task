@@ -235,4 +235,35 @@ mod tests {
         assert!(out.contains("a (cycle)"));
         assert!(out.contains("ghost (not found)"));
     }
+
+    #[test]
+    fn badges_describe_the_notable_settings() {
+        use crate::runner::LoopSpec;
+        let s = Section {
+            title: "t".into(),
+            for_each: Some(LoopSpec::List(vec!["a".into(), "b".into()])),
+            defer: vec!["cleanup".into()],
+            once: true,
+            status: vec!["true".into()],
+            prompt: Some("sure?".into()),
+            ignore_error: true,
+            requires: vec!["TOKEN".into()],
+            retries: 2,
+            ..Default::default()
+        };
+        assert_eq!(
+            badges(&s),
+            " [for: a, b, defer: cleanup, requires: TOKEN, once, status, prompt, ignore_error, retries: 2]"
+        );
+        assert_eq!(badges(&sec("plain", &[])), "");
+    }
+
+    #[test]
+    fn calls_with_arguments_show_in_both_formats() {
+        let sections = vec![sec("deploy", &[]), sec("ci", &["deploy env=prod 'a b'"])];
+        let text = render(&sections, Some("ci"), GraphFormat::Text);
+        assert_eq!(text, "ci\n└── deploy (env=prod a b)\n");
+        let mermaid = render(&sections, Some("ci"), GraphFormat::Mermaid);
+        assert!(mermaid.contains("[\"deploy\"]") && mermaid.contains("-->"));
+    }
 }

@@ -2059,3 +2059,228 @@ echo finished
         text
     );
 }
+
+#[test]
+fn defer_runs_after_every_loop_item() {
+    let dir = workdir("defer-loop");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## cleanup
+
+```bash
+echo "cleanup after $MX_ITEM"
+```
+
+## each
+
+```meta
+for = ["a", "b"]
+defer = ["cleanup"]
+```
+
+```bash
+echo "run $MX_ITEM"
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "each"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let lines: Vec<String> = stdout(&out)
+        .lines()
+        .filter(|l| l.starts_with("run ") || l.starts_with("cleanup "))
+        .map(str::to_string)
+        .collect();
+    assert_eq!(
+        lines,
+        vec!["run a", "cleanup after a", "run b", "cleanup after b"]
+    );
+}
+
+#[test]
+fn dependencies_can_be_called_by_alias_with_arguments() {
+    let dir = workdir("alias-args");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## deploy
+
+```meta
+alias = ["d"]
+params = ["env"]
+```
+
+```bash
+echo "deploying $MX_PARAM_ENV"
+```
+
+## ci
+
+```meta
+depends = ["d staging", "deploy prod"]
+```
+
+```bash
+echo done
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "ci"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("deploying staging") && text.contains("deploying prod"),
+        "{}",
+        text
+    );
+}
+
+#[test]
+fn output_group_reports_failures_with_their_output() {
+    let dir = workdir("output-group-fail");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## broken
+
+```bash
+echo before
+echo oops >&2
+exit 3
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "broken", "--output", "group"]);
+    assert_eq!(out.status.code(), Some(3));
+    assert!(
+        stdout(&out).contains("▶ broken\nbefore"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(stderr(&out).contains("oops"), "{}", stderr(&out));
+    assert!(stderr(&out).contains("✘ broken"), "{}", stderr(&out));
+}
+
+#[test]
+fn output_group_hides_the_output_of_skipped_tasks() {
+    let dir = workdir("output-group-skip");
+    fs::write(dir.join("in.txt"), "x").unwrap();
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## gen
+
+```meta
+sources = ["in.txt"]
+```
+
+```bash
+echo generating
+```
+"#,
+    );
+    let args = ["-f", "tasks.md", "gen", "--output", "group"];
+    assert!(stdout(&mq_task(&dir, &args)).contains("generating"));
+    let second = mq_task(&dir, &args);
+    assert!(second.status.success());
+    assert!(!stdout(&second).contains("generating"));
+    assert!(stdout(&second).contains("up to date"));
+}
+
+#[test]
+fn an_imported_files_dotenv_applies_to_its_tasks() {
+    let dir = workdir("import-dotenv");
+    fs::create_dir_all(dir.join("lib")).unwrap();
+    write(&dir.join("lib"), ".env", "FROM_LIB=yes\n");
+    write(
+        &dir.join("lib"),
+        "tools.md",
+        r#"
+```meta
+dotenv = [".env"]
+dir = "lib"
+```
+
+## show
+
+```bash
+echo "lib=$FROM_LIB"
+```
+"#,
+    );
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+```meta
+imports = ["lib/tools.md"]
+```
+
+## go
+
+```meta
+depends = ["tools:show"]
+```
+
+```bash
+echo done
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "go"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("lib=yes"), "{}", stdout(&out));
+}
+
+#[test]
+fn requires_is_not_checked_in_a_dry_run() {
+    let dir = workdir("requires-dry");
+    write(
+        &dir,
+        "tasks.md",
+        "## t\n\n```meta\nrequires = [\"MQ_TASK_SURELY_UNSET\"]\n```\n\n```bash\necho hi\n```\n",
+    );
+    let dry = mq_task(&dir, &["-f", "tasks.md", "t", "--dry-run"]);
+    assert!(dry.status.success(), "{}", stderr(&dry));
+    let real = mq_task(&dir, &["-f", "tasks.md", "t"]);
+    assert!(!real.status.success());
+}
+
+#[test]
+fn a_timeout_can_be_ignored_too() {
+    let dir = workdir("ignore-timeout");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## slow
+
+```meta
+ignore_error = true
+timeout = "200ms"
+```
+
+```bash
+sleep 5
+```
+
+## after
+
+```meta
+depends = ["slow"]
+```
+
+```bash
+echo after-ran
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "after"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("after-ran"));
+    assert!(stderr(&out).contains("ignoring error"), "{}", stderr(&out));
+}

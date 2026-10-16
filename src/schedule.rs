@@ -1174,4 +1174,129 @@ mod tests {
             Err(Error::Invalid(_))
         ));
     }
+
+    #[test]
+    fn split_words_is_lenient_about_unbalanced_quotes() {
+        assert_eq!(split_words(r#"a "b c"#), vec!["a", "b c"]);
+        assert_eq!(split_words("it's"), vec!["its"]);
+        assert_eq!(split_words(r#"x="a b" y"#), vec!["x=a b", "y"]);
+    }
+
+    #[test]
+    fn loop_item_vars_name_the_item_once() {
+        let mut s = sec("t", &[], false);
+        let names = |s: &Section| -> Vec<String> {
+            loop_item_vars(s, 2, "v")
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect()
+        };
+        assert_eq!(names(&s), vec!["MX_ITEM", "MX_INDEX"]);
+
+        s.loop_var = Some("file".into());
+        assert_eq!(names(&s), vec!["MX_ITEM", "MX_INDEX", "MX_FILE"]);
+
+        // `as = "item"` is the default name, not a duplicate.
+        s.loop_var = Some("item".into());
+        assert_eq!(names(&s), vec!["MX_ITEM", "MX_INDEX"]);
+        assert_eq!(loop_var("my-axis.x"), "MX_MY_AXIS_X");
+    }
+
+    #[test]
+    fn plan_context_prefers_cli_then_task_then_document_dir() {
+        let mut s = sec("t", &[], false);
+        let cli = Path::new("cli");
+        let doc = Path::new("doc");
+        let ctx = |working_dir, global_dir| PlanContext {
+            working_dir,
+            global_dir,
+        };
+        assert_eq!(ctx(None, None).dir_for(&s), None);
+        assert_eq!(ctx(None, Some(doc)).dir_for(&s), Some(doc));
+        s.dir = Some("task".into());
+        assert_eq!(ctx(None, Some(doc)).dir_for(&s), Some(Path::new("task")));
+        assert_eq!(ctx(Some(cli), Some(doc)).dir_for(&s), Some(cli));
+    }
+
+    #[test]
+    fn glob_loops_accept_absolute_patterns_and_ignore_invalid_ones() {
+        let dir = std::env::temp_dir().join(format!("mq-task-abs-glob-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "").unwrap();
+
+        let pattern = dir.join("*.txt").to_string_lossy().into_owned();
+        let spec = LoopSpec::Glob(vec![pattern.clone(), "[".into()]);
+        let sections = vec![with_code(looped("t", spec))];
+        let plan = build_plan(&sections, "t", false).unwrap();
+        assert_eq!(plan.nodes.len(), 1);
+        assert_eq!(
+            plan.nodes[0].label,
+            format!("t[{}]", dir.join("a.txt").display())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn empty_matrix_axes_make_an_empty_loop() {
+        let none = LoopSpec::Matrix(Vec::new());
+        let sections = vec![with_code(looped("t", none))];
+        let plan = build_plan(&sections, "t", false).unwrap();
+        assert!(plan.nodes[0].skip.is_some());
+
+        let empty_axis = LoopSpec::Matrix(vec![("os".into(), Vec::new())]);
+        let sections = vec![with_code(looped("t", empty_axis))];
+        let plan = build_plan(&sections, "t", false).unwrap();
+        assert!(plan.nodes[0].skip.is_some());
+    }
+
+    #[test]
+    fn an_empty_loop_drops_its_defers_and_keeps_dependencies() {
+        let mut each = with_code(looped("each", list(&[])));
+        each.depends = vec!["base".into()];
+        each.defer = vec!["cleanup".into()];
+        let sections = vec![
+            with_code(sec("base", &[], false)),
+            with_code(sec("cleanup", &[], false)),
+            each,
+        ];
+        let plan = build_plan(&sections, "each", false).unwrap();
+        let node = plan.nodes.last().unwrap();
+        assert!(node.skip.is_some() && node.defers.is_empty());
+        assert_eq!(node.deps, vec![0]);
+    }
+
+    #[test]
+    fn loop_items_inherit_defers_and_dependencies() {
+        let mut each = with_code(looped("each", list(&["a", "b"])));
+        each.depends = vec!["base".into()];
+        each.defer = vec!["cleanup".into()];
+        let sections = vec![
+            with_code(sec("base", &[], false)),
+            with_code(sec("cleanup", &[], false)),
+            each,
+        ];
+        let plan = build_plan(&sections, "each", false).unwrap();
+        assert_eq!(names(&plan), vec!["base", "each[a]", "each[b]"]);
+        for node in &plan.nodes[1..] {
+            assert_eq!(node.defers.len(), 1);
+            assert_eq!(node.deps, vec![0]);
+        }
+    }
+
+    #[test]
+    fn edges_use_labels() {
+        let sections = vec![
+            with_code(sec("build", &[], false)),
+            with_code(sec("ci", &["build env=a"], false)),
+        ];
+        let plan = build_plan(&sections, "ci", false).unwrap();
+        assert_eq!(
+            plan.edges(),
+            vec![
+                ("build[env=a]".to_string(), vec![]),
+                ("ci".to_string(), vec!["build[env=a]".to_string()])
+            ]
+        );
+    }
 }

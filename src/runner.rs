@@ -1996,4 +1996,49 @@ true
             Some(LoopSpec::From("elsewhere:list".into()))
         );
     }
+
+    #[test]
+    fn loop_specs_have_short_summaries() {
+        let list = |n: usize| LoopSpec::List((0..n).map(|i| i.to_string()).collect());
+        assert_eq!(list(2).summary(), "0, 1");
+        assert_eq!(list(5).summary(), "0, 1, 2, ...");
+        assert_eq!(
+            LoopSpec::Glob(vec!["a/*".into(), "b/*".into()]).summary(),
+            "glob a/*, b/*"
+        );
+        let matrix = LoopSpec::Matrix(vec![("arch".into(), vec![]), ("os".into(), vec![])]);
+        assert_eq!(matrix.summary(), "matrix arch x os");
+        assert_eq!(LoopSpec::From("ls".into()).summary(), "output of ls");
+    }
+
+    #[test]
+    fn quote_word_round_trips_through_split_words() {
+        for word in ["plain", "a b", "k=v w", "say \"hi\"", "", "x'y"] {
+            let quoted = quote_word(word);
+            assert_eq!(split_words(&quoted), vec![word.to_string()], "{}", quoted);
+        }
+    }
+
+    #[test]
+    fn matrix_axes_are_sorted_and_scalars_become_strings() {
+        let md = "## t\n\n```meta\nfor = { matrix = { b = [1, 2.5], a = [true] } }\n```\n\n```bash\ntrue\n```\n";
+        assert_eq!(
+            parse(md).unwrap()[0].for_each,
+            Some(LoopSpec::Matrix(vec![
+                ("a".into(), vec!["true".into()]),
+                ("b".into(), vec!["1".into(), "2.5".into()]),
+            ]))
+        );
+    }
+
+    #[test]
+    fn a_glob_may_be_one_pattern_or_several() {
+        let one = "## t\n\n```meta\nfor = { glob = \"*.md\" }\n```\n\n```bash\ntrue\n```\n";
+        assert_eq!(
+            parse(one).unwrap()[0].for_each,
+            Some(LoopSpec::Glob(vec!["*.md".into()]))
+        );
+        let bad = "## t\n\n```meta\nfor = { glob = 3 }\n```\n\n```bash\ntrue\n```\n";
+        assert!(matches!(parse(bad), Err(Error::Invalid(_))));
+    }
 }

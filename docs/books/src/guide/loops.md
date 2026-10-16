@@ -89,7 +89,7 @@ markdownlint "$MX_FILE"
 - Blank lines are ignored; each remaining line is one item (`MX_ITEM`, `MX_INDEX` and the `as` name work as usual).
 - The items run one after another inside the task, so `parallel` has no effect on them. The first failing item stops the loop; each item gets its own `retries` and `timeout`.
 - `defer` runs once after the last item, and `sources`/`outputs` caching covers the task as a whole (a changed source output re-runs it).
-- If the source printed nothing, the task is skipped like any empty loop.
+- If the source printed nothing, the task is skipped like any empty loop. This includes a source that was itself skipped (by `if`, `status` or an up-to-date check), because a skipped task captures no output.
 - Progress shows a single node for the task, with a `↳ task[item]` line before each item.
 
 ## Combining with call arguments

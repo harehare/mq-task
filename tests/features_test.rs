@@ -1545,3 +1545,44 @@ echo ran
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(!stdout(&out).contains("ran"), "{}", stdout(&out));
 }
+
+#[test]
+fn a_once_task_runs_a_single_time_for_different_calls() {
+    let dir = workdir("once");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## setup
+
+```meta
+once = true
+params = ["env"]
+```
+
+```bash
+echo "setup $MX_PARAM_ENV"
+```
+
+## ci
+
+```meta
+depends = ["setup a", "setup b"]
+```
+
+```bash
+echo done
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "ci"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    // Only the first call ran: its output appears once and `b` never does.
+    assert_eq!(text.matches("setup a\n").count(), 1, "{}", text);
+    assert!(
+        !text.contains("setup b") && !text.contains("setup[b]"),
+        "{}",
+        text
+    );
+}

@@ -197,6 +197,9 @@ struct TaskMeta {
     /// Shell commands; the task is up to date when all of them exit 0
     #[serde(default)]
     status: Vec<String>,
+    /// Run only once per run, however it is called
+    #[serde(default)]
+    once: bool,
 }
 
 /// A named task parameter, e.g. `params = ["env=staging", "verbose"]`.
@@ -302,6 +305,10 @@ pub struct Section {
     /// task is considered up to date and skipped
     #[serde(default)]
     pub status: Vec<String>,
+    /// The task runs at most once per run, even when it is called with
+    /// different arguments; the first call wins
+    #[serde(default)]
+    pub once: bool,
 }
 
 /// Document-wide settings found in the preamble `meta` block.
@@ -636,6 +643,7 @@ impl Runner {
             prompt: meta.prompt,
             dotenv: meta.dotenv,
             status: meta.status,
+            once: meta.once,
         })
     }
 
@@ -1901,5 +1909,11 @@ true
             parse(md).unwrap()[0].status,
             vec!["test -f out.txt", "true"]
         );
+    }
+
+    #[test]
+    fn parses_once() {
+        let md = "## t\n\n```meta\nonce = true\n```\n\n```bash\ntrue\n```\n";
+        assert!(parse(md).unwrap()[0].once);
     }
 }

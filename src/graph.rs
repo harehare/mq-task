@@ -48,6 +48,9 @@ fn badges(s: &Section) -> String {
     if !s.defer.is_empty() {
         b.push(format!("defer: {}", s.defer.join(", ")));
     }
+    if s.once {
+        b.push("once".to_string());
+    }
     if !s.status.is_empty() {
         b.push("status".to_string());
     }

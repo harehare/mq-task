@@ -330,7 +330,13 @@ pub fn build_plan_in<'a>(
             } else {
                 format!("{}[{}]", title, args.join(" "))
             };
-            if let Some(ids) = self.index.get(&base_label) {
+            // A `once` task is shared by every call, whatever its arguments.
+            let key = if section.once {
+                title.to_string()
+            } else {
+                base_label.clone()
+            };
+            if let Some(ids) = self.index.get(&key) {
                 return Ok(ids.clone());
             }
 
@@ -430,7 +436,7 @@ pub fn build_plan_in<'a>(
                     }
                 }
             }
-            self.index.insert(base_label, ids.clone());
+            self.index.insert(key, ids.clone());
             Ok(ids)
         }
     }
@@ -1026,6 +1032,20 @@ mod tests {
         assert_eq!(plan.nodes[2].deps, vec![0, 1, 0]);
         // Sequential: the second call waits for the first.
         assert!(plan.nodes[1].after.contains(&0));
+    }
+
+    #[test]
+    fn a_once_task_is_shared_by_calls_with_different_arguments() {
+        let mut build = with_code(sec("build", &[], false));
+        build.once = true;
+        let sections = vec![
+            build,
+            with_code(sec("ci", &["build env=a", "build env=b"], false)),
+        ];
+        let plan = build_plan(&sections, "ci", false).unwrap();
+        // The first call wins.
+        assert_eq!(names(&plan), vec!["build[env=a]", "ci"]);
+        assert_eq!(plan.nodes[1].deps, vec![0, 0]);
     }
 
     #[test]

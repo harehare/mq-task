@@ -5,6 +5,7 @@ A fenced block with the language `meta` (TOML) in a task section. Unknown or inv
 | Key | Type | Description |
 |---|---|---|
 | `depends` | array of strings | Tasks to run first; each may carry arguments (`"deploy env=prod"`) |
+| `once` | bool | Run at most once per run, even when called with different arguments |
 | `parallel` | bool | Run `depends` (and loop iterations) concurrently |
 | `for` | array, `{ glob }` or `{ matrix }` | Run the task once per item ([Loops](../guide/loops.md)) |
 | `as` | string | Extra variable name for the loop item (`as = "file"` → `MX_FILE`) |

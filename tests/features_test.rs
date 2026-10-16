@@ -1870,3 +1870,192 @@ fn an_unknown_output_mode_is_rejected() {
         stderr(&out)
     );
 }
+
+#[test]
+fn for_from_runs_once_per_line_of_a_dependencys_output() {
+    let dir = workdir("for-from");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## list-files
+
+```meta
+capture = true
+```
+
+```bash
+printf 'one file.txt\ntwo.txt\n'
+```
+
+## process
+
+```meta
+depends = ["list-files"]
+for = { from = "list-files" }
+as = "file"
+```
+
+```bash
+echo "processing [$MX_FILE] #$MX_INDEX"
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "process"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    let first = text.find("processing [one file.txt] #0").expect(&text);
+    let second = text.find("processing [two.txt] #1").expect(&text);
+    assert!(first < second);
+    assert!(text.contains("↳ process[one file.txt]"), "{}", text);
+}
+
+#[test]
+fn for_from_with_no_output_is_skipped_and_failures_stop_the_loop() {
+    let dir = workdir("for-from-edge");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## nothing
+
+```meta
+capture = true
+```
+
+```bash
+true
+```
+
+## empty
+
+```meta
+depends = ["nothing"]
+for = { from = "nothing" }
+```
+
+```bash
+echo should-not-run
+```
+
+## three
+
+```meta
+capture = true
+```
+
+```bash
+printf 'a\nb\nc\n'
+```
+
+## stops
+
+```meta
+depends = ["three"]
+for = { from = "three" }
+```
+
+```bash
+echo "ran $MX_ITEM"
+[ "$MX_ITEM" != b ] || exit 6
+```
+"#,
+    );
+    let empty = mq_task(&dir, &["-f", "tasks.md", "empty"]);
+    assert!(empty.status.success(), "{}", stderr(&empty));
+    assert!(!stdout(&empty).contains("should-not-run"));
+    assert!(stdout(&empty).contains("no items"), "{}", stdout(&empty));
+
+    let stops = mq_task(&dir, &["-f", "tasks.md", "stops"]);
+    assert_eq!(stops.status.code(), Some(6));
+    let text = stdout(&stops);
+    assert!(text.contains("ran a") && text.contains("ran b") && !text.contains("ran c"));
+}
+
+#[test]
+fn for_from_must_name_a_capturing_dependency() {
+    let dir = workdir("for-from-invalid");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## list
+
+```bash
+echo x
+```
+
+## each
+
+```meta
+depends = ["list"]
+for = { from = "list" }
+```
+
+```bash
+true
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "each"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("capture = true"), "{}", stderr(&out));
+}
+
+#[test]
+fn for_from_works_across_imports() {
+    let dir = workdir("for-from-import");
+    write(
+        &dir,
+        "lib.md",
+        r#"
+## names
+
+```meta
+capture = true
+```
+
+```bash
+printf 'x\ny\n'
+```
+
+## each
+
+```meta
+depends = ["names"]
+for = { from = "names" }
+```
+
+```bash
+echo "imported $MX_ITEM"
+```
+"#,
+    );
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+```meta
+imports = ["lib.md"]
+```
+
+## go
+
+```meta
+depends = ["lib:each"]
+```
+
+```bash
+echo finished
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "go"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("imported x") && text.contains("imported y"),
+        "{}",
+        text
+    );
+}

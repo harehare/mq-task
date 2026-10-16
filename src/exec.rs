@@ -19,7 +19,7 @@ use crate::config::{Config, ExecutionMode};
 use crate::error::{Error, Result};
 use crate::events::{NullObserver, RunObserver, Stream, TaskStatus};
 use crate::runner::{ParamDef, Section};
-use crate::schedule::Deferred;
+use crate::schedule::{Deferred, loop_item_vars};
 
 /// Maps a signal-killed process to the shell convention `128 + signal`.
 fn exit_code_from_status(status: &ExitStatus) -> i32 {
@@ -70,8 +70,28 @@ pub struct NodeParams<'a> {
     /// Extra env (e.g. `MX_OUTPUT_*` from dependencies, loop variables).
     pub extra_env: Vec<(String, String)>,
     pub dependency: bool,
+    /// Title of the dependency whose captured output this task loops over
+    /// (`for = { from = ... }`): the body runs once per line.
+    pub loop_source: Option<&'a str>,
     /// Tasks to run after this one finishes, whatever its outcome.
     pub defers: &'a [Deferred<'a>],
+}
+
+/// The non-empty lines of the output `source` exposed to a task, or none
+/// when it produced no output.
+fn source_items(env: &[(String, String)], source: &str) -> Vec<String> {
+    let var = output_var(source);
+    env.iter()
+        .rev()
+        .find(|(k, _)| *k == var)
+        .map(|(_, v)| {
+            v.lines()
+                .map(|l| l.trim_end_matches('\r'))
+                .filter(|l| !l.trim().is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Name of the env var that exposes a captured task's stdout to dependents.
@@ -401,13 +421,32 @@ impl Executor {
             return Ok(NodeOutcome::Skipped);
         }
 
+        // Lines of the source task's output, one iteration each.
+        let items: Option<Vec<String>> =
+            p.loop_source.map(|source| source_items(&task_env, source));
+        if let Some(items) = &items
+            && items.is_empty()
+        {
+            observer.status(
+                name,
+                &TaskStatus::Skipped {
+                    reason: "for: no items".into(),
+                },
+            );
+            return Ok(NodeOutcome::Skipped);
+        }
+
         if let Some(message) = &section.prompt {
             self.confirm(section, message, io).map_err(fail)?;
         }
 
         let started = Instant::now();
         let mut ignored = false;
-        let body = match self.run_with_retries(p, &task_env, io) {
+        let result = match &items {
+            Some(items) => self.run_items(p, &task_env, items, io),
+            None => self.run_with_retries(p, &task_env, io),
+        };
+        let body = match result {
             // Only runtime failures are ignorable; cancellation and
             // configuration errors still stop the run.
             Err(e) if section.ignore_error && is_retriable(&e) => {
@@ -511,6 +550,29 @@ impl Executor {
         } else {
             Err(Error::Declined(section.title.clone()))
         }
+    }
+
+    /// Run the task once per item (`for = { from = ... }`), stopping at the
+    /// first failure. Every item gets the usual retries and timeout.
+    fn run_items(
+        &self,
+        p: &NodeParams,
+        task_env: &[(String, String)],
+        items: &[String],
+        io: &TaskIo,
+    ) -> Result<String> {
+        let mut captured = String::new();
+        for (index, item) in items.iter().enumerate() {
+            if io.cancel.load(Ordering::SeqCst) {
+                return Err(Error::Cancelled);
+            }
+            io.observer
+                .output(p.label, Stream::Stdout, &format!("↳ {}[{}]", p.label, item));
+            let mut env = task_env.to_vec();
+            env.extend(loop_item_vars(p.section, index, item));
+            captured.push_str(&self.run_with_retries(p, &env, io)?);
+        }
+        Ok(captured)
     }
 
     /// Run a task's code blocks, retrying runtime failures per `retries`.

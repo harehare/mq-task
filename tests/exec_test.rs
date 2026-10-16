@@ -270,6 +270,7 @@ fn node_with(
             lang_filter,
             extra_env: pairs(extra_env),
             dependency: false,
+            loop_source: None,
             defers: &[],
         },
         &io,
@@ -310,6 +311,7 @@ fn the_dependency_flag_is_forwarded() {
             lang_filter: None,
             extra_env: vec![],
             dependency: true,
+            loop_source: None,
             defers: &[],
         },
         &io,
@@ -802,4 +804,109 @@ fn required_variables_must_be_set_and_not_empty() {
     );
     assert!(n.outcome.is_ok());
     assert_eq!(n.rec.stdout("t"), vec!["ran"]);
+}
+
+fn source_node(section: &Section, output: Option<&str>, capture: bool) -> Node {
+    let exec = executor();
+    let rec = Recorder::default();
+    let cancel = AtomicBool::new(false);
+    let io = TaskIo {
+        name: &section.title,
+        observer: &rec,
+        piped: true,
+        capture,
+        cancel: &cancel,
+        deadline: None,
+    };
+    let extra_env = output
+        .map(|o| vec![(output_var("list"), o.to_string())])
+        .unwrap_or_default();
+    let outcome = exec.run_node(
+        &NodeParams {
+            section,
+            label: &section.title,
+            args: &[],
+            lang_filter: None,
+            extra_env,
+            dependency: false,
+            loop_source: Some("list"),
+            defers: &[],
+        },
+        &io,
+    );
+    Node { outcome, rec }
+}
+
+#[test]
+fn a_from_loop_runs_once_per_line_of_the_source_output() {
+    let mut s = bash(
+        "each",
+        &[],
+        "echo \"item=$MX_ITEM index=$MX_INDEX name=$MX_NAME\"",
+    );
+    s.loop_var = Some("name".into());
+    let n = source_node(&s, Some("a\r\n\n  \nb c\n"), false);
+    assert_eq!(n.done(), None);
+    assert_eq!(
+        n.rec.stdout("each"),
+        vec![
+            "↳ each[a]",
+            "item=a index=0 name=a",
+            "↳ each[b c]",
+            "item=b c index=1 name=b c",
+        ]
+    );
+}
+
+#[test]
+fn a_from_loop_stops_at_the_first_failing_item() {
+    let s = bash(
+        "each",
+        &[],
+        "echo \"ran $MX_ITEM\"; [ \"$MX_ITEM\" != b ] || exit 4",
+    );
+    let n = source_node(&s, Some("a\nb\nc"), false);
+    assert!(matches!(n.outcome, Err(Error::ExecutionFailed(4))));
+    let out = n.rec.stdout("each").join("\n");
+    assert!(out.contains("ran a") && out.contains("ran b") && !out.contains("ran c"));
+}
+
+#[test]
+fn a_from_loop_without_items_is_skipped() {
+    let s = bash("each", &[], "echo ran");
+    for output in [None, Some(""), Some("\n \n")] {
+        let n = source_node(&s, output, false);
+        assert!(matches!(n.outcome, Ok(NodeOutcome::Skipped)));
+        assert!(n.rec.stdout("each").is_empty());
+        assert!(n.statuses("each").iter().any(|st| matches!(
+            st,
+            TaskStatus::Skipped { reason } if reason == "for: no items"
+        )));
+    }
+}
+
+#[test]
+fn a_from_loop_captures_the_output_of_every_item() {
+    let s = bash("each", &[], "echo \"got $MX_ITEM\"");
+    let n = source_node(&s, Some("x\ny"), true);
+    assert_eq!(n.done().as_deref(), Some("got x\ngot y"));
+}
+
+#[test]
+fn each_item_of_a_from_loop_is_retried() {
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("seen");
+    let mut s = bash(
+        "each",
+        &[],
+        &format!(
+            "if [ -e {m} ]; then echo recovered; else touch {m}; exit 1; fi",
+            m = marker.display()
+        ),
+    );
+    s.retries = 1;
+    s.retry_delay = Some(Duration::from_millis(10));
+    let n = source_node(&s, Some("only"), false);
+    assert_eq!(n.done(), None);
+    assert!(n.rec.stdout("each").contains(&"recovered".to_string()));
 }

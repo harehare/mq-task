@@ -40,6 +40,11 @@ pub enum LoopSpec {
     /// `for = { matrix = { os = ["linux", "macos"], arch = ["x64"] } }`
     /// Axes are kept sorted by name.
     Matrix(Vec<(String, Vec<String>)>),
+    /// The lines of another task's captured output:
+    /// `for = { from = "list-files" }`. That task must be a dependency
+    /// with `capture = true`. Its lines are processed one after another
+    /// inside this task, so the loop cannot run concurrently.
+    From(String),
 }
 
 impl LoopSpec {
@@ -52,6 +57,7 @@ impl LoopSpec {
                 format!("{}{}", shown.join(", "), more)
             }
             LoopSpec::Glob(patterns) => format!("glob {}", patterns.join(", ")),
+            LoopSpec::From(task) => format!("output of {}", task),
             LoopSpec::Matrix(axes) => format!(
                 "matrix {}",
                 axes.iter()
@@ -84,13 +90,21 @@ impl LoopSpec {
             toml::Value::Array(_) => Ok(LoopSpec::List(list(value)?)),
             toml::Value::Table(table) => {
                 if table.len() != 1 {
-                    return Err(invalid("expected exactly one of `glob` or `matrix`"));
+                    return Err(invalid(
+                        "expected exactly one of `glob`, `matrix` or `from`",
+                    ));
                 }
                 let (key, v) = table.iter().next().expect("one entry");
                 match key.as_str() {
                     "glob" => match v {
                         toml::Value::String(s) => Ok(LoopSpec::Glob(vec![s.clone()])),
                         other => Ok(LoopSpec::Glob(list(other)?)),
+                    },
+                    "from" => match v {
+                        toml::Value::String(task) if !task.trim().is_empty() => {
+                            Ok(LoopSpec::From(task.trim().to_string()))
+                        }
+                        _ => Err(invalid("`from` must name a task")),
                     },
                     "matrix" => {
                         let toml::Value::Table(axes) = v else {
@@ -104,13 +118,13 @@ impl LoopSpec {
                         Ok(LoopSpec::Matrix(out))
                     }
                     other => Err(invalid(&format!(
-                        "unknown key '{}' (expected `glob` or `matrix`)",
+                        "unknown key '{}' (expected `glob`, `matrix` or `from`)",
                         other
                     ))),
                 }
             }
             _ => Err(invalid(
-                "expected an array, `{ glob = ... }` or `{ matrix = ... }`",
+                "expected an array, `{ glob = ... }`, `{ matrix = ... }` or `{ from = ... }`",
             )),
         }
     }
@@ -960,6 +974,11 @@ fn namespace_sections(sections: &mut [Section], namespace: &str) {
     };
 
     for section in sections {
+        if let Some(LoopSpec::From(source)) = &mut section.for_each
+            && local.contains(source.as_str())
+        {
+            *source = qualify(source);
+        }
         section.title = qualify(&section.title);
         section.aliases = section.aliases.iter().map(|a| qualify(a)).collect();
         for dep in section.depends.iter_mut().chain(section.defer.iter_mut()) {
@@ -1946,5 +1965,46 @@ true
         let md =
             "## t\n\n```meta\nrequires = [\"API_TOKEN\", \"REGION\"]\n```\n\n```bash\ntrue\n```\n";
         assert_eq!(parse(md).unwrap()[0].requires, vec!["API_TOKEN", "REGION"]);
+    }
+
+    #[test]
+    fn parses_for_from() {
+        let md = "## t\n\n```meta\nfor = { from = \" list \" }\n```\n\n```bash\ntrue\n```\n";
+        let sections = parse(md).unwrap();
+        assert_eq!(sections[0].for_each, Some(LoopSpec::From("list".into())));
+        assert_eq!(
+            sections[0].for_each.as_ref().unwrap().summary(),
+            "output of list"
+        );
+        for bad in ["for = { from = 3 }", "for = { from = \"\" }"] {
+            let md = format!("## t\n\n```meta\n{}\n```\n\n```bash\ntrue\n```\n", bad);
+            assert!(matches!(parse(&md), Err(Error::Invalid(_))), "{}", bad);
+        }
+    }
+
+    #[test]
+    fn namespacing_qualifies_the_for_from_source() {
+        let mut sections = vec![
+            Section {
+                title: "list".into(),
+                ..Default::default()
+            },
+            Section {
+                title: "each".into(),
+                for_each: Some(LoopSpec::From("list".into())),
+                ..Default::default()
+            },
+            Section {
+                title: "other".into(),
+                for_each: Some(LoopSpec::From("elsewhere:list".into())),
+                ..Default::default()
+            },
+        ];
+        namespace_sections(&mut sections, "ns");
+        assert_eq!(sections[1].for_each, Some(LoopSpec::From("ns:list".into())));
+        assert_eq!(
+            sections[2].for_each,
+            Some(LoopSpec::From("elsewhere:list".into()))
+        );
     }
 }

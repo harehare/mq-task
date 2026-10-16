@@ -85,6 +85,11 @@ impl Default for ConsoleObserver {
     }
 }
 
+/// True for the label of one loop iteration or argument call, `task[item]`.
+fn is_iteration(label: &str) -> bool {
+    label.ends_with(']') && label.contains('[')
+}
+
 /// Stable per-task color so a task keeps its color across lines.
 fn tag(name: &str, width: usize) -> String {
     let palette = [
@@ -122,6 +127,10 @@ impl RunObserver for ConsoleObserver {
                 } else if *dependency {
                     // The requested task's header is printed before the run.
                     println!("{}", format!("↳ {} (dependency)", task).dimmed());
+                } else if is_iteration(task) {
+                    // Iterations of a requested `for` loop share its header;
+                    // mark where each one starts.
+                    println!("{}", format!("↳ {}", task).dimmed());
                 }
             }
             TaskStatus::Retrying {

@@ -803,6 +803,11 @@ echo "hi $MX_ITEM $MX_INDEX $MX_WHO"
         .filter(|l| l.starts_with("hi "))
         .collect();
     assert_eq!(hi, vec!["hi alice 0 alice", "hi bob 1 bob"]);
+    // Each iteration is introduced by its own line.
+    let alice = text.find("↳ greet[alice]").expect(&text);
+    let bob = text.find("↳ greet[bob]").expect(&text);
+    assert!(alice < text.find("hi alice").unwrap());
+    assert!(bob > text.find("hi alice").unwrap() && bob < text.find("hi bob").unwrap());
 }
 
 #[test]

@@ -51,6 +51,7 @@ struct RunRequest {
     args: Vec<String>,
     flags: ExecFlags,
     watch: bool,
+    summary: bool,
 }
 
 #[derive(Parser)]
@@ -106,6 +107,10 @@ struct Cli {
     #[arg(short = 'w', long)]
     watch: bool,
 
+    /// Describe the task instead of running it
+    #[arg(long)]
+    summary: bool,
+
     #[command(flatten)]
     flags: ExecFlags,
 
@@ -155,6 +160,10 @@ enum Commands {
         /// Re-run the task whenever its `sources` (or the task file) change
         #[arg(short = 'w', long)]
         watch: bool,
+
+        /// Describe the task instead of running it
+        #[arg(long)]
+        summary: bool,
 
         #[command(flatten)]
         flags: ExecFlags,
@@ -285,6 +294,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             env,
             dir,
             watch,
+            summary,
             flags,
             args,
         }) => run_task(RunRequest {
@@ -300,6 +310,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             args,
             flags,
             watch,
+            summary,
         })?,
         Some(Commands::List {
             file,
@@ -349,6 +360,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                     args: cli.args,
                     flags: cli.flags,
                     watch: cli.watch,
+                    summary: cli.summary,
                 })?,
                 None => list_tasks(cli.file, cli.config, cli.lang, cli.all)?,
             }
@@ -395,6 +407,11 @@ fn run_task(req: RunRequest) -> Result<()> {
         req.dir,
         &req.flags,
     )?;
+
+    if req.summary {
+        print!("{}", runner.task_summary(&req.file, &req.task)?);
+        return Ok(());
+    }
 
     let options = || RunOptions {
         args: req.args.clone(),

@@ -27,6 +27,7 @@ mq-task [OPTIONS] [TASK] [-- <ARGS>...] [COMMAND]
 | `--dry-run` | Show what would run |
 | `--env <KEY=VALUE>` | Set an environment variable (repeatable) |
 | `-d, --dir <PATH>` | Working directory |
+| `--summary` | Describe the task (description, dependencies, parameters, options) instead of running it |
 | `-w, --watch` | Re-run when `sources` or the task file change |
 | `--parallel` | Run dependencies concurrently |
 | `-j, --jobs <N>` | Max concurrent tasks |

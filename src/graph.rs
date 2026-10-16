@@ -34,7 +34,8 @@ fn call_args(args: &[String]) -> String {
     }
 }
 
-fn badges(s: &Section) -> String {
+/// Short descriptions of a task's notable settings (`parallel`, `for: ...`).
+pub(crate) fn badge_list(s: &Section) -> Vec<String> {
     let mut b = Vec::new();
     if s.parallel {
         b.push("parallel".to_string());
@@ -66,6 +67,11 @@ fn badges(s: &Section) -> String {
     if let Some(t) = s.timeout {
         b.push(format!("timeout: {}s", t.as_secs_f64()));
     }
+    b
+}
+
+fn badges(s: &Section) -> String {
+    let b = badge_list(s);
     if b.is_empty() {
         String::new()
     } else {

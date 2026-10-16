@@ -13,7 +13,7 @@ cargo build
 ````
 
 - Several code blocks in one section run in order.
-- The prose under the heading is the task description (shown in `list` and the TUI).
+- The prose under the heading is the task description (shown in `list` and the TUI). `mq-task <task> --summary` prints it together with the task's dependencies, parameters and options, without running anything.
 - The language of the fence selects the runtime from [configuration](../start/configuration.md).
 - A `meta` block configures the task; it is not executed.
 

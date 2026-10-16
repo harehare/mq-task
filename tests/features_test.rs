@@ -1586,3 +1586,55 @@ echo done
         text
     );
 }
+
+#[test]
+fn summary_describes_a_task_without_running_it() {
+    let dir = workdir("summary");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## deploy
+
+Deploy the app to an environment.
+
+```meta
+alias = ["d"]
+depends = ["build"]
+params = ["env=staging", "region"]
+retries = 2
+```
+
+```bash
+echo SHOULD-NOT-RUN
+```
+
+## build
+
+```bash
+true
+```
+"#,
+    );
+    for args in [
+        vec!["-f", "tasks.md", "deploy", "--summary"],
+        vec!["run", "-f", "tasks.md", "d", "--summary"],
+    ] {
+        let out = mq_task(&dir, &args);
+        assert!(out.status.success(), "{}", stderr(&out));
+        let text = stdout(&out);
+        assert!(
+            text.starts_with("deploy\n  Deploy the app to an environment.\n"),
+            "{}",
+            text
+        );
+        assert!(text.contains("aliases  d"), "{}", text);
+        assert!(text.contains("depends  build"), "{}", text);
+        assert!(text.contains("env=staging, region (required)"), "{}", text);
+        assert!(text.contains("retries: 2"), "{}", text);
+        assert!(!text.contains("SHOULD-NOT-RUN"));
+    }
+
+    let missing = mq_task(&dir, &["-f", "tasks.md", "nope", "--summary"]);
+    assert!(!missing.status.success());
+}

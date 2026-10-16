@@ -856,6 +856,14 @@ impl Runner {
         Ok(targets)
     }
 
+    /// Describe a single task (`--summary`).
+    pub fn task_summary<P: AsRef<Path>>(&mut self, markdown_path: P, task: &str) -> Result<String> {
+        let sections = self.load_sections(markdown_path)?;
+        let section = schedule::find_section(&sections, task)
+            .ok_or_else(|| Error::SectionNotFound(task.to_string()))?;
+        Ok(crate::summary::render(section))
+    }
+
     /// Render the dependency graph of `task` (or of every public task).
     pub fn dependency_graph<P: AsRef<Path>>(
         &mut self,

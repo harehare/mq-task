@@ -6,9 +6,9 @@ A fenced block with the language `meta` (TOML) in a task section. Unknown or inv
 |---|---|---|
 | `depends` | array of strings | Tasks to run first; each may carry arguments (`"deploy env=prod"`) |
 | `once` | bool | Run at most once per run, even when called with different arguments |
-| `parallel` | bool | Run `depends` (and loop iterations) concurrently |
-| `for` | array, `{ glob }` or `{ matrix }` | Run the task once per item ([Loops](../guide/loops.md)) |
-| `as` | string | Extra variable name for the loop item (`as = "file"` → `MX_FILE`) |
+| `parallel` | bool | Run `depends` and the items of list, glob and matrix loops concurrently |
+| `for` | array, `{ glob }`, `{ matrix }` or `{ from }` | Run the task once per item ([Loops](../guide/loops.md)) |
+| `as` | string | Extra variable name for the loop item (`as = "file"` sets `MX_FILE`) |
 | `defer` | array of strings | Tasks run after this one, even on failure ([defer](../guide/defer.md)) |
 | `if` | string | Condition; task skipped when false |
 | `retries` | integer | Extra attempts after a failure |
@@ -29,4 +29,4 @@ A fenced block with the language `meta` (TOML) in a task section. Unknown or inv
 | `private` | bool | Hide from listings |
 | `imports` | array of paths | Document-wide only: files to import |
 
-Environment variables set for tasks: `MX_ARGS`, `MX_ARG_<N>`, `MX_PARAM_<NAME>`, `MX_OUTPUT_<TASK>`, and in loops `MX_ITEM`, `MX_INDEX`, `MX_<AXIS>`.
+Environment variables set for tasks: `MX_ARGS`, `MX_ARG_<N>`, `MX_PARAM_<NAME>`, `MX_OUTPUT_<TASK>`, and in loops `MX_ITEM`, `MX_INDEX`, `MX_<AS>` and `MX_<AXIS>`.

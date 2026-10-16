@@ -11,16 +11,14 @@ use colored::Colorize;
 /// How task output is presented on the terminal (`--output`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OutputMode {
-    /// Raw output when tasks run one at a time, prefixed lines when they
-    /// run concurrently.
+    /// Raw output when sequential, prefixed lines when concurrent.
     #[default]
     Auto,
-    /// Raw lines as they arrive, even for concurrent tasks.
+    /// Raw lines, even for concurrent tasks.
     Interleaved,
     /// Every line tagged with its task name.
     Prefixed,
-    /// Each task's output is held back and printed in one block when the
-    /// task finishes.
+    /// One block per task, printed when it finishes.
     Group,
 }
 
@@ -96,7 +94,7 @@ pub trait RunObserver: Send + Sync {
 pub struct ConsoleObserver {
     prefixed: bool,
     width: usize,
-    /// Hold each task's output back until it finishes (`--output group`).
+    /// Hold output until the task finishes (`--output group`).
     group: bool,
     held: Mutex<HashMap<String, Vec<(Stream, String)>>>,
 }
@@ -118,8 +116,7 @@ impl ConsoleObserver {
         }
     }
 
-    /// Print each task's output as one block once the task finishes, so
-    /// concurrent tasks never interleave.
+    /// Print each task's output as one block when it finishes.
     pub fn grouped() -> Self {
         Self {
             group: true,
@@ -127,7 +124,7 @@ impl ConsoleObserver {
         }
     }
 
-    /// Print what `task` produced so far, framed by its name.
+    /// Print the held output of `task` under its name.
     fn flush(&self, task: &str, held: &mut HashMap<String, Vec<(Stream, String)>>) {
         println!("{} {}", "▶".cyan().bold(), task.bold());
         for (stream, line) in held.remove(task).unwrap_or_default() {
@@ -199,8 +196,7 @@ impl RunObserver for ConsoleObserver {
                     // The requested task's header is printed before the run.
                     println!("{}", format!("↳ {} (dependency)", task).dimmed());
                 } else if is_iteration(task) {
-                    // Iterations of a requested `for` loop share its header;
-                    // mark where each one starts.
+                    // Loop items share the task's header; mark each start.
                     println!("{}", format!("↳ {}", task).dimmed());
                 }
             }
@@ -247,8 +243,7 @@ impl RunObserver for ConsoleObserver {
 }
 
 impl ConsoleObserver {
-    /// Status reporting for `--output group`: nothing is printed until a
-    /// task finishes, then its whole output and result appear together.
+    /// Status reporting for `--output group`.
     fn status_grouped(&self, task: &str, status: &TaskStatus) {
         // Holding the lock while printing keeps blocks from interleaving.
         let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());

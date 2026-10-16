@@ -89,8 +89,8 @@ pub fn is_fresh(scope: &str, section: &Section, fingerprint: &str, dir: Option<&
     is_fresh_named(scope, &section.title, section, fingerprint, dir)
 }
 
-/// [`is_fresh`] for a run recorded under `name` rather than the task title
-/// (loop iterations and calls with arguments each have their own entry).
+/// [`is_fresh`] keyed by `name`, so loop items and calls with arguments get
+/// their own entry.
 pub fn is_fresh_named(
     scope: &str,
     name: &str,

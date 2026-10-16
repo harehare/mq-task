@@ -50,12 +50,11 @@ pub fn split_words(spec: &str) -> Vec<String> {
     words
 }
 
-/// Resolve a task call -- a task name optionally followed by arguments, as
-/// used by `depends` and `defer` -- into the task and its arguments.
+/// Resolve a call such as `deploy env=prod` (used by `depends` and `defer`)
+/// into the task and its arguments.
 ///
-/// The whole string is tried as a task name first, so titles containing
-/// spaces keep working; otherwise the longest leading run of words that names
-/// a task wins and the remaining words are its arguments.
+/// The whole string is tried as a title first, so titles with spaces keep
+/// working; otherwise the longest leading run of words naming a task wins.
 pub fn resolve_call<'a>(sections: &'a [Section], spec: &str) -> Option<(&'a Section, Vec<String>)> {
     if let Some(section) = find_section(sections, spec.trim()) {
         return Some((section, Vec::new()));
@@ -66,9 +65,8 @@ pub fn resolve_call<'a>(sections: &'a [Section], spec: &str) -> Option<(&'a Sect
     })
 }
 
-/// Directories used to resolve a task's working directory at plan time
-/// (needed to expand `for` globs). Mirrors [`Executor::effective_dir`]:
-/// the CLI `--dir`, then the task's own `dir`, then the document default.
+/// Directories needed to expand `for` globs at plan time. Same precedence
+/// as [`Executor::effective_dir`]: CLI `--dir`, task `dir`, document `dir`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PlanContext<'a> {
     pub working_dir: Option<&'a Path>,
@@ -90,41 +88,34 @@ pub struct Deferred<'a> {
     pub args: Vec<String>,
 }
 
-/// One task execution in a plan. A task normally appears once; a task with
-/// `for` appears once per item, and a task depended upon with different
-/// arguments appears once per distinct argument list.
+/// One execution of a task: once per loop item, and once per distinct
+/// argument list it is called with.
 #[derive(Debug)]
 pub struct PlanNode<'a> {
     pub section: &'a Section,
-    /// Unique display name: the task title, followed by `[...]` when the
-    /// node was called with arguments or is one iteration of a loop.
+    /// Unique name: the title, plus `[...]` for call arguments or a loop item.
     pub label: String,
-    /// Arguments the task was called with by its dependent. The requested
-    /// task takes its arguments from the command line instead.
+    /// Arguments from the dependent's call (the requested task uses the CLI's).
     pub args: Vec<String>,
     /// Loop variables of this iteration (`MX_ITEM`, `MX_INDEX`, ...).
     pub vars: Vec<(String, String)>,
     /// True for the task(s) the user asked to run.
     pub requested: bool,
-    /// When set the node is reported as skipped with this reason instead of
-    /// running (a loop without items).
+    /// Reported as skipped with this reason instead of running.
     pub skip: Option<String>,
-    /// Title of the task whose captured output this node loops over
-    /// (`for = { from = ... }`).
+    /// Task whose captured output this node loops over (`for.from`).
     pub loop_source: Option<String>,
     /// Tasks to run once this one finishes (`defer`).
     pub defers: Vec<Deferred<'a>>,
     /// Declared dependencies (`depends`), as node indices.
     pub deps: Vec<usize>,
-    /// Everything that must finish before this node starts: the declared
-    /// dependencies plus ordering edges that keep non-`parallel` tasks'
-    /// dependencies (and loop iterations) sequential.
+    /// Everything that must finish first: `deps` plus the ordering edges
+    /// that keep non-`parallel` dependencies and loop items sequential.
     pub after: BTreeSet<usize>,
 }
 
 /// Tasks to run, ordered so every prerequisite precedes its dependents.
-/// The requested task is always the last node (a looped requested task
-/// occupies the last nodes, one per iteration).
+/// The requested task is always last (a looped one fills the last nodes).
 #[derive(Debug)]
 pub struct Plan<'a> {
     pub nodes: Vec<PlanNode<'a>>,
@@ -169,6 +160,9 @@ impl Plan<'_> {
         out
     }
 }
+
+/// A node's label suffix (the loop item, if any) and its loop variables.
+type Variant = (Option<String>, Vec<(String, String)>);
 
 /// One iteration of a `for` loop.
 struct Iteration {
@@ -247,7 +241,7 @@ fn expand_loop(section: &Section, spec: &LoopSpec, ctx: &PlanContext) -> Vec<Ite
                 .map(|(i, v)| item(i, v))
                 .collect()
         }
-        // Resolved at run time from the source task's output.
+        // Resolved at run time.
         LoopSpec::From(_) => Vec::new(),
         LoopSpec::Matrix(axes) => {
             let mut combos: Vec<Vec<(String, String)>> = vec![Vec::new()];
@@ -289,8 +283,8 @@ fn expand_loop(section: &Section, spec: &LoopSpec, ctx: &PlanContext) -> Vec<Ite
 /// A task without `parallel` runs its dependencies one after another in
 /// declaration order (every task newly pulled in by a later dependency waits
 /// for the previous dependency). With `parallel` -- or `force_parallel` --
-/// only the real dependency edges constrain the order. The iterations of a
-/// `for` loop follow the same rule.
+/// only the real dependency edges constrain the order. Loop items follow
+/// the same rule.
 pub fn build_plan<'a>(
     sections: &'a [Section],
     target: &str,
@@ -299,8 +293,7 @@ pub fn build_plan<'a>(
     build_plan_in(sections, target, force_parallel, &PlanContext::default())
 }
 
-/// Like [`build_plan`], resolving `for` globs against the directories in
-/// `ctx`.
+/// [`build_plan`] that resolves `for` globs against `ctx`.
 pub fn build_plan_in<'a>(
     sections: &'a [Section],
     target: &str,
@@ -317,16 +310,14 @@ pub fn build_plan_in<'a>(
     }
 
     impl<'a> Builder<'a, '_> {
-        /// Plan the call `spec` (a task name with optional arguments) and
-        /// return the nodes that represent it: one, or one per iteration.
+        /// Plan the call `spec` and return its nodes (one per loop item).
         fn visit(&mut self, spec: &str) -> Result<Vec<usize>> {
             let (section, args) = resolve_call(self.sections, spec)
                 .ok_or_else(|| Error::SectionNotFound(spec.to_string()))?;
             self.visit_section(section, args, spec)
         }
 
-        /// Check that `for = { from = source }` names a dependency of
-        /// `section` that captures its output; returns that task's title.
+        /// Check that `for.from` names a capturing dependency; returns its title.
         fn check_loop_source(
             &self,
             section: &Section,
@@ -424,73 +415,58 @@ pub fn build_plan_in<'a>(
             }
             self.in_progress.remove(title);
 
+            // One node per loop item; a plain task is a single node.
             let mut loop_source = None;
-            let iterations = match &section.for_each {
+            let mut skip = None;
+            let plain = || vec![(None, Vec::new())];
+            let variants: Vec<Variant> = match &section.for_each {
                 Some(LoopSpec::From(source)) => {
                     loop_source = Some(self.check_loop_source(section, source, &deps)?);
-                    None
+                    plain()
                 }
-                Some(spec) => Some(expand_loop(section, spec, self.ctx)),
-                None => None,
-            };
-
-            let mut ids = Vec::new();
-            match iterations {
-                None => {
-                    ids.push(self.nodes.len());
-                    self.nodes.push(PlanNode {
-                        section,
-                        label: base_label.clone(),
-                        args,
-                        vars: Vec::new(),
-                        requested: false,
-                        skip: None,
-                        loop_source,
-                        defers,
-                        deps,
-                        after,
-                    });
-                }
-                Some(iterations) if iterations.is_empty() => {
-                    ids.push(self.nodes.len());
-                    self.nodes.push(PlanNode {
-                        section,
-                        label: base_label.clone(),
-                        args,
-                        vars: Vec::new(),
-                        requested: false,
-                        skip: Some("for: no items".into()),
-                        loop_source: None,
-                        defers: Vec::new(),
-                        deps,
-                        after,
-                    });
-                }
-                Some(iterations) => {
+                Some(spec) => {
                     let mut seen = HashSet::new();
-                    for it in iterations {
-                        if !seen.insert(it.label.clone()) {
-                            continue;
-                        }
-                        let mut node_after = after.clone();
-                        if !parallel && let Some(&last) = ids.last() {
-                            node_after.insert(last);
-                        }
-                        ids.push(self.nodes.len());
-                        self.nodes.push(PlanNode {
-                            section,
-                            label: format!("{}[{}]", base_label, it.label),
-                            args: args.clone(),
-                            vars: it.vars,
-                            requested: false,
-                            skip: None,
-                            loop_source: None,
-                            defers: defers.clone(),
-                            deps: deps.clone(),
-                            after: node_after,
-                        });
+                    let items: Vec<_> = expand_loop(section, spec, self.ctx)
+                        .into_iter()
+                        .filter(|it| seen.insert(it.label.clone()))
+                        .map(|it| (Some(it.label), it.vars))
+                        .collect();
+                    if items.is_empty() {
+                        skip = Some("for: no items".to_string());
+                        plain()
+                    } else {
+                        items
                     }
                 }
+                None => plain(),
+            };
+
+            let mut ids: Vec<usize> = Vec::new();
+            for (suffix, vars) in variants {
+                let mut node_after = after.clone();
+                if !parallel && let Some(&last) = ids.last() {
+                    node_after.insert(last);
+                }
+                ids.push(self.nodes.len());
+                self.nodes.push(PlanNode {
+                    section,
+                    label: match &suffix {
+                        Some(item) => format!("{}[{}]", base_label, item),
+                        None => base_label.clone(),
+                    },
+                    args: args.clone(),
+                    vars,
+                    requested: false,
+                    skip: skip.clone(),
+                    loop_source: loop_source.clone(),
+                    defers: if skip.is_some() {
+                        Vec::new()
+                    } else {
+                        defers.clone()
+                    },
+                    deps: deps.clone(),
+                    after: node_after,
+                });
             }
             self.index.insert(key, ids.clone());
             Ok(ids)
@@ -544,8 +520,7 @@ pub fn run_plan(exec: &Executor, plan: &Plan, opts: &ScheduleOptions) -> Result<
     let ancestors: Vec<Vec<usize>> = (0..n).map(|i| plan.ancestors(i)).collect();
 
     // Captured stdout per node, exposed to dependents as MX_OUTPUT_<TASK>.
-    // When a task ran several times (a loop, or different arguments) the
-    // outputs are joined with newlines in plan order.
+    // A task that ran several times has its outputs joined by newlines.
     let mut outputs: Vec<Option<String>> = vec![None; n];
     let extra_env_for = |i: usize, outputs: &[Option<String>]| -> Vec<(String, String)> {
         let mut grouped: Vec<(String, String)> = Vec::new();
@@ -594,8 +569,7 @@ pub fn run_plan(exec: &Executor, plan: &Plan, opts: &ScheduleOptions) -> Result<
             &NodeParams {
                 section,
                 label: &node.label,
-                // The requested task takes the command-line arguments; the
-                // rest take the arguments their dependent called them with.
+                // The requested task takes the CLI arguments.
                 args: if node.requested {
                     opts.args
                 } else {

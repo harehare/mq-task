@@ -62,23 +62,20 @@ pub enum NodeOutcome {
 /// Inputs for [`Executor::run_node`].
 pub struct NodeParams<'a> {
     pub section: &'a Section,
-    /// Name this execution is reported and cached under; the task title,
-    /// extended with `[...]` for loop iterations and calls with arguments.
+    /// Name this run is reported and cached under (the plan node's label).
     pub label: &'a str,
     pub args: &'a [String],
     pub lang_filter: Option<&'a str>,
-    /// Extra env (e.g. `MX_OUTPUT_*` from dependencies, loop variables).
+    /// Extra env: `MX_OUTPUT_*` from dependencies and loop variables.
     pub extra_env: Vec<(String, String)>,
     pub dependency: bool,
-    /// Title of the dependency whose captured output this task loops over
-    /// (`for = { from = ... }`): the body runs once per line.
+    /// Dependency whose captured output is looped over (`for.from`).
     pub loop_source: Option<&'a str>,
-    /// Tasks to run after this one finishes, whatever its outcome.
+    /// Tasks to run afterwards, whatever the outcome.
     pub defers: &'a [Deferred<'a>],
 }
 
-/// The non-empty lines of the output `source` exposed to a task, or none
-/// when it produced no output.
+/// The non-empty lines of `source`'s captured output in `env`.
 fn source_items(env: &[(String, String)], source: &str) -> Vec<String> {
     let var = output_var(source);
     env.iter()
@@ -156,10 +153,8 @@ impl Executor {
             .or(self.global_dir.as_deref())
     }
 
-    /// Variables from the document-wide and the task's `dotenv` files, in
-    /// the order the files are listed (later files win). Missing files are
-    /// ignored. A variable already set in the process environment is left
-    /// alone, as with most dotenv loaders.
+    /// Variables from the `dotenv` files; later files win and missing files
+    /// are ignored. Variables already in the process environment are kept.
     fn dotenv_vars(&self, section: &Section) -> Result<Vec<(String, String)>> {
         let dir = self.effective_dir(section);
         let mut vars: Vec<(String, String)> = Vec::new();
@@ -324,8 +319,7 @@ impl Executor {
     }
 
     /// Execute one task with its full lifecycle: `if`, up-to-date check,
-    /// retries, timeout and deferred tasks. Reports progress to
-    /// `io.observer`.
+    /// retries, timeout and deferred tasks.
     pub fn run_node(&self, p: &NodeParams, io: &TaskIo) -> Result<NodeOutcome> {
         let section = p.section;
         let name = p.label;
@@ -421,7 +415,6 @@ impl Executor {
             return Ok(NodeOutcome::Skipped);
         }
 
-        // Lines of the source task's output, one iteration each.
         let items: Option<Vec<String>> =
             p.loop_source.map(|source| source_items(&task_env, source));
         if let Some(items) = &items
@@ -488,8 +481,7 @@ impl Executor {
         Ok(NodeOutcome::Done { output })
     }
 
-    /// Run the task's `status` commands in its environment and directory.
-    /// The task is up to date only if every one of them exits 0.
+    /// True when every `status` command exits 0.
     fn status_is_up_to_date(
         &self,
         section: &Section,
@@ -522,8 +514,7 @@ impl Executor {
         })
     }
 
-    /// Ask the user to confirm a task's `prompt`. Dry runs and `--yes` skip
-    /// the question; runs without a terminal (parallel, TUI) cannot ask.
+    /// Ask to confirm a task's `prompt`. Piped runs (parallel, TUI) cannot ask.
     fn confirm(&self, section: &Section, message: &str, io: &TaskIo) -> Result<()> {
         if self.dry_run {
             println!("[dry-run] prompt: {}", message);
@@ -552,8 +543,7 @@ impl Executor {
         }
     }
 
-    /// Run the task once per item (`for = { from = ... }`), stopping at the
-    /// first failure. Every item gets the usual retries and timeout.
+    /// Run the task once per item, stopping at the first failure.
     fn run_items(
         &self,
         p: &NodeParams,
@@ -612,10 +602,8 @@ impl Executor {
         }
     }
 
-    /// Run the `defer` tasks of a node in the order they were declared.
-    /// They are immune to cancellation (cleanup must happen) and have no
-    /// timeout. Every task runs even if an earlier one fails; the first
-    /// error is returned and the rest are reported as output.
+    /// Run the `defer` tasks in order. They ignore cancellation and timeouts
+    /// so cleanup always happens; all run, and the first error is returned.
     fn run_deferred(&self, p: &NodeParams, io: &TaskIo) -> Result<()> {
         let never = AtomicBool::new(false);
         let io = TaskIo {

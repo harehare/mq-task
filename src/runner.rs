@@ -40,10 +40,8 @@ pub enum LoopSpec {
     /// `for = { matrix = { os = ["linux", "macos"], arch = ["x64"] } }`
     /// Axes are kept sorted by name.
     Matrix(Vec<(String, Vec<String>)>),
-    /// The lines of another task's captured output:
-    /// `for = { from = "list-files" }`. That task must be a dependency
-    /// with `capture = true`. Its lines are processed one after another
-    /// inside this task, so the loop cannot run concurrently.
+    /// Lines of a dependency's captured output (`capture = true`):
+    /// `for = { from = "list-files" }`. Items run sequentially in the task.
     From(String),
 }
 
@@ -298,36 +296,29 @@ pub struct Section {
     /// `for` loop: the task runs once per item
     #[serde(default)]
     pub for_each: Option<LoopSpec>,
-    /// Name given to the loop item in addition to `MX_ITEM` (`as = "file"`
-    /// exposes `MX_FILE`)
+    /// Extra name for the loop item (`as = "file"` sets `MX_FILE`)
     #[serde(default)]
     pub loop_var: Option<String>,
     /// Tasks (optionally with arguments) run after this one finishes,
     /// whatever its outcome
     #[serde(default)]
     pub defer: Vec<String>,
-    /// A failed run (after retries and timeouts) is reported but does not
-    /// fail the task, block its dependents or change the exit code
+    /// A failed run (after retries) is reported but not treated as a failure
     #[serde(default)]
     pub ignore_error: bool,
-    /// Confirmation message; the task runs only after the user answers yes
-    /// (or `--yes` is given)
+    /// Confirmation message; the task runs only on yes or `--yes`
     #[serde(default)]
     pub prompt: Option<String>,
-    /// `.env` files (relative to the task's working directory) whose
-    /// variables become part of the task's environment
+    /// `.env` files, relative to the task's working directory
     #[serde(default)]
     pub dotenv: Vec<String>,
-    /// Shell commands checked before running; when every one exits 0 the
-    /// task is considered up to date and skipped
+    /// Shell commands; the task is skipped when all exit 0
     #[serde(default)]
     pub status: Vec<String>,
-    /// The task runs at most once per run, even when it is called with
-    /// different arguments; the first call wins
+    /// Runs once per run even if called with different arguments (first wins)
     #[serde(default)]
     pub once: bool,
-    /// Variables that must be set and not empty (in `--env`, `meta`,
-    /// params, `dotenv` or the process environment) for the task to run
+    /// Variables that must be set and not empty
     #[serde(default)]
     pub requires: Vec<String>,
 }
@@ -729,8 +720,7 @@ impl Runner {
             .execute_code(lang, code, args, &[], self.exec.working_dir.as_deref())
     }
 
-    /// Plan `target` with this runner's directories, so `for` globs resolve
-    /// where the tasks will run.
+    /// Plan `target`, resolving `for` globs where the tasks run.
     fn plan_for<'a>(
         &'a self,
         sections: &'a [Section],
@@ -808,7 +798,7 @@ impl Runner {
 
         let names = plan.names();
         let mode = opts.output;
-        // Prefixed and grouped output are built from piped task output.
+        // Prefixed and grouped output need piped task output.
         let custom_observer =
             opts.observer.is_some() || matches!(mode, OutputMode::Prefixed | OutputMode::Group);
         let observer: Arc<dyn RunObserver> = match opts.observer {
@@ -954,7 +944,6 @@ fn namespace_sections(sections: &mut [Section], namespace: &str) {
         .collect();
     let qualify = |name: &str| format!("{}:{}", namespace, name);
 
-    // A call is a task name optionally followed by arguments.
     let qualify_call = |spec: &str| -> String {
         if local.contains(spec.trim()) {
             return qualify(spec.trim());

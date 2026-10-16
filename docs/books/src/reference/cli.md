@@ -32,6 +32,7 @@ mq-task [OPTIONS] [TASK] [-- <ARGS>...] [COMMAND]
 | `--interval <DURATION>` | How often `--watch` checks for changes (default `300ms`) |
 | `--parallel` | Run dependencies concurrently |
 | `-j, --jobs <N>` | Max concurrent tasks |
+| `--output <MODE>` | `interleaved`, `prefixed` or `group` (see [Parallel Execution](../guide/parallel.md#output-modes)) |
 | `-k, --keep-going` | Continue independent tasks after a failure |
 | `--no-cache` | Ignore up-to-date checks (`sources`/`outputs` and `status`) |
 | `-y`, `--yes` | Answer yes to every `prompt` |

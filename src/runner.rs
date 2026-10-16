@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 use crate::error::{Error, Result};
-use crate::events::{ConsoleObserver, RunObserver};
+use crate::events::{ConsoleObserver, OutputMode, RunObserver};
 use crate::exec::Executor;
 use crate::graph::{self, GraphFormat};
 use crate::schedule::{self, PlanContext, ScheduleOptions, build_plan_in, split_words};
@@ -340,6 +340,8 @@ pub struct RunOptions {
     pub jobs: Option<usize>,
     /// Keep running independent tasks after one fails
     pub keep_going: bool,
+    /// How task output is presented on the terminal
+    pub output: OutputMode,
     /// Receives progress and task output instead of the terminal. Task
     /// output is piped through it and stdin is closed.
     pub observer: Option<Arc<dyn RunObserver>>,
@@ -791,10 +793,16 @@ impl Runner {
         };
 
         let names = plan.names();
-        let custom_observer = opts.observer.is_some();
+        let mode = opts.output;
+        // Prefixed and grouped output are built from piped task output.
+        let custom_observer =
+            opts.observer.is_some() || matches!(mode, OutputMode::Prefixed | OutputMode::Group);
         let observer: Arc<dyn RunObserver> = match opts.observer {
             Some(o) => o,
-            None if jobs > 1 => Arc::new(ConsoleObserver::prefixed_for(&names)),
+            None if mode == OutputMode::Group => Arc::new(ConsoleObserver::grouped()),
+            None if mode == OutputMode::Prefixed || (mode == OutputMode::Auto && jobs > 1) => {
+                Arc::new(ConsoleObserver::prefixed_for(&names))
+            }
             None => {
                 println!(
                     "{} {}",

@@ -8,7 +8,8 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use mq_task::{
-    Config, Error, ExecutionMode, GraphFormat, INTERRUPTED, Result, RunOptions, Runner, cache,
+    Config, Error, ExecutionMode, GraphFormat, INTERRUPTED, OutputMode, Result, RunOptions, Runner,
+    cache,
 };
 
 const DEFAULT_TASKS_FILE: &str = "README.md";
@@ -35,6 +36,10 @@ struct ExecFlags {
     /// Answer yes to every `prompt` without asking
     #[arg(short = 'y', long)]
     yes: bool,
+
+    /// How task output is shown: interleaved, prefixed or group
+    #[arg(long, value_name = "MODE")]
+    output: Option<OutputMode>,
 }
 
 /// Everything needed to run one task from the command line.
@@ -436,6 +441,7 @@ fn run_task(req: RunRequest) -> Result<()> {
         parallel: req.flags.parallel,
         jobs: req.flags.jobs,
         keep_going: req.flags.keep_going,
+        output: req.flags.output.unwrap_or_default(),
         observer: None,
         cancel: None,
     };

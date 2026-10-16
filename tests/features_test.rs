@@ -1778,3 +1778,95 @@ echo generating
     let runs = stdout(&out).matches("generating").count();
     assert_eq!(runs, 2, "{}", stdout(&out));
 }
+
+const OUTPUT_TASKS: &str = r#"
+## a
+
+```bash
+echo a1
+sleep 0.3
+echo a2
+```
+
+## b
+
+```bash
+echo b1
+sleep 0.1
+echo b2
+```
+
+## all
+
+```meta
+depends = ["a", "b"]
+parallel = true
+```
+
+```bash
+echo done
+```
+"#;
+
+#[test]
+fn output_group_prints_each_task_as_one_block() {
+    let dir = workdir("output-group");
+    write(&dir, "tasks.md", OUTPUT_TASKS);
+    let out = mq_task(&dir, &["-f", "tasks.md", "all", "--output", "group"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    // b finishes first, but each block is contiguous.
+    let a1 = text.find("a1\na2\n").expect(&text);
+    let b1 = text.find("b1\nb2\n").expect(&text);
+    assert!(b1 < a1, "{}", text);
+    assert!(text.contains("▶ a\n") && text.contains("▶ b\n"));
+    assert!(text.contains("✔ a") && text.contains("✔ b"));
+    assert!(text.find("done").unwrap() > a1);
+}
+
+#[test]
+fn output_group_also_applies_to_sequential_runs() {
+    let dir = workdir("output-group-seq");
+    write(&dir, "tasks.md", OUTPUT_TASKS);
+    let out = mq_task(
+        &dir,
+        &["-f", "tasks.md", "all", "--output", "group", "-j", "1"],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("▶ a\na1\na2\n✔ a"), "{}", text);
+    assert!(text.contains("▶ b\nb1\nb2\n✔ b"), "{}", text);
+}
+
+#[test]
+fn output_prefixed_tags_lines_even_when_sequential() {
+    let dir = workdir("output-prefixed");
+    write(&dir, "tasks.md", OUTPUT_TASKS);
+    let out = mq_task(&dir, &["-f", "tasks.md", "a", "--output", "prefixed"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("a │ a1"), "{}", stdout(&out));
+}
+
+#[test]
+fn output_interleaved_never_prefixes() {
+    let dir = workdir("output-interleaved");
+    write(&dir, "tasks.md", OUTPUT_TASKS);
+    let out = mq_task(&dir, &["-f", "tasks.md", "all", "--output", "interleaved"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(!text.contains('│'), "{}", text);
+    assert!(text.contains("a1") && text.contains("b2") && text.contains("done"));
+}
+
+#[test]
+fn an_unknown_output_mode_is_rejected() {
+    let dir = workdir("output-bad");
+    write(&dir, "tasks.md", OUTPUT_TASKS);
+    let out = mq_task(&dir, &["-f", "tasks.md", "a", "--output", "loud"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("unknown output mode"),
+        "{}",
+        stderr(&out)
+    );
+}

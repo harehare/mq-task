@@ -2,9 +2,44 @@
 //! a [`RunObserver`], so the same engine drives the plain terminal output and
 //! the TUI's progress/log panes.
 
+use std::collections::HashMap;
+use std::sync::Mutex;
 use std::time::Duration;
 
 use colored::Colorize;
+
+/// How task output is presented on the terminal (`--output`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutputMode {
+    /// Raw output when tasks run one at a time, prefixed lines when they
+    /// run concurrently.
+    #[default]
+    Auto,
+    /// Raw lines as they arrive, even for concurrent tasks.
+    Interleaved,
+    /// Every line tagged with its task name.
+    Prefixed,
+    /// Each task's output is held back and printed in one block when the
+    /// task finishes.
+    Group,
+}
+
+impl std::str::FromStr for OutputMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "auto" => Ok(OutputMode::Auto),
+            "interleaved" => Ok(OutputMode::Interleaved),
+            "prefixed" => Ok(OutputMode::Prefixed),
+            "group" => Ok(OutputMode::Group),
+            other => Err(format!(
+                "unknown output mode '{}' (interleaved, prefixed, group)",
+                other
+            )),
+        }
+    }
+}
 
 /// Which stream a line of task output came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +96,9 @@ pub trait RunObserver: Send + Sync {
 pub struct ConsoleObserver {
     prefixed: bool,
     width: usize,
+    /// Hold each task's output back until it finishes (`--output group`).
+    group: bool,
+    held: Mutex<HashMap<String, Vec<(Stream, String)>>>,
 }
 
 impl ConsoleObserver {
@@ -68,13 +106,35 @@ impl ConsoleObserver {
         Self {
             prefixed: false,
             width: 0,
+            group: false,
+            held: Mutex::default(),
         }
     }
 
     pub fn prefixed() -> Self {
         Self {
             prefixed: true,
-            width: 0,
+            ..Self::new()
+        }
+    }
+
+    /// Print each task's output as one block once the task finishes, so
+    /// concurrent tasks never interleave.
+    pub fn grouped() -> Self {
+        Self {
+            group: true,
+            ..Self::new()
+        }
+    }
+
+    /// Print what `task` produced so far, framed by its name.
+    fn flush(&self, task: &str, held: &mut HashMap<String, Vec<(Stream, String)>>) {
+        println!("{} {}", "▶".cyan().bold(), task.bold());
+        for (stream, line) in held.remove(task).unwrap_or_default() {
+            match stream {
+                Stream::Stdout => println!("{}", line),
+                Stream::Stderr => eprintln!("{}", line),
+            }
         }
     }
 }
@@ -108,6 +168,13 @@ fn tag(name: &str, width: usize) -> String {
 
 impl RunObserver for ConsoleObserver {
     fn output(&self, task: &str, stream: Stream, line: &str) {
+        if self.group {
+            let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+            held.entry(task.to_string())
+                .or_default()
+                .push((stream, line.to_string()));
+            return;
+        }
         let line = if self.prefixed {
             format!("{} {} {}", tag(task, self.width), "│".dimmed(), line)
         } else {
@@ -120,6 +187,10 @@ impl RunObserver for ConsoleObserver {
     }
 
     fn status(&self, task: &str, status: &TaskStatus) {
+        if self.group {
+            self.status_grouped(task, status);
+            return;
+        }
         match status {
             TaskStatus::Started { dependency } => {
                 if self.prefixed {
@@ -175,6 +246,56 @@ impl RunObserver for ConsoleObserver {
     }
 }
 
+impl ConsoleObserver {
+    /// Status reporting for `--output group`: nothing is printed until a
+    /// task finishes, then its whole output and result appear together.
+    fn status_grouped(&self, task: &str, status: &TaskStatus) {
+        // Holding the lock while printing keeps blocks from interleaving.
+        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        match status {
+            TaskStatus::Started { .. } => {}
+            TaskStatus::Retrying {
+                attempt,
+                max,
+                delay,
+            } => {
+                eprintln!(
+                    "{}",
+                    format!(
+                        "↻ {} failed (attempt {}/{}), retrying in {:.1}s",
+                        task,
+                        attempt,
+                        max,
+                        delay.as_secs_f64()
+                    )
+                    .yellow()
+                );
+            }
+            TaskStatus::Succeeded { elapsed } => {
+                self.flush(task, &mut held);
+                println!(
+                    "{} {} {}",
+                    "✔".green().bold(),
+                    task.bold(),
+                    format!("({:.1}s)", elapsed.as_secs_f64()).dimmed()
+                );
+            }
+            TaskStatus::Failed { error } => {
+                self.flush(task, &mut held);
+                eprintln!("{} {}: {}", "✘".red().bold(), task.bold(), error);
+            }
+            TaskStatus::Skipped { reason } => {
+                held.remove(task);
+                println!("{}", format!("⊘ {} skipped ({})", task, reason).dimmed());
+            }
+            TaskStatus::Cancelled { reason } => {
+                held.remove(task);
+                eprintln!("{}", format!("⊘ {} not run ({})", task, reason).dimmed());
+            }
+        }
+    }
+}
+
 /// An observer that discards everything (used for plain library calls).
 pub struct NullObserver;
 
@@ -189,6 +310,7 @@ impl ConsoleObserver {
         Self {
             prefixed: true,
             width: tasks.iter().map(|t| t.chars().count()).max().unwrap_or(0),
+            ..Self::new()
         }
     }
 }
@@ -286,6 +408,38 @@ mod tests {
         NullObserver.output("t", Stream::Stdout, "ignored");
         NullObserver.plan(&["t".into()]);
         NullObserver.graph(&[("t".into(), vec![])]);
+    }
+
+    #[rstest]
+    #[case("auto", OutputMode::Auto)]
+    #[case("Interleaved", OutputMode::Interleaved)]
+    #[case("PREFIXED", OutputMode::Prefixed)]
+    #[case("group", OutputMode::Group)]
+    fn parses_output_modes(#[case] raw: &str, #[case] expected: OutputMode) {
+        assert_eq!(raw.parse::<OutputMode>().unwrap(), expected);
+    }
+
+    #[test]
+    fn rejects_unknown_output_modes() {
+        assert!("loud".parse::<OutputMode>().unwrap_err().contains("loud"));
+    }
+
+    #[test]
+    fn grouped_output_is_held_until_the_task_finishes() {
+        let o = ConsoleObserver::grouped();
+        o.output("t", Stream::Stdout, "line");
+        o.output("t", Stream::Stderr, "err");
+        o.output("u", Stream::Stdout, "other");
+        assert_eq!(o.held.lock().unwrap()["t"].len(), 2);
+        o.status(
+            "t",
+            &TaskStatus::Succeeded {
+                elapsed: Duration::from_millis(1),
+            },
+        );
+        let held = o.held.lock().unwrap();
+        assert!(!held.contains_key("t"));
+        assert_eq!(held["u"].len(), 1);
     }
 
     proptest! {

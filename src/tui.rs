@@ -425,6 +425,7 @@ impl App {
                             keep_going: opts.keep_going,
                             observer: Some(observer.clone() as Arc<dyn RunObserver>),
                             cancel: Some(cancel),
+                            ..Default::default()
                         },
                     )
                 })();

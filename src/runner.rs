@@ -809,7 +809,8 @@ impl Runner {
     }
 
     /// Files whose changes should re-run `task_name` in watch mode: every
-    /// `sources` glob of the task and its dependencies, plus the task file.
+    /// `sources` glob and `dotenv` file of the task and its dependencies,
+    /// plus the task file.
     pub fn watch_targets<P: AsRef<Path>>(
         &mut self,
         markdown_path: P,
@@ -823,10 +824,24 @@ impl Runner {
             dir: None,
         }];
         for node in &plan.nodes {
+            let dir = self.exec.effective_dir(node.section).map(Path::to_path_buf);
             if !node.section.sources.is_empty() {
                 targets.push(WatchTarget {
                     patterns: node.section.sources.clone(),
-                    dir: self.exec.effective_dir(node.section).map(Path::to_path_buf),
+                    dir: dir.clone(),
+                });
+            }
+            let dotenv: Vec<String> = self
+                .exec
+                .global_dotenv
+                .iter()
+                .chain(&node.section.dotenv)
+                .cloned()
+                .collect();
+            if !dotenv.is_empty() {
+                targets.push(WatchTarget {
+                    patterns: dotenv,
+                    dir,
                 });
             }
         }

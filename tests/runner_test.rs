@@ -788,3 +788,34 @@ fn watch_targets_for_a_task_without_sources_is_just_the_file() {
     let targets = runner().watch_targets(&file, "a").unwrap();
     assert_eq!(targets.len(), 1);
 }
+
+#[test]
+fn watch_targets_include_dotenv_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = write(
+        dir.path(),
+        "t.md",
+        "\
+```meta
+dotenv = [\".env\"]
+```
+
+## app
+
+```meta
+dotenv = [\".env.app\"]
+dir = \"svc\"
+```
+
+```bash
+true
+```
+",
+    );
+    let targets = runner().watch_targets(&file, "app").unwrap();
+    let env_target = targets
+        .iter()
+        .find(|t| t.patterns == [".env", ".env.app"])
+        .expect("dotenv files are watched");
+    assert_eq!(env_target.dir, Some(PathBuf::from("svc")));
+}

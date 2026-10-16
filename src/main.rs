@@ -429,7 +429,7 @@ fn run_task(req: RunRequest) -> Result<()> {
         let before = snapshot();
         println!(
             "{}",
-            format!("watching {} file(s) — Ctrl+C to stop", before.len()).dimmed()
+            format!("watching {} file(s), Ctrl+C to stop", before.len()).dimmed()
         );
 
         loop {

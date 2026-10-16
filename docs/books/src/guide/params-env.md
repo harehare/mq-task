@@ -67,4 +67,5 @@ echo "deploying with $API_URL"
 - Paths are relative to the task's working directory (`dir`). A file that does not exist is ignored, so optional files such as `.env.local` are safe to list.
 - Files are read in the order listed and later files win.
 - Precedence, lowest first: `dotenv` files → document-wide `env` → the task's `env` → params → `--env`. A variable that is already set in the process environment is **not** overridden by a file, so `API_URL=... mq-task deploy` still wins over `.env`.
+- With `--watch`, changes to the listed `.env` files re-run the task.
 - Supported syntax: `KEY=value`, `export KEY=value`, `#` comments, single quotes (literal) and double quotes (with `\n`, `\t`, `\"`, `\\` escapes). There is no `$VAR` expansion. A malformed line is an error that names the file and line.

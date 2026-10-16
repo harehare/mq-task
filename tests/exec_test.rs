@@ -410,6 +410,29 @@ fn a_missing_required_param_fails_before_running() {
     assert!(n.rec.stdout("t").is_empty());
 }
 
+#[test]
+fn prompts_cannot_be_asked_when_output_is_piped() {
+    // Parallel runs and the TUI pipe task output and close stdin, so a
+    // `prompt` can only be satisfied with `--yes`.
+    let mut s = bash("t", &[], "echo ran");
+    s.prompt = Some("Sure?".into());
+
+    let n = node(&executor(), &s, &[], false);
+    assert!(matches!(n.outcome, Err(Error::ConfirmationRequired(ref t)) if t == "t"));
+    assert!(n.rec.stdout("t").is_empty());
+    assert!(
+        n.statuses("t")
+            .iter()
+            .any(|s| matches!(s, TaskStatus::Failed { error } if error.contains("--yes")))
+    );
+
+    let mut exec = executor();
+    exec.assume_yes = true;
+    let n = node(&exec, &s, &[], false);
+    assert_eq!(n.done(), None);
+    assert_eq!(n.rec.stdout("t"), vec!["ran"]);
+}
+
 #[rstest]
 #[case::exit_code("exit 5", 5)]
 #[case::exit_one("false", 1)]

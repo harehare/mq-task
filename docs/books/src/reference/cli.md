@@ -28,7 +28,8 @@ mq-task [OPTIONS] [TASK] [-- <ARGS>...] [COMMAND]
 | `--env <KEY=VALUE>` | Set an environment variable (repeatable) |
 | `-d, --dir <PATH>` | Working directory |
 | `--summary` | Describe the task (description, dependencies, parameters, options) instead of running it |
-| `-w, --watch` | Re-run when `sources` or the task file change |
+| `-w, --watch` | Re-run when `sources`, `dotenv` files or the task file change |
+| `--interval <DURATION>` | How often `--watch` checks for changes (default `300ms`) |
 | `--parallel` | Run dependencies concurrently |
 | `-j, --jobs <N>` | Max concurrent tasks |
 | `-k, --keep-going` | Continue independent tasks after a failure |

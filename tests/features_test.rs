@@ -1726,3 +1726,55 @@ echo "deploying with $API_TOKEN"
         .unwrap();
     assert!(stdout(&process).contains("deploying with from-process"));
 }
+
+#[test]
+fn an_invalid_watch_interval_is_rejected() {
+    let dir = workdir("interval");
+    write(&dir, "tasks.md", "## t\n\n```bash\ntrue\n```\n");
+    let out = mq_task(
+        &dir,
+        &["-f", "tasks.md", "t", "--watch", "--interval", "soon"],
+    );
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("Invalid duration"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn watch_reruns_when_a_source_changes_using_the_interval() {
+    use std::process::Stdio;
+    let dir = workdir("watch-interval");
+    fs::write(dir.join("in.txt"), "1").unwrap();
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## gen
+
+```meta
+sources = ["in.txt"]
+```
+
+```bash
+echo generating
+```
+"#,
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mq-task"))
+        .args(["-f", "tasks.md", "gen", "--watch", "--interval", "50ms"])
+        .current_dir(&dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    fs::write(dir.join("in.txt"), "2").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let _ = child.kill();
+    let out = child.wait_with_output().unwrap();
+    let runs = stdout(&out).matches("generating").count();
+    assert_eq!(runs, 2, "{}", stdout(&out));
+}

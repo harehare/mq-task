@@ -51,6 +51,7 @@ struct RunRequest {
     args: Vec<String>,
     flags: ExecFlags,
     watch: bool,
+    interval: String,
     summary: bool,
 }
 
@@ -107,6 +108,10 @@ struct Cli {
     #[arg(short = 'w', long)]
     watch: bool,
 
+    /// How often `--watch` checks for changes (e.g. 500ms, 2s)
+    #[arg(long, value_name = "DURATION", default_value = "300ms")]
+    interval: String,
+
     /// Describe the task instead of running it
     #[arg(long)]
     summary: bool,
@@ -160,6 +165,10 @@ enum Commands {
         /// Re-run the task whenever its `sources` (or the task file) change
         #[arg(short = 'w', long)]
         watch: bool,
+
+        /// How often `--watch` checks for changes (e.g. 500ms, 2s)
+        #[arg(long, value_name = "DURATION", default_value = "300ms")]
+        interval: String,
 
         /// Describe the task instead of running it
         #[arg(long)]
@@ -298,6 +307,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             env,
             dir,
             watch,
+            interval,
             summary,
             flags,
             args,
@@ -314,6 +324,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             args,
             flags,
             watch,
+            interval,
             summary,
         })?,
         Some(Commands::List {
@@ -365,6 +376,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                     args: cli.args,
                     flags: cli.flags,
                     watch: cli.watch,
+                    interval: cli.interval,
                     summary: cli.summary,
                 })?,
                 None => list_tasks(cli.file, cli.config, cli.lang, cli.all, false)?,
@@ -431,6 +443,7 @@ fn run_task(req: RunRequest) -> Result<()> {
     if !req.watch {
         return runner.run_task_with_options(&req.file, &req.task, options());
     }
+    let interval = mq_task::util::parse_duration(&req.interval)?;
 
     loop {
         if let Err(err) = runner.run_task_with_options(&req.file, &req.task, options()) {
@@ -455,7 +468,7 @@ fn run_task(req: RunRequest) -> Result<()> {
         );
 
         loop {
-            std::thread::sleep(Duration::from_millis(300));
+            std::thread::sleep(interval);
             if INTERRUPTED.load(Ordering::SeqCst) {
                 return Ok(());
             }

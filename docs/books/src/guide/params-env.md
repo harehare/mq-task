@@ -43,3 +43,28 @@ dir = "services/api"
 ````
 
 CLI `--env` / `--dir` override the `meta` defaults for that run.
+
+## `.env` files
+
+`dotenv` loads variables from `.env`-style files. It works per task and, in a `meta` block before the first heading, for every task:
+
+````markdown
+```meta
+dotenv = [".env"]
+```
+
+## deploy
+
+```meta
+dotenv = [".env.production"]
+```
+
+```bash
+echo "deploying with $API_URL"
+```
+````
+
+- Paths are relative to the task's working directory (`dir`). A file that does not exist is ignored, so optional files such as `.env.local` are safe to list.
+- Files are read in the order listed and later files win.
+- Precedence, lowest first: `dotenv` files → document-wide `env` → the task's `env` → params → `--env`. A variable that is already set in the process environment is **not** overridden by a file, so `API_URL=... mq-task deploy` still wins over `.env`.
+- Supported syntax: `KEY=value`, `export KEY=value`, `#` comments, single quotes (literal) and double quotes (with `\n`, `\t`, `\"`, `\\` escapes). There is no `$VAR` expansion. A malformed line is an error that names the file and line.

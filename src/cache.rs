@@ -86,8 +86,20 @@ fn key(scope: &str, title: &str) -> String {
 
 /// True when the stored fingerprint matches and all declared `outputs` exist.
 pub fn is_fresh(scope: &str, section: &Section, fingerprint: &str, dir: Option<&Path>) -> bool {
+    is_fresh_named(scope, &section.title, section, fingerprint, dir)
+}
+
+/// [`is_fresh`] for a run recorded under `name` rather than the task title
+/// (loop iterations and calls with arguments each have their own entry).
+pub fn is_fresh_named(
+    scope: &str,
+    name: &str,
+    section: &Section,
+    fingerprint: &str,
+    dir: Option<&Path>,
+) -> bool {
     let _guard = CACHE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    if load().get(&key(scope, &section.title)).map(String::as_str) != Some(fingerprint) {
+    if load().get(&key(scope, name)).map(String::as_str) != Some(fingerprint) {
         return false;
     }
     section

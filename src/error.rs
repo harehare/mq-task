@@ -64,6 +64,14 @@ pub enum Error {
     #[error("Task '{0}' timed out")]
     Timeout(String),
 
+    /// A task's `prompt` was declined
+    #[error("Task '{0}' was not confirmed")]
+    Declined(String),
+
+    /// A task's `prompt` cannot be asked in this run
+    #[error("Task '{0}' needs confirmation; pass --yes to run it without prompting")]
+    ConfirmationRequired(String),
+
     /// A task was aborted because another task failed
     #[error("Task was cancelled")]
     Cancelled,

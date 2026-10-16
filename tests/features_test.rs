@@ -771,3 +771,772 @@ depends = ["bad", "later"]
     assert!(err.contains("later not run"), "{}", err);
     assert!(err.contains("all not run"), "{}", err);
 }
+
+fn lines(text: &str) -> Vec<String> {
+    text.lines().map(str::to_string).collect()
+}
+
+#[test]
+fn for_runs_the_task_once_per_item() {
+    let dir = workdir("for-list");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## greet
+
+```meta
+for = ["alice", "bob"]
+as = "who"
+```
+
+```bash
+echo "hi $MX_ITEM $MX_INDEX $MX_WHO"
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "greet"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    let hi: Vec<String> = lines(&text)
+        .into_iter()
+        .filter(|l| l.starts_with("hi "))
+        .collect();
+    assert_eq!(hi, vec!["hi alice 0 alice", "hi bob 1 bob"]);
+}
+
+#[test]
+fn for_matrix_and_glob_and_dependents() {
+    let dir = workdir("for-matrix");
+    fs::create_dir_all(dir.join("pkgs/one")).unwrap();
+    fs::create_dir_all(dir.join("pkgs/two")).unwrap();
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## build
+
+```meta
+for = { matrix = { os = ["linux", "mac"], arch = ["x64"] } }
+```
+
+```bash
+echo "build $MX_OS-$MX_ARCH"
+```
+
+## pkgs
+
+```meta
+for = { glob = "pkgs/*" }
+capture = true
+```
+
+```bash
+echo "pkg $MX_ITEM"
+```
+
+## all
+
+```meta
+depends = ["build", "pkgs"]
+```
+
+```bash
+echo "outputs: $MX_OUTPUT_PKGS" | tr '\n' ';'
+echo
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "all"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("build linux-x64"), "{}", text);
+    assert!(text.contains("build mac-x64"), "{}", text);
+    assert!(text.contains("pkg pkgs/one"), "{}", text);
+    assert!(text.contains("pkg pkgs/two"), "{}", text);
+    assert!(
+        text.contains("outputs: pkg pkgs/one;pkg pkgs/two"),
+        "{}",
+        text
+    );
+}
+
+#[test]
+fn for_loops_stop_at_the_first_failure_unless_keep_going() {
+    let dir = workdir("for-fail");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## each
+
+```meta
+for = ["a", "b", "c"]
+```
+
+```bash
+echo "ran $MX_ITEM"
+[ "$MX_ITEM" != "b" ] || exit 3
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "each"]);
+    assert_eq!(out.status.code(), Some(3));
+    let text = stdout(&out);
+    assert!(text.contains("ran a") && text.contains("ran b"));
+    assert!(!text.contains("ran c"), "{}", text);
+
+    let out = mq_task(&dir, &["-f", "tasks.md", "each", "--keep-going"]);
+    assert_eq!(out.status.code(), Some(3));
+    assert!(stdout(&out).contains("ran c"));
+}
+
+#[test]
+fn parallel_for_runs_iterations_concurrently() {
+    let dir = workdir("for-par");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## nap
+
+```meta
+for = ["1", "2", "3", "4"]
+parallel = true
+```
+
+```bash
+sleep 0.5
+```
+"#,
+    );
+    let started = Instant::now();
+    let out = mq_task(&dir, &["-f", "tasks.md", "nap", "-j", "4"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        started.elapsed().as_millis() < 1700,
+        "took {:?}",
+        started.elapsed()
+    );
+}
+
+#[test]
+fn an_empty_loop_is_skipped_not_an_error() {
+    let dir = workdir("for-empty");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## none
+
+```meta
+for = { glob = "nothing/*" }
+```
+
+```bash
+echo should-not-run
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "none"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!stdout(&out).contains("should-not-run"));
+    assert!(stdout(&out).contains("no items"), "{}", stdout(&out));
+}
+
+#[test]
+fn invalid_for_is_reported() {
+    let dir = workdir("for-bad");
+    write(
+        &dir,
+        "tasks.md",
+        "## t\n\n```meta\nfor = \"nope\"\n```\n\n```bash\ntrue\n```\n",
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "t"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("`for`"), "{}", stderr(&out));
+}
+
+#[test]
+fn dependencies_can_be_called_with_arguments() {
+    let dir = workdir("dep-args");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## deploy
+
+```meta
+params = ["env", "region=us"]
+```
+
+```bash
+echo "deploy $MX_PARAM_ENV $MX_PARAM_REGION"
+```
+
+## all
+
+```meta
+depends = ["deploy staging", "deploy env=prod 'region=eu west'"]
+```
+
+```bash
+echo done
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "all"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    let a = text.find("deploy staging us").expect(&text);
+    let b = text.find("deploy prod eu west").expect(&text);
+    assert!(a < b);
+}
+
+#[test]
+fn defer_runs_after_success_and_failure() {
+    let dir = workdir("defer");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## cleanup
+
+```meta
+params = ["note=done"]
+```
+
+```bash
+echo "cleanup $MX_PARAM_NOTE"
+```
+
+## ok
+
+```meta
+defer = ["cleanup after-ok"]
+```
+
+```bash
+echo body-ok
+```
+
+## boom
+
+```meta
+defer = ["cleanup after-boom"]
+```
+
+```bash
+echo body-boom
+exit 7
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "ok"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.find("body-ok").unwrap() < text.find("cleanup after-ok").unwrap());
+
+    let out = mq_task(&dir, &["-f", "tasks.md", "boom"]);
+    assert_eq!(out.status.code(), Some(7));
+    let text = stdout(&out);
+    assert!(text.find("body-boom").unwrap() < text.find("cleanup after-boom").unwrap());
+}
+
+#[test]
+fn a_failing_defer_fails_a_successful_task() {
+    let dir = workdir("defer-fail");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## cleanup
+
+```bash
+exit 9
+```
+
+## main
+
+```meta
+defer = ["cleanup"]
+```
+
+```bash
+echo body
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "main"]);
+    assert_eq!(out.status.code(), Some(9));
+}
+
+#[test]
+fn each_loop_iteration_is_cached_separately() {
+    let dir = workdir("for-cache");
+    fs::write(dir.join("in.txt"), "x").unwrap();
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## gen
+
+```meta
+for = ["a", "b"]
+sources = ["in.txt"]
+```
+
+```bash
+echo "gen $MX_ITEM"
+```
+"#,
+    );
+    let first = mq_task(&dir, &["-f", "tasks.md", "gen"]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    assert!(stdout(&first).contains("gen a") && stdout(&first).contains("gen b"));
+
+    let second = mq_task(&dir, &["-f", "tasks.md", "gen"]);
+    assert!(second.status.success());
+    assert!(!stdout(&second).contains("gen a"), "{}", stdout(&second));
+    assert!(stdout(&second).contains("up to date"));
+}
+
+#[test]
+fn ignore_error_lets_the_run_continue_with_exit_zero() {
+    let dir = workdir("ignore-error");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## flaky
+
+```meta
+ignore_error = true
+```
+
+```bash
+echo flaky-ran
+exit 5
+```
+
+## ci
+
+```meta
+depends = ["flaky"]
+```
+
+```bash
+echo ci-ran
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "ci"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("ci-ran"));
+    assert!(stderr(&out).contains("ignoring error"), "{}", stderr(&out));
+
+    // Running it directly succeeds too.
+    let out = mq_task(&dir, &["-f", "tasks.md", "flaky"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+}
+
+#[test]
+fn ignore_error_applies_after_retries_and_is_not_cached() {
+    let dir = workdir("ignore-error-retry");
+    fs::write(dir.join("in.txt"), "x").unwrap();
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## flaky
+
+```meta
+ignore_error = true
+retries = 1
+retry_delay = "10ms"
+sources = ["in.txt"]
+```
+
+```bash
+echo attempt
+exit 1
+```
+"#,
+    );
+    let first = mq_task(&dir, &["-f", "tasks.md", "flaky"]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    assert_eq!(stdout(&first).matches("attempt").count(), 2);
+
+    // The ignored failure is not remembered as "up to date".
+    let second = mq_task(&dir, &["-f", "tasks.md", "flaky"]);
+    assert_eq!(stdout(&second).matches("attempt").count(), 2);
+}
+
+#[test]
+fn ignore_error_does_not_hide_configuration_errors() {
+    let dir = workdir("ignore-error-config");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## needs-param
+
+```meta
+ignore_error = true
+params = ["required"]
+```
+
+```bash
+true
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "needs-param"]);
+    assert!(!out.status.success());
+}
+
+/// Run `mq-task` with `input` written to its stdin.
+fn mq_task_stdin(dir: &Path, args: &[&str], input: &str) -> Output {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_mq-task"))
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+const PROMPT_TASKS: &str = r#"
+## deploy
+
+```meta
+prompt = "Deploy to production?"
+```
+
+```bash
+echo deploying
+```
+
+## each
+
+```meta
+prompt = "Run for all?"
+for = ["a", "b", "c"]
+```
+
+```bash
+echo "item $MX_ITEM"
+```
+"#;
+
+#[test]
+fn prompt_runs_the_task_only_when_confirmed() {
+    let dir = workdir("prompt");
+    write(&dir, "tasks.md", PROMPT_TASKS);
+
+    let yes = mq_task_stdin(&dir, &["-f", "tasks.md", "deploy"], "y\n");
+    assert!(yes.status.success(), "{}", stderr(&yes));
+    assert!(stdout(&yes).contains("deploying"));
+    assert!(stderr(&yes).contains("Deploy to production?"));
+
+    let no = mq_task_stdin(&dir, &["-f", "tasks.md", "deploy"], "n\n");
+    assert!(!no.status.success());
+    assert!(!stdout(&no).contains("deploying"));
+    assert!(stderr(&no).contains("not confirmed"), "{}", stderr(&no));
+
+    // EOF counts as "no".
+    let eof = mq_task(&dir, &["-f", "tasks.md", "deploy"]);
+    assert!(!eof.status.success());
+    assert!(!stdout(&eof).contains("deploying"));
+}
+
+#[test]
+fn yes_flag_skips_prompts() {
+    let dir = workdir("prompt-yes");
+    write(&dir, "tasks.md", PROMPT_TASKS);
+    for flag in ["--yes", "-y"] {
+        let out = mq_task(&dir, &["-f", "tasks.md", "deploy", flag]);
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert!(stdout(&out).contains("deploying"));
+    }
+}
+
+#[test]
+fn a_looped_task_is_confirmed_once() {
+    let dir = workdir("prompt-loop");
+    write(&dir, "tasks.md", PROMPT_TASKS);
+    let out = mq_task_stdin(&dir, &["-f", "tasks.md", "each"], "y\n");
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    for item in ["a", "b", "c"] {
+        assert!(text.contains(&format!("item {}", item)), "{}", text);
+    }
+}
+
+#[test]
+fn prompts_cannot_be_asked_in_parallel_runs() {
+    let dir = workdir("prompt-parallel");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## deploy
+
+```meta
+prompt = "Sure?"
+```
+
+```bash
+echo deploying
+```
+
+## all
+
+```meta
+depends = ["deploy"]
+parallel = true
+```
+
+```bash
+echo done
+```
+"#,
+    );
+    let out = mq_task_stdin(&dir, &["-f", "tasks.md", "all"], "y\n");
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("--yes"), "{}", stderr(&out));
+    assert!(!stdout(&out).contains("deploying"));
+
+    let out = mq_task(&dir, &["-f", "tasks.md", "all", "--yes"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("deploying"));
+}
+
+#[test]
+fn dry_run_does_not_prompt() {
+    let dir = workdir("prompt-dry");
+    write(&dir, "tasks.md", PROMPT_TASKS);
+    let out = mq_task(&dir, &["-f", "tasks.md", "deploy", "--dry-run"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("[dry-run] prompt: Deploy to production?"));
+}
+
+#[test]
+fn a_skipped_task_does_not_prompt() {
+    let dir = workdir("prompt-skipped");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## deploy
+
+```meta
+prompt = "Sure?"
+if = 'flag("NEVER_SET_FLAG")'
+```
+
+```bash
+echo deploying
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "deploy"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!stderr(&out).contains("Sure?"));
+}
+
+#[test]
+fn dotenv_files_provide_task_environment() {
+    let dir = workdir("dotenv");
+    write(
+        &dir,
+        ".env",
+        "FROM_ENV_FILE=file\nSHARED=from-dotenv\nQUOTED=\"a b\"\n# comment\n",
+    );
+    write(&dir, ".env.local", "FROM_ENV_FILE=local\n");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+```meta
+dotenv = [".env"]
+```
+
+## show
+
+```meta
+dotenv = [".env.local", ".env.missing"]
+env = ["SHARED=from-meta"]
+```
+
+```bash
+echo "file=$FROM_ENV_FILE shared=$SHARED quoted=$QUOTED"
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "show"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    // Later files win, `meta` env beats dotenv, a missing file is ignored.
+    assert!(
+        stdout(&out).contains("file=local shared=from-meta quoted=a b"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn the_process_environment_and_cli_override_dotenv() {
+    let dir = workdir("dotenv-precedence");
+    write(&dir, ".env", "GREETING=from-dotenv\n");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## show
+
+```meta
+dotenv = [".env"]
+```
+
+```bash
+echo "greeting=$GREETING"
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "show"]);
+    assert!(stdout(&out).contains("greeting=from-dotenv"));
+
+    let out = Command::new(env!("CARGO_BIN_EXE_mq-task"))
+        .args(["-f", "tasks.md", "show"])
+        .env("GREETING", "from-process")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(stdout(&out).contains("greeting=from-process"));
+
+    let out = Command::new(env!("CARGO_BIN_EXE_mq-task"))
+        .args(["-f", "tasks.md", "show", "--env", "GREETING=from-cli"])
+        .env("GREETING", "from-process")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(stdout(&out).contains("greeting=from-cli"));
+}
+
+#[test]
+fn dotenv_paths_are_relative_to_the_task_directory() {
+    let dir = workdir("dotenv-dir");
+    fs::create_dir_all(dir.join("svc")).unwrap();
+    write(&dir.join("svc"), ".env", "WHERE=svc\n");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## show
+
+```meta
+dir = "svc"
+dotenv = [".env"]
+```
+
+```bash
+echo "where=$WHERE"
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "show"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("where=svc"));
+}
+
+#[test]
+fn a_malformed_dotenv_file_is_an_error() {
+    let dir = workdir("dotenv-bad");
+    write(&dir, ".env", "GOOD=1\nthis is not valid\n");
+    write(
+        &dir,
+        "tasks.md",
+        "## show\n\n```meta\ndotenv = [\".env\"]\n```\n\n```bash\necho hi\n```\n",
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "show"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("line 2"), "{}", stderr(&out));
+    assert!(!stdout(&out).contains("hi"));
+}
+
+#[test]
+fn status_commands_decide_whether_a_task_is_up_to_date() {
+    let dir = workdir("status");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## build
+
+```meta
+status = ["test -f out.txt", "grep -q done out.txt"]
+```
+
+```bash
+echo building
+echo done > out.txt
+```
+"#,
+    );
+    // No output yet: status fails, the task runs and creates the file.
+    let first = mq_task(&dir, &["-f", "tasks.md", "build"]);
+    assert!(first.status.success(), "{}", stderr(&first));
+    assert!(stdout(&first).contains("building"));
+
+    // Every status command passes now: skipped.
+    let second = mq_task(&dir, &["-f", "tasks.md", "build"]);
+    assert!(second.status.success());
+    assert!(!stdout(&second).contains("building"), "{}", stdout(&second));
+    assert!(stdout(&second).contains("up to date"));
+
+    // One failing command is enough to run the task again.
+    fs::write(dir.join("out.txt"), "stale").unwrap();
+    let third = mq_task(&dir, &["-f", "tasks.md", "build"]);
+    assert!(stdout(&third).contains("building"));
+
+    // --no-cache ignores status.
+    let forced = mq_task(&dir, &["-f", "tasks.md", "build", "--no-cache"]);
+    assert!(stdout(&forced).contains("building"));
+}
+
+#[test]
+fn status_runs_in_the_task_directory_with_its_environment() {
+    let dir = workdir("status-env");
+    fs::create_dir_all(dir.join("svc")).unwrap();
+    write(&dir.join("svc"), "marker", "");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## check
+
+```meta
+dir = "svc"
+env = ["WANT=1"]
+status = ['test -f marker && test "$WANT" = 1']
+```
+
+```bash
+echo ran
+```
+"#,
+    );
+    let out = mq_task(&dir, &["-f", "tasks.md", "check"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!stdout(&out).contains("ran"), "{}", stdout(&out));
+}

@@ -265,10 +265,12 @@ fn node_with(
     let outcome = exec.run_node(
         &NodeParams {
             section,
+            label: &section.title,
             args: &args,
             lang_filter,
             extra_env: pairs(extra_env),
             dependency: false,
+            defers: &[],
         },
         &io,
     );
@@ -303,10 +305,12 @@ fn the_dependency_flag_is_forwarded() {
     exec.run_node(
         &NodeParams {
             section: &section,
+            label: &section.title,
             args: &[],
             lang_filter: None,
             extra_env: vec![],
             dependency: true,
+            defers: &[],
         },
         &io,
     )

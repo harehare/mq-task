@@ -1,6 +1,6 @@
 # mq-task
 
-> mq-task is a task runner that executes code blocks in Markdown files, selected by section title. Built on mq (https://mqlang.org/). Supports dependencies, parallel execution, conditions, retries, timeouts, output passing, imports, caching, watch mode, a dependency graph, shell completions and an interactive TUI.
+> mq-task is a task runner that executes code blocks in Markdown files, selected by section title. Built on mq (https://mqlang.org/). Supports dependencies (with arguments), parallel execution, loops (for), defer, conditions, retries, timeouts, ignore_error, confirmation prompts, dotenv, status checks, output passing, imports, caching, watch mode, a dependency graph, shell completions and an interactive TUI.
 
 ## Docs
 
@@ -11,6 +11,9 @@
 - [Writing Tasks](https://task.mqlang.org/book/guide/tasks.html): Headings as tasks, code blocks, meta blocks
 - [Dependencies](https://task.mqlang.org/book/guide/dependencies.html): depends
 - [Parallel Execution](https://task.mqlang.org/book/guide/parallel.html): parallel, --parallel, -j, -k
+- [Loops](https://task.mqlang.org/book/guide/loops.html): for, as, glob, matrix, MX_ITEM, MX_INDEX
+- [Cleanup with defer](https://task.mqlang.org/book/guide/defer.html): defer
+- [Confirmation Prompts](https://task.mqlang.org/book/guide/prompts.html): prompt, --yes, -y
 - [Conditions](https://task.mqlang.org/book/guide/conditions.html): if expressions
 - [Retries and Timeouts](https://task.mqlang.org/book/guide/retries-timeouts.html): retries, retry_delay, timeout
 - [Passing Output Between Tasks](https://task.mqlang.org/book/guide/output.html): capture, MX_OUTPUT_<TASK>

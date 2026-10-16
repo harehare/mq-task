@@ -36,6 +36,77 @@ pub fn parse_duration(raw: &str) -> Result<Duration> {
     Duration::try_from_secs_f64(seconds).map_err(|_| invalid())
 }
 
+/// Parse the contents of a `.env` file into `KEY=VALUE` pairs.
+///
+/// Supports `KEY=value`, an optional `export ` prefix, `#` comments (whole
+/// lines, and after an unquoted value), single-quoted values (literal) and
+/// double-quoted values (with `\n`, `\t`, `\"` and `\\` escapes). There is no
+/// variable expansion. Errors name the offending line number.
+pub fn parse_dotenv(content: &str) -> std::result::Result<Vec<(String, String)>, String> {
+    let mut vars = Vec::new();
+    for (n, raw) in content.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let line = line
+            .strip_prefix("export ")
+            .map(str::trim_start)
+            .unwrap_or(line);
+        let (key, value) = line
+            .split_once('=')
+            .ok_or_else(|| format!("line {}: expected KEY=VALUE", n + 1))?;
+        let key = key.trim();
+        if key.is_empty()
+            || !key
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+        {
+            return Err(format!("line {}: invalid variable name '{}'", n + 1, key));
+        }
+        let value = value.trim();
+        let parsed = if let Some(rest) = value.strip_prefix('"') {
+            let mut out = String::new();
+            let mut chars = rest.chars();
+            let mut closed = false;
+            while let Some(c) = chars.next() {
+                match c {
+                    '"' => {
+                        closed = true;
+                        break;
+                    }
+                    '\\' => match chars.next() {
+                        Some('n') => out.push('\n'),
+                        Some('t') => out.push('\t'),
+                        Some('r') => out.push('\r'),
+                        Some(other) => out.push(other),
+                        None => out.push('\\'),
+                    },
+                    other => out.push(other),
+                }
+            }
+            if !closed {
+                return Err(format!("line {}: unterminated quote", n + 1));
+            }
+            out
+        } else if let Some(rest) = value.strip_prefix('\'') {
+            rest.split_once('\'')
+                .map(|(inner, _)| inner.to_string())
+                .ok_or_else(|| format!("line {}: unterminated quote", n + 1))?
+        } else {
+            // An unquoted value ends at whitespace followed by `#`.
+            let end = value
+                .char_indices()
+                .find(|&(i, c)| c == '#' && value[..i].ends_with(char::is_whitespace))
+                .map(|(i, _)| i)
+                .unwrap_or(value.len());
+            value[..end].trim_end().to_string()
+        };
+        vars.push((key.to_string(), parsed));
+    }
+    Ok(vars)
+}
+
 /// 64-bit FNV-1a hash. Unlike `DefaultHasher` its output is stable across
 /// Rust releases, which matters for fingerprints persisted on disk.
 #[derive(Debug, Clone)]
@@ -69,6 +140,39 @@ impl Fnv {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_dotenv_files() {
+        let content = "# comment\n\nA=1\nexport B = two words # trailing\nC=\"x\\ny \\\"q\\\" # kept\"\nD='lit # eral $X'\nE=\nF=a#b\n";
+        assert_eq!(
+            parse_dotenv(content).unwrap(),
+            vec![
+                ("A".to_string(), "1".to_string()),
+                ("B".to_string(), "two words".to_string()),
+                ("C".to_string(), "x\ny \"q\" # kept".to_string()),
+                ("D".to_string(), "lit # eral $X".to_string()),
+                ("E".to_string(), String::new()),
+                ("F".to_string(), "a#b".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_dotenv_lines() {
+        assert!(parse_dotenv("NOEQUALS").unwrap_err().contains("line 1"));
+        assert!(parse_dotenv("A=1\n=x").unwrap_err().contains("line 2"));
+        assert!(parse_dotenv("A B=1").unwrap_err().contains("invalid"));
+        assert!(
+            parse_dotenv("A=\"open")
+                .unwrap_err()
+                .contains("unterminated")
+        );
+        assert!(
+            parse_dotenv("A='open")
+                .unwrap_err()
+                .contains("unterminated")
+        );
+    }
 
     #[test]
     fn parses_durations() {

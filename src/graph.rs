@@ -4,7 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
 use crate::runner::Section;
-use crate::schedule::find_section;
+use crate::schedule::{find_section, resolve_call};
 
 /// Output format for [`render`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +25,15 @@ impl std::str::FromStr for GraphFormat {
     }
 }
 
+/// ` (env=prod region=eu)` for a call with arguments, else nothing.
+fn call_args(args: &[String]) -> String {
+    if args.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", args.join(" "))
+    }
+}
+
 fn badges(s: &Section) -> String {
     let mut b = Vec::new();
     if s.parallel {
@@ -32,6 +41,21 @@ fn badges(s: &Section) -> String {
     }
     if let Some(c) = &s.condition {
         b.push(format!("if: {}", c));
+    }
+    if let Some(spec) = &s.for_each {
+        b.push(format!("for: {}", spec.summary()));
+    }
+    if !s.defer.is_empty() {
+        b.push(format!("defer: {}", s.defer.join(", ")));
+    }
+    if !s.status.is_empty() {
+        b.push("status".to_string());
+    }
+    if s.prompt.is_some() {
+        b.push("prompt".to_string());
+    }
+    if s.ignore_error {
+        b.push("ignore_error".to_string());
     }
     if s.retries > 0 {
         b.push(format!("retries: {}", s.retries));
@@ -74,15 +98,23 @@ fn text(sections: &[Section], roots: &[&Section]) -> String {
             } else {
                 ("├── ", format!("{}│   ", prefix))
             };
-            match find_section(sections, dep) {
+            match resolve_call(sections, dep) {
                 None => {
                     let _ = writeln!(out, "{}{}{} (not found)", prefix, branch, dep);
                 }
-                Some(s) if path.contains(&s.title) => {
+                Some((s, _)) if path.contains(&s.title) => {
                     let _ = writeln!(out, "{}{}{} (cycle)", prefix, branch, s.title);
                 }
-                Some(s) => {
-                    let _ = writeln!(out, "{}{}{}{}", prefix, branch, s.title, badges(s));
+                Some((s, args)) => {
+                    let _ = writeln!(
+                        out,
+                        "{}{}{}{}{}",
+                        prefix,
+                        branch,
+                        s.title,
+                        call_args(&args),
+                        badges(s)
+                    );
                     path.push(s.title.clone());
                     walk(sections, s, &next_prefix, out, path);
                     path.pop();
@@ -125,8 +157,8 @@ fn mermaid(sections: &[Section], roots: &[&Section]) -> String {
             continue;
         }
         for dep in &s.depends {
-            match find_section(sections, dep) {
-                Some(d) => {
+            match resolve_call(sections, dep) {
+                Some((d, _)) => {
                     let to = id_of(d, &mut ids, &mut order);
                     edges.push((from, to));
                     stack.push(d);

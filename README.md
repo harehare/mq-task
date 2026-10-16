@@ -1,6 +1,10 @@
 <div align="center">
   <img src="assets/logo.svg" width="96" height="96" alt="mq-task logo" />
 
+<a href="https://task.mqlang.org">Visit the site 🌐</a>
+—
+<a href="https://task.mqlang.org/book/">Read the book 📖</a>
+
   <h1>mq-task</h1>
 
 [![ci](https://img.shields.io/github/actions/workflow/status/harehare/mq-task/ci.yml?style=flat-square&logo=github-actions&label=ci)](https://github.com/harehare/mq-task/actions/workflows/ci.yml)
@@ -14,28 +18,30 @@ It is implemented using [mq](https://github.com/harehare/mq), a jq-like command-
 
 ![demo](assets/demo.gif)
 
-📖 **Documentation: <https://task.mqlang.org/book/>**
-
 > [!WARNING]
 > `mq-task` is currently under active development.
 
 ## Features
 
 - Execute code blocks from specific sections in Markdown files
-- Task dependencies with automatic execution ordering
-- Parallel execution of independent dependencies, joined before the dependent task runs
-- Conditions (`if`), retries, timeouts, and passing a task's output to its dependents
-- Importing tasks from other Markdown files
-- Skip up-to-date tasks (`sources`/`outputs`) and `--watch` mode
-- Dependency graph output (`graph`) and shell completions
-- Interactive TUI with search, details, argument prompts, per-task progress and a log pane
-- Named task parameters with defaults, plus positional args
-- Per-run `--env`/`--dir` overrides, plus `meta`-declared defaults for environment variables and working directory (per task or document-wide)
-- Default task, aliases, and private (hidden) tasks
-- Configurable runtimes for different programming languages, with real exit codes and interactive stdin
+- Task [dependencies](https://task.mqlang.org/book/guide/dependencies.html) with automatic execution ordering, including calls that pass arguments
+- [Parallel execution](https://task.mqlang.org/book/guide/parallel.html) of independent dependencies, joined before the dependent task runs
+- [Loops](https://task.mqlang.org/book/guide/loops.html) (`for` over a list, a glob or a matrix)
+- [`defer`](https://task.mqlang.org/book/guide/defer.html) cleanup tasks that run even after a failure
+- [Conditions](https://task.mqlang.org/book/guide/conditions.html) (`if`), [retries and timeouts](https://task.mqlang.org/book/guide/retries-timeouts.html) (plus `ignore_error`), [confirmation prompts](https://task.mqlang.org/book/guide/prompts.html), and [passing a task's output](https://task.mqlang.org/book/guide/output.html) to its dependents
+- [Importing tasks](https://task.mqlang.org/book/guide/imports.html) from other Markdown files
+- Skip [up-to-date tasks](https://task.mqlang.org/book/guide/cache-watch.html) (`sources`/`outputs` or custom `status` commands) and `--watch` mode
+- [Dependency graph](https://task.mqlang.org/book/guide/graph.html) output (`graph`) and [shell completions](https://task.mqlang.org/book/guide/completions.html)
+- [Interactive TUI](https://task.mqlang.org/book/guide/tui.html) with search, details, argument prompts, per-task progress and a log pane
+- [Named task parameters](https://task.mqlang.org/book/guide/params-env.html) with defaults, plus positional args
+- Per-run `--env`/`--dir` overrides, plus `meta`-declared defaults for environment variables, `.env` files and working directory ([details](https://task.mqlang.org/book/guide/params-env.html))
+- Default task, [aliases, and private tasks](https://task.mqlang.org/book/guide/aliases-private.html)
+- Configurable [runtimes](https://task.mqlang.org/book/start/configuration.html) for different programming languages, with real exit codes and interactive stdin
 - Support for custom heading levels
 - TOML-based configuration
 - Built on top of the mq query language
+
+See the [documentation](https://task.mqlang.org/book/) for the full guide and reference.
 
 ## Installation
 

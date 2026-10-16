@@ -4,12 +4,13 @@
 //! [`Executor`] holds no mq engine state, so it is `Sync` and can be shared
 //! by the worker threads of a parallel run.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::cache;
@@ -18,6 +19,7 @@ use crate::config::{Config, ExecutionMode};
 use crate::error::{Error, Result};
 use crate::events::{NullObserver, RunObserver, Stream, TaskStatus};
 use crate::runner::{ParamDef, Section};
+use crate::schedule::Deferred;
 
 /// Maps a signal-killed process to the shell convention `128 + signal`.
 fn exit_code_from_status(status: &ExitStatus) -> i32 {
@@ -60,11 +62,16 @@ pub enum NodeOutcome {
 /// Inputs for [`Executor::run_node`].
 pub struct NodeParams<'a> {
     pub section: &'a Section,
+    /// Name this execution is reported and cached under; the task title,
+    /// extended with `[...]` for loop iterations and calls with arguments.
+    pub label: &'a str,
     pub args: &'a [String],
     pub lang_filter: Option<&'a str>,
-    /// Extra env (e.g. `MX_OUTPUT_*` from dependencies).
+    /// Extra env (e.g. `MX_OUTPUT_*` from dependencies, loop variables).
     pub extra_env: Vec<(String, String)>,
     pub dependency: bool,
+    /// Tasks to run after this one finishes, whatever its outcome.
+    pub defers: &'a [Deferred<'a>],
 }
 
 /// Name of the env var that exposes a captured task's stdout to dependents.
@@ -91,10 +98,16 @@ pub struct Executor {
     /// Document-wide `meta` defaults of the main file.
     pub global_env: Vec<(String, String)>,
     pub global_dir: Option<PathBuf>,
+    /// Document-wide `dotenv` files of the main file.
+    pub global_dotenv: Vec<String>,
     /// Honor `sources`/`outputs` up-to-date checks.
     pub use_cache: bool,
     /// Distinguishes cache entries of different task files.
     pub cache_scope: String,
+    /// Answer yes to `prompt`s without asking.
+    pub assume_yes: bool,
+    /// Tasks already confirmed in this run, so a loop asks only once.
+    confirmed: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Executor {
@@ -106,8 +119,11 @@ impl Executor {
             working_dir: None,
             global_env: Vec::new(),
             global_dir: None,
+            global_dotenv: Vec::new(),
             use_cache: true,
             cache_scope: String::new(),
+            assume_yes: false,
+            confirmed: Arc::default(),
         }
     }
 
@@ -120,10 +136,43 @@ impl Executor {
             .or(self.global_dir.as_deref())
     }
 
-    /// Env for a task before `--env` overrides: document defaults, the
-    /// task's own `meta`, then bound params.
+    /// Variables from the document-wide and the task's `dotenv` files, in
+    /// the order the files are listed (later files win). Missing files are
+    /// ignored. A variable already set in the process environment is left
+    /// alone, as with most dotenv loaders.
+    fn dotenv_vars(&self, section: &Section) -> Result<Vec<(String, String)>> {
+        let dir = self.effective_dir(section);
+        let mut vars: Vec<(String, String)> = Vec::new();
+        for file in self.global_dotenv.iter().chain(&section.dotenv) {
+            let path = match dir {
+                Some(d) if !Path::new(file).is_absolute() => d.join(file),
+                _ => PathBuf::from(file),
+            };
+            let content = match fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => {
+                    return Err(Error::Invalid(format!("dotenv {}: {}", path.display(), e)));
+                }
+            };
+            let parsed = crate::util::parse_dotenv(&content)
+                .map_err(|e| Error::Invalid(format!("dotenv {}: {}", path.display(), e)))?;
+            for (key, value) in parsed {
+                if std::env::var_os(&key).is_some() {
+                    continue;
+                }
+                vars.retain(|(k, _)| *k != key);
+                vars.push((key, value));
+            }
+        }
+        Ok(vars)
+    }
+
+    /// Env for a task before `--env` overrides: `dotenv` files, document
+    /// defaults, the task's own `meta`, then bound params.
     fn task_env(&self, section: &Section, args: &[String]) -> Result<Vec<(String, String)>> {
-        let mut env = self.global_env.clone();
+        let mut env = self.dotenv_vars(section)?;
+        env.extend(self.global_env.clone());
         env.extend(section.env.clone());
         env.extend(Self::bind_params(&section.params, args, &section.title)?);
         Ok(env)
@@ -255,10 +304,11 @@ impl Executor {
     }
 
     /// Execute one task with its full lifecycle: `if`, up-to-date check,
-    /// retries and timeout. Reports progress to `io.observer`.
+    /// retries, timeout and deferred tasks. Reports progress to
+    /// `io.observer`.
     pub fn run_node(&self, p: &NodeParams, io: &TaskIo) -> Result<NodeOutcome> {
         let section = p.section;
-        let name = section.title.as_str();
+        let name = p.label;
         let observer = io.observer;
 
         observer.status(
@@ -302,10 +352,23 @@ impl Executor {
 
         let mut full_env = task_env.clone();
         full_env.extend(self.env_overrides.iter().cloned());
+        if self.use_cache
+            && !self.dry_run
+            && !section.status.is_empty()
+            && self.status_is_up_to_date(section, p.args, &task_env, dir)
+        {
+            observer.status(
+                name,
+                &TaskStatus::Skipped {
+                    reason: "up to date (status)".into(),
+                },
+            );
+            return Ok(NodeOutcome::Skipped);
+        }
         let fingerprint = (self.use_cache && !self.dry_run && !section.sources.is_empty())
             .then(|| cache::fingerprint(section, &full_env, p.args, dir));
         if let Some(fp) = &fingerprint
-            && cache::is_fresh(&self.cache_scope, section, fp, dir)
+            && cache::is_fresh_named(&self.cache_scope, name, section, fp, dir)
         {
             observer.status(
                 name,
@@ -316,36 +379,38 @@ impl Executor {
             return Ok(NodeOutcome::Skipped);
         }
 
-        let max_attempts = section.retries.saturating_add(1);
+        if let Some(message) = &section.prompt {
+            self.confirm(section, message, io).map_err(fail)?;
+        }
+
         let started = Instant::now();
-        let mut attempt = 1;
-        let output = loop {
-            let attempt_io = TaskIo {
-                deadline: section.timeout.map(|t| Instant::now() + t),
-                ..*io
-            };
-            match self.run_blocks(section, p.args, p.lang_filter, &task_env, &attempt_io) {
-                Ok(out) => break out,
-                Err(e) if attempt < max_attempts && is_retriable(&e) => {
-                    let delay = section.retry_delay.unwrap_or(Duration::from_secs(1));
-                    observer.status(
-                        name,
-                        &TaskStatus::Retrying {
-                            attempt,
-                            max: max_attempts,
-                            delay,
-                        },
-                    );
-                    if !sleep_unless_cancelled(delay, io.cancel) {
-                        return Err(fail(Error::Cancelled));
-                    }
-                    attempt += 1;
-                }
-                Err(e) => return Err(fail(e)),
+        let mut ignored = false;
+        let body = match self.run_with_retries(p, &task_env, io) {
+            // Only runtime failures are ignorable; cancellation and
+            // configuration errors still stop the run.
+            Err(e) if section.ignore_error && is_retriable(&e) => {
+                io.observer
+                    .output(name, Stream::Stderr, &format!("ignoring error: {}", e));
+                ignored = true;
+                Ok(String::new())
             }
+            other => other,
+        };
+        // Deferred tasks run once the body is over, even when it failed.
+        let deferred = if p.defers.is_empty() {
+            Ok(())
+        } else {
+            self.run_deferred(p, io)
+        };
+        let output = match (body, deferred) {
+            (Ok(out), Ok(())) => out,
+            (Err(e), _) | (Ok(_), Err(e)) => return Err(fail(e)),
         };
 
-        if let Some(fp) = &fingerprint {
+        // A failure that was ignored must not be remembered as up to date.
+        if let Some(fp) = &fingerprint
+            && !ignored
+        {
             cache::record(&self.cache_scope, name, fp);
         }
 
@@ -360,6 +425,137 @@ impl Executor {
             .capture
             .then(|| output.trim_end_matches(['\n', '\r']).to_string());
         Ok(NodeOutcome::Done { output })
+    }
+
+    /// Run the task's `status` commands in its environment and directory.
+    /// The task is up to date only if every one of them exits 0.
+    fn status_is_up_to_date(
+        &self,
+        section: &Section,
+        args: &[String],
+        task_env: &[(String, String)],
+        dir: Option<&Path>,
+    ) -> bool {
+        section.status.iter().all(|cmd| {
+            #[cfg(unix)]
+            let mut command = {
+                let mut c = Command::new("sh");
+                c.arg("-c").arg(cmd);
+                c
+            };
+            #[cfg(not(unix))]
+            let mut command = {
+                let mut c = Command::new("cmd");
+                c.arg("/C").arg(cmd);
+                c
+            };
+            command
+                .envs(self.prepare_env_vars(args, task_env))
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            if let Some(dir) = dir {
+                command.current_dir(dir);
+            }
+            command.status().map(|s| s.success()).unwrap_or(false)
+        })
+    }
+
+    /// Ask the user to confirm a task's `prompt`. Dry runs and `--yes` skip
+    /// the question; runs without a terminal (parallel, TUI) cannot ask.
+    fn confirm(&self, section: &Section, message: &str, io: &TaskIo) -> Result<()> {
+        if self.dry_run {
+            println!("[dry-run] prompt: {}", message);
+            return Ok(());
+        }
+        if self.assume_yes {
+            return Ok(());
+        }
+        let mut confirmed = self.confirmed.lock().unwrap_or_else(|e| e.into_inner());
+        if confirmed.contains(&section.title) {
+            return Ok(());
+        }
+        if io.piped {
+            return Err(Error::ConfirmationRequired(section.title.clone()));
+        }
+
+        eprint!("? {} [y/N] ", message);
+        let _ = std::io::stderr().flush();
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer).map_err(Error::Io)?;
+        if matches!(answer.trim().to_lowercase().as_str(), "y" | "yes") {
+            confirmed.insert(section.title.clone());
+            Ok(())
+        } else {
+            Err(Error::Declined(section.title.clone()))
+        }
+    }
+
+    /// Run a task's code blocks, retrying runtime failures per `retries`.
+    fn run_with_retries(
+        &self,
+        p: &NodeParams,
+        task_env: &[(String, String)],
+        io: &TaskIo,
+    ) -> Result<String> {
+        let section = p.section;
+        let max_attempts = section.retries.saturating_add(1);
+        let mut attempt = 1;
+        loop {
+            let attempt_io = TaskIo {
+                deadline: section.timeout.map(|t| Instant::now() + t),
+                ..*io
+            };
+            match self.run_blocks(section, p.args, p.lang_filter, task_env, &attempt_io) {
+                Ok(out) => return Ok(out),
+                Err(e) if attempt < max_attempts && is_retriable(&e) => {
+                    let delay = section.retry_delay.unwrap_or(Duration::from_secs(1));
+                    io.observer.status(
+                        p.label,
+                        &TaskStatus::Retrying {
+                            attempt,
+                            max: max_attempts,
+                            delay,
+                        },
+                    );
+                    if !sleep_unless_cancelled(delay, io.cancel) {
+                        return Err(Error::Cancelled);
+                    }
+                    attempt += 1;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Run the `defer` tasks of a node in the order they were declared.
+    /// They are immune to cancellation (cleanup must happen) and have no
+    /// timeout. Every task runs even if an earlier one fails; the first
+    /// error is returned and the rest are reported as output.
+    fn run_deferred(&self, p: &NodeParams, io: &TaskIo) -> Result<()> {
+        let never = AtomicBool::new(false);
+        let io = TaskIo {
+            cancel: &never,
+            deadline: None,
+            capture: false,
+            ..*io
+        };
+        let mut first: Option<Error> = None;
+        for d in p.defers {
+            let result = self.task_env(d.section, &d.args).and_then(|mut env| {
+                env.extend(p.extra_env.iter().cloned());
+                self.run_blocks(d.section, &d.args, None, &env, &io)
+            });
+            if let Err(e) = result {
+                io.observer.output(
+                    p.label,
+                    Stream::Stderr,
+                    &format!("defer '{}' failed: {}", d.section.title, e),
+                );
+                first.get_or_insert(e);
+            }
+        }
+        first.map_or(Ok(()), Err)
     }
 
     /// Execute a single code block, outside any task lifecycle.

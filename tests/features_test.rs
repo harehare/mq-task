@@ -2284,3 +2284,77 @@ echo after-ran
     assert!(stdout(&out).contains("after-ran"));
     assert!(stderr(&out).contains("ignoring error"), "{}", stderr(&out));
 }
+
+#[test]
+fn requires_accepts_variables_generated_for_the_task_process() {
+    let dir = workdir("requires-generated");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## deploy
+
+```meta
+requires = ["MX_ARG_0"]
+```
+
+```bash
+echo "deploying $MX_ARG_0"
+```
+
+## missing
+
+```meta
+requires = ["MX_ARG_1"]
+```
+
+```bash
+echo should-not-run
+```
+
+## list-files
+
+```meta
+capture = true
+```
+
+```bash
+printf 'a\nb\n'
+```
+
+## each
+
+```meta
+depends = ["list-files"]
+for = { from = "list-files" }
+as = "file"
+requires = ["MX_ITEM", "MX_FILE"]
+```
+
+```bash
+echo "item $MX_FILE"
+```
+"#,
+    );
+    let ok = mq_task(&dir, &["-f", "tasks.md", "deploy", "--", "prod"]);
+    assert!(ok.status.success(), "{}", stderr(&ok));
+    assert!(stdout(&ok).contains("deploying prod"));
+
+    let missing = mq_task(&dir, &["-f", "tasks.md", "missing", "--", "prod"]);
+    assert!(!missing.status.success());
+    assert!(
+        stderr(&missing).contains("MX_ARG_1"),
+        "{}",
+        stderr(&missing)
+    );
+    assert!(!stdout(&missing).contains("should-not-run"));
+
+    let each = mq_task(&dir, &["-f", "tasks.md", "each"]);
+    assert!(each.status.success(), "{}", stderr(&each));
+    let text = stdout(&each);
+    assert!(
+        text.contains("item a") && text.contains("item b"),
+        "{}",
+        text
+    );
+}

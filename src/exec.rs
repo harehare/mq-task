@@ -367,25 +367,25 @@ impl Executor {
         let mut full_env = task_env.clone();
         full_env.extend(self.env_overrides.iter().cloned());
 
-        let missing: Vec<&str> = section
-            .requires
-            .iter()
-            .map(String::as_str)
-            .filter(|var| {
-                let value = full_env
-                    .iter()
-                    .rev()
-                    .find(|(k, _)| k == var)
-                    .map(|(_, v)| v.clone())
-                    .or_else(|| std::env::var(var).ok());
-                value.is_none_or(|v| v.is_empty())
-            })
-            .collect();
-        if !missing.is_empty() && !self.dry_run {
-            return Err(fail(Error::MissingVariable(
-                missing.join(", "),
-                section.title.clone(),
-            )));
+        if !self.dry_run {
+            // Item variables of a `for.from` loop only exist once its items
+            // are resolved; `run_items` checks those per item.
+            let per_item: Vec<String> = if p.loop_source.is_some() {
+                loop_item_vars(section, 0, "")
+                    .into_iter()
+                    .map(|(k, _)| k)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let process_env = self.prepare_env_vars(p.args, &task_env);
+            let missing = self.missing_requires(section, &process_env, &per_item);
+            if !missing.is_empty() {
+                return Err(fail(Error::MissingVariable(
+                    missing.join(", "),
+                    section.title.clone(),
+                )));
+            }
         }
 
         if self.use_cache
@@ -481,6 +481,31 @@ impl Executor {
         Ok(NodeOutcome::Done { output })
     }
 
+    /// The `requires` names that are unset or empty in `env` (the variables
+    /// the task process gets) and the process environment, ignoring `skip`.
+    fn missing_requires(
+        &self,
+        section: &Section,
+        env: &[(String, String)],
+        skip: &[String],
+    ) -> Vec<String> {
+        section
+            .requires
+            .iter()
+            .filter(|var| !skip.contains(var))
+            .filter(|var| {
+                let value = env
+                    .iter()
+                    .rev()
+                    .find(|(k, _)| k == *var)
+                    .map(|(_, v)| v.clone())
+                    .or_else(|| std::env::var(var).ok());
+                value.is_none_or(|v| v.is_empty())
+            })
+            .cloned()
+            .collect()
+    }
+
     /// True when every `status` command exits 0.
     fn status_is_up_to_date(
         &self,
@@ -560,6 +585,16 @@ impl Executor {
                 .output(p.label, Stream::Stdout, &format!("↳ {}[{}]", p.label, item));
             let mut env = task_env.to_vec();
             env.extend(loop_item_vars(p.section, index, item));
+            if !self.dry_run {
+                let missing =
+                    self.missing_requires(p.section, &self.prepare_env_vars(p.args, &env), &[]);
+                if !missing.is_empty() {
+                    return Err(Error::MissingVariable(
+                        missing.join(", "),
+                        p.section.title.clone(),
+                    ));
+                }
+            }
             captured.push_str(&self.run_with_retries(p, &env, io)?);
         }
         Ok(captured)

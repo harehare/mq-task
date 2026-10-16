@@ -9,10 +9,30 @@ use std::time::Duration;
 
 use mq_task::{
     Config, Error, ExecutionMode, GraphFormat, INTERRUPTED, OutputMode, Result, RunOptions, Runner,
-    cache,
 };
 
 const DEFAULT_TASKS_FILE: &str = "README.md";
+/// Shortest pause between `--watch` polls.
+const MIN_WATCH_INTERVAL: Duration = Duration::from_millis(50);
+
+/// The `--interval` pause, raised to the minimum so that `0` cannot make the
+/// watcher poll the filesystem without pausing.
+fn watch_interval(raw: &str) -> Result<Duration> {
+    Ok(mq_task::util::parse_duration(raw)?.max(MIN_WATCH_INTERVAL))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn watch_interval_has_a_floor() {
+        assert_eq!(watch_interval("0").unwrap(), MIN_WATCH_INTERVAL);
+        assert_eq!(watch_interval("1ms").unwrap(), MIN_WATCH_INTERVAL);
+        assert_eq!(watch_interval("2s").unwrap(), Duration::from_secs(2));
+        assert!(watch_interval("soon").is_err());
+    }
+}
 
 /// Flags controlling how a task's dependency graph is executed.
 #[derive(Args, Clone, Default)]
@@ -449,7 +469,7 @@ fn run_task(req: RunRequest) -> Result<()> {
     if !req.watch {
         return runner.run_task_with_options(&req.file, &req.task, options());
     }
-    let interval = mq_task::util::parse_duration(&req.interval)?;
+    let interval = watch_interval(&req.interval)?;
 
     loop {
         if let Err(err) = runner.run_task_with_options(&req.file, &req.task, options()) {
@@ -463,7 +483,7 @@ fn run_task(req: RunRequest) -> Result<()> {
         let snapshot = || {
             let mut all = std::collections::HashMap::new();
             for target in &targets {
-                all.extend(cache::snapshot(&target.patterns, target.dir.as_deref()));
+                all.extend(target.snapshot());
             }
             all
         };

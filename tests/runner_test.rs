@@ -819,3 +819,20 @@ true
         .expect("dotenv files are watched");
     assert_eq!(env_target.dir, Some(PathBuf::from("svc")));
 }
+
+#[test]
+fn dotenv_watch_targets_are_literal_paths() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = write(
+        dir.path(),
+        "t.md",
+        "## app\n\n```meta\ndotenv = [\".env[prod]\"]\n```\n\n```bash\ntrue\n```\n",
+    );
+    let targets = runner().watch_targets(&file, "app").unwrap();
+    let env_target = targets
+        .iter()
+        .find(|t| t.patterns == [".env[prod]"])
+        .expect("dotenv file is watched");
+    assert!(env_target.literal);
+    assert!(targets.iter().filter(|t| !t.literal).count() == 0);
+}

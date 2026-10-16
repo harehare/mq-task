@@ -360,6 +360,19 @@ pub struct RunOptions {
 pub struct WatchTarget {
     pub patterns: Vec<String>,
     pub dir: Option<PathBuf>,
+    /// `patterns` are exact file names (`dotenv`), not globs (`sources`).
+    pub literal: bool,
+}
+
+impl WatchTarget {
+    /// Path, mtime and size of every watched file that exists.
+    pub fn snapshot(&self) -> std::collections::HashMap<PathBuf, crate::cache::FileStamp> {
+        if self.literal {
+            crate::cache::snapshot_files(&self.patterns, self.dir.as_deref())
+        } else {
+            crate::cache::snapshot(&self.patterns, self.dir.as_deref())
+        }
+    }
 }
 
 /// Task runner that executes code blocks in Markdown sections
@@ -850,6 +863,7 @@ impl Runner {
         let mut targets = vec![WatchTarget {
             patterns: vec![markdown_path.as_ref().to_string_lossy().into_owned()],
             dir: None,
+            literal: true,
         }];
         for node in &plan.nodes {
             let dir = self.exec.effective_dir(node.section).map(Path::to_path_buf);
@@ -857,6 +871,7 @@ impl Runner {
                 targets.push(WatchTarget {
                     patterns: node.section.sources.clone(),
                     dir: dir.clone(),
+                    literal: false,
                 });
             }
             let dotenv: Vec<String> = self
@@ -870,6 +885,7 @@ impl Runner {
                 targets.push(WatchTarget {
                     patterns: dotenv,
                     dir,
+                    literal: true,
                 });
             }
         }

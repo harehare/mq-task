@@ -59,4 +59,5 @@ depends = ["deploy staging", "deploy env=prod 'region=eu west'"]
 - Words are split on whitespace; use single or double quotes for values containing spaces. A task title containing spaces still works as a plain dependency (`depends = ["Build App"]`).
 - The same task called with different arguments runs once per distinct argument list; identical calls are shared.
 - Calls appear as `deploy[env=prod ...]` in progress output and as `deploy (env=prod ...)` in `graph`.
+- `once = true` on the called task makes every call share a single run, whatever the arguments; the first call wins.
 - Arguments apply to that call only; the arguments given on the command line still belong to the requested task.

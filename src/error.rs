@@ -64,6 +64,10 @@ pub enum Error {
     #[error("Task '{0}' timed out")]
     Timeout(String),
 
+    /// Variables a task `requires` are not set
+    #[error("Task '{1}' requires {0} to be set")]
+    MissingVariable(String, String),
+
     /// A task's `prompt` was declined
     #[error("Task '{0}' was not confirmed")]
     Declined(String),

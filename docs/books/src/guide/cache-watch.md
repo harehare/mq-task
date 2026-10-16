@@ -41,6 +41,7 @@ npm ci
 
 ```sh
 mq-task test --watch
+mq-task test --watch --interval 1s   # check for changes every second (default 300ms)
 ```
 
-Re-runs whenever any `sources` of the task or its dependencies, or the task file, change.
+Re-runs whenever any `sources` or `dotenv` file of the task or its dependencies, or the task file, change.

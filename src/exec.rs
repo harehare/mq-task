@@ -19,7 +19,7 @@ use crate::config::{Config, ExecutionMode};
 use crate::error::{Error, Result};
 use crate::events::{NullObserver, RunObserver, Stream, TaskStatus};
 use crate::runner::{ParamDef, Section};
-use crate::schedule::Deferred;
+use crate::schedule::{Deferred, loop_item_vars};
 
 /// Maps a signal-killed process to the shell convention `128 + signal`.
 fn exit_code_from_status(status: &ExitStatus) -> i32 {
@@ -62,16 +62,33 @@ pub enum NodeOutcome {
 /// Inputs for [`Executor::run_node`].
 pub struct NodeParams<'a> {
     pub section: &'a Section,
-    /// Name this execution is reported and cached under; the task title,
-    /// extended with `[...]` for loop iterations and calls with arguments.
+    /// Name this run is reported and cached under (the plan node's label).
     pub label: &'a str,
     pub args: &'a [String],
     pub lang_filter: Option<&'a str>,
-    /// Extra env (e.g. `MX_OUTPUT_*` from dependencies, loop variables).
+    /// Extra env: `MX_OUTPUT_*` from dependencies and loop variables.
     pub extra_env: Vec<(String, String)>,
     pub dependency: bool,
-    /// Tasks to run after this one finishes, whatever its outcome.
+    /// Dependency whose captured output is looped over (`for.from`).
+    pub loop_source: Option<&'a str>,
+    /// Tasks to run afterwards, whatever the outcome.
     pub defers: &'a [Deferred<'a>],
+}
+
+/// The non-empty lines of `source`'s captured output in `env`.
+fn source_items(env: &[(String, String)], source: &str) -> Vec<String> {
+    let var = output_var(source);
+    env.iter()
+        .rev()
+        .find(|(k, _)| *k == var)
+        .map(|(_, v)| {
+            v.lines()
+                .map(|l| l.trim_end_matches('\r'))
+                .filter(|l| !l.trim().is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Name of the env var that exposes a captured task's stdout to dependents.
@@ -136,10 +153,8 @@ impl Executor {
             .or(self.global_dir.as_deref())
     }
 
-    /// Variables from the document-wide and the task's `dotenv` files, in
-    /// the order the files are listed (later files win). Missing files are
-    /// ignored. A variable already set in the process environment is left
-    /// alone, as with most dotenv loaders.
+    /// Variables from the `dotenv` files; later files win and missing files
+    /// are ignored. Variables already in the process environment are kept.
     fn dotenv_vars(&self, section: &Section) -> Result<Vec<(String, String)>> {
         let dir = self.effective_dir(section);
         let mut vars: Vec<(String, String)> = Vec::new();
@@ -304,8 +319,7 @@ impl Executor {
     }
 
     /// Execute one task with its full lifecycle: `if`, up-to-date check,
-    /// retries, timeout and deferred tasks. Reports progress to
-    /// `io.observer`.
+    /// retries, timeout and deferred tasks.
     pub fn run_node(&self, p: &NodeParams, io: &TaskIo) -> Result<NodeOutcome> {
         let section = p.section;
         let name = p.label;
@@ -352,6 +366,28 @@ impl Executor {
 
         let mut full_env = task_env.clone();
         full_env.extend(self.env_overrides.iter().cloned());
+
+        if !self.dry_run {
+            // Item variables of a `for.from` loop only exist once its items
+            // are resolved; `run_items` checks those per item.
+            let per_item: Vec<String> = if p.loop_source.is_some() {
+                loop_item_vars(section, 0, "")
+                    .into_iter()
+                    .map(|(k, _)| k)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let process_env = self.prepare_env_vars(p.args, &task_env);
+            let missing = self.missing_requires(section, &process_env, &per_item);
+            if !missing.is_empty() {
+                return Err(fail(Error::MissingVariable(
+                    missing.join(", "),
+                    section.title.clone(),
+                )));
+            }
+        }
+
         if self.use_cache
             && !self.dry_run
             && !section.status.is_empty()
@@ -379,13 +415,31 @@ impl Executor {
             return Ok(NodeOutcome::Skipped);
         }
 
+        let items: Option<Vec<String>> =
+            p.loop_source.map(|source| source_items(&task_env, source));
+        if let Some(items) = &items
+            && items.is_empty()
+        {
+            observer.status(
+                name,
+                &TaskStatus::Skipped {
+                    reason: "for: no items".into(),
+                },
+            );
+            return Ok(NodeOutcome::Skipped);
+        }
+
         if let Some(message) = &section.prompt {
             self.confirm(section, message, io).map_err(fail)?;
         }
 
         let started = Instant::now();
         let mut ignored = false;
-        let body = match self.run_with_retries(p, &task_env, io) {
+        let result = match &items {
+            Some(items) => self.run_items(p, &task_env, items, io),
+            None => self.run_with_retries(p, &task_env, io),
+        };
+        let body = match result {
             // Only runtime failures are ignorable; cancellation and
             // configuration errors still stop the run.
             Err(e) if section.ignore_error && is_retriable(&e) => {
@@ -427,8 +481,32 @@ impl Executor {
         Ok(NodeOutcome::Done { output })
     }
 
-    /// Run the task's `status` commands in its environment and directory.
-    /// The task is up to date only if every one of them exits 0.
+    /// The `requires` names that are unset or empty in `env` (the variables
+    /// the task process gets) and the process environment, ignoring `skip`.
+    fn missing_requires(
+        &self,
+        section: &Section,
+        env: &[(String, String)],
+        skip: &[String],
+    ) -> Vec<String> {
+        section
+            .requires
+            .iter()
+            .filter(|var| !skip.contains(var))
+            .filter(|var| {
+                let value = env
+                    .iter()
+                    .rev()
+                    .find(|(k, _)| k == *var)
+                    .map(|(_, v)| v.clone())
+                    .or_else(|| std::env::var(var).ok());
+                value.is_none_or(|v| v.is_empty())
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// True when every `status` command exits 0.
     fn status_is_up_to_date(
         &self,
         section: &Section,
@@ -461,8 +539,7 @@ impl Executor {
         })
     }
 
-    /// Ask the user to confirm a task's `prompt`. Dry runs and `--yes` skip
-    /// the question; runs without a terminal (parallel, TUI) cannot ask.
+    /// Ask to confirm a task's `prompt`. Piped runs (parallel, TUI) cannot ask.
     fn confirm(&self, section: &Section, message: &str, io: &TaskIo) -> Result<()> {
         if self.dry_run {
             println!("[dry-run] prompt: {}", message);
@@ -489,6 +566,38 @@ impl Executor {
         } else {
             Err(Error::Declined(section.title.clone()))
         }
+    }
+
+    /// Run the task once per item, stopping at the first failure.
+    fn run_items(
+        &self,
+        p: &NodeParams,
+        task_env: &[(String, String)],
+        items: &[String],
+        io: &TaskIo,
+    ) -> Result<String> {
+        let mut captured = String::new();
+        for (index, item) in items.iter().enumerate() {
+            if io.cancel.load(Ordering::SeqCst) {
+                return Err(Error::Cancelled);
+            }
+            io.observer
+                .output(p.label, Stream::Stdout, &format!("↳ {}[{}]", p.label, item));
+            let mut env = task_env.to_vec();
+            env.extend(loop_item_vars(p.section, index, item));
+            if !self.dry_run {
+                let missing =
+                    self.missing_requires(p.section, &self.prepare_env_vars(p.args, &env), &[]);
+                if !missing.is_empty() {
+                    return Err(Error::MissingVariable(
+                        missing.join(", "),
+                        p.section.title.clone(),
+                    ));
+                }
+            }
+            captured.push_str(&self.run_with_retries(p, &env, io)?);
+        }
+        Ok(captured)
     }
 
     /// Run a task's code blocks, retrying runtime failures per `retries`.
@@ -528,10 +637,8 @@ impl Executor {
         }
     }
 
-    /// Run the `defer` tasks of a node in the order they were declared.
-    /// They are immune to cancellation (cleanup must happen) and have no
-    /// timeout. Every task runs even if an earlier one fails; the first
-    /// error is returned and the rest are reported as output.
+    /// Run the `defer` tasks in order. They ignore cancellation and timeouts
+    /// so cleanup always happens; all run, and the first error is returned.
     fn run_deferred(&self, p: &NodeParams, io: &TaskIo) -> Result<()> {
         let never = AtomicBool::new(false);
         let io = TaskIo {

@@ -8,10 +8,31 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use mq_task::{
-    Config, Error, ExecutionMode, GraphFormat, INTERRUPTED, Result, RunOptions, Runner, cache,
+    Config, Error, ExecutionMode, GraphFormat, INTERRUPTED, OutputMode, Result, RunOptions, Runner,
 };
 
 const DEFAULT_TASKS_FILE: &str = "README.md";
+/// Shortest pause between `--watch` polls.
+const MIN_WATCH_INTERVAL: Duration = Duration::from_millis(50);
+
+/// The `--interval` pause, raised to the minimum so that `0` cannot make the
+/// watcher poll the filesystem without pausing.
+fn watch_interval(raw: &str) -> Result<Duration> {
+    Ok(mq_task::util::parse_duration(raw)?.max(MIN_WATCH_INTERVAL))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn watch_interval_has_a_floor() {
+        assert_eq!(watch_interval("0").unwrap(), MIN_WATCH_INTERVAL);
+        assert_eq!(watch_interval("1ms").unwrap(), MIN_WATCH_INTERVAL);
+        assert_eq!(watch_interval("2s").unwrap(), Duration::from_secs(2));
+        assert!(watch_interval("soon").is_err());
+    }
+}
 
 /// Flags controlling how a task's dependency graph is executed.
 #[derive(Args, Clone, Default)]
@@ -35,6 +56,10 @@ struct ExecFlags {
     /// Answer yes to every `prompt` without asking
     #[arg(short = 'y', long)]
     yes: bool,
+
+    /// How task output is shown: interleaved, prefixed or group
+    #[arg(long, value_name = "MODE")]
+    output: Option<OutputMode>,
 }
 
 /// Everything needed to run one task from the command line.
@@ -51,6 +76,8 @@ struct RunRequest {
     args: Vec<String>,
     flags: ExecFlags,
     watch: bool,
+    interval: String,
+    summary: bool,
 }
 
 #[derive(Parser)]
@@ -106,6 +133,14 @@ struct Cli {
     #[arg(short = 'w', long)]
     watch: bool,
 
+    /// How often `--watch` checks for changes (e.g. 500ms, 2s)
+    #[arg(long, value_name = "DURATION", default_value = "300ms")]
+    interval: String,
+
+    /// Describe the task instead of running it
+    #[arg(long)]
+    summary: bool,
+
     #[command(flatten)]
     flags: ExecFlags,
 
@@ -156,6 +191,14 @@ enum Commands {
         #[arg(short = 'w', long)]
         watch: bool,
 
+        /// How often `--watch` checks for changes (e.g. 500ms, 2s)
+        #[arg(long, value_name = "DURATION", default_value = "300ms")]
+        interval: String,
+
+        /// Describe the task instead of running it
+        #[arg(long)]
+        summary: bool,
+
         #[command(flatten)]
         flags: ExecFlags,
 
@@ -181,6 +224,10 @@ enum Commands {
         /// Include private tasks (name starts with `_` or `meta` has private = true)
         #[arg(short, long)]
         all: bool,
+
+        /// Print the tasks as JSON instead of text
+        #[arg(long)]
+        json: bool,
     },
 
     /// Interactively select and run a task using TUI
@@ -285,6 +332,8 @@ fn dispatch(cli: Cli) -> Result<()> {
             env,
             dir,
             watch,
+            interval,
+            summary,
             flags,
             args,
         }) => run_task(RunRequest {
@@ -300,13 +349,16 @@ fn dispatch(cli: Cli) -> Result<()> {
             args,
             flags,
             watch,
+            interval,
+            summary,
         })?,
         Some(Commands::List {
             file,
             config,
             lang,
             all,
-        }) => list_tasks(file, config, lang, all)?,
+            json,
+        }) => list_tasks(file, config, lang, all, json)?,
         Some(Commands::Tui {
             file,
             config,
@@ -349,8 +401,10 @@ fn dispatch(cli: Cli) -> Result<()> {
                     args: cli.args,
                     flags: cli.flags,
                     watch: cli.watch,
+                    interval: cli.interval,
+                    summary: cli.summary,
                 })?,
-                None => list_tasks(cli.file, cli.config, cli.lang, cli.all)?,
+                None => list_tasks(cli.file, cli.config, cli.lang, cli.all, false)?,
             }
         }
     }
@@ -396,12 +450,18 @@ fn run_task(req: RunRequest) -> Result<()> {
         &req.flags,
     )?;
 
+    if req.summary {
+        print!("{}", runner.task_summary(&req.file, &req.task)?);
+        return Ok(());
+    }
+
     let options = || RunOptions {
         args: req.args.clone(),
         lang_filter: req.lang.clone(),
         parallel: req.flags.parallel,
         jobs: req.flags.jobs,
         keep_going: req.flags.keep_going,
+        output: req.flags.output.unwrap_or_default(),
         observer: None,
         cancel: None,
     };
@@ -409,6 +469,7 @@ fn run_task(req: RunRequest) -> Result<()> {
     if !req.watch {
         return runner.run_task_with_options(&req.file, &req.task, options());
     }
+    let interval = watch_interval(&req.interval)?;
 
     loop {
         if let Err(err) = runner.run_task_with_options(&req.file, &req.task, options()) {
@@ -422,18 +483,18 @@ fn run_task(req: RunRequest) -> Result<()> {
         let snapshot = || {
             let mut all = std::collections::HashMap::new();
             for target in &targets {
-                all.extend(cache::snapshot(&target.patterns, target.dir.as_deref()));
+                all.extend(target.snapshot());
             }
             all
         };
         let before = snapshot();
         println!(
             "{}",
-            format!("watching {} file(s) — Ctrl+C to stop", before.len()).dimmed()
+            format!("watching {} file(s), Ctrl+C to stop", before.len()).dimmed()
         );
 
         loop {
-            std::thread::sleep(Duration::from_millis(300));
+            std::thread::sleep(interval);
             if INTERRUPTED.load(Ordering::SeqCst) {
                 return Ok(());
             }
@@ -499,6 +560,7 @@ fn list_tasks(
     config_path: Option<PathBuf>,
     lang_filter: Option<String>,
     show_all: bool,
+    json: bool,
 ) -> Result<()> {
     let config = load_config(config_path)?;
     let mut runner = Runner::new(config);
@@ -515,6 +577,11 @@ fn list_tasks(
                 .is_none_or(|lang| section.codes.iter().any(|code| code.lang == *lang))
         })
         .collect();
+
+    if json {
+        println!("{}", mq_task::summary::list_json(&filtered_sections));
+        return Ok(());
+    }
 
     if filtered_sections.is_empty() {
         if let Some(ref lang) = lang_filter {

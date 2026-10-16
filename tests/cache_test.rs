@@ -9,7 +9,7 @@ mod common;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use mq_task::cache::{expand, fingerprint, snapshot};
+use mq_task::cache::{expand, fingerprint, snapshot, snapshot_files};
 use mq_task::runner::{CodeBlock, Section};
 use proptest::prelude::*;
 use rstest::{fixture, rstest};
@@ -296,4 +296,23 @@ fn snapshot_of_nothing_is_empty() {
     let dir = tempfile::tempdir().unwrap();
     assert!(snapshot(&strings(&["*.nope"]), Some(dir.path())).is_empty());
     assert!(snapshot(&[], Some(dir.path())).is_empty());
+}
+
+#[test]
+fn snapshot_files_treats_names_literally_and_sees_new_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let names = strings(&[".env[prod]"]);
+    let before = snapshot_files(&names, Some(dir.path()));
+    assert!(before.is_empty());
+
+    let file = write(dir.path(), ".env[prod]", "A=1");
+    let created = snapshot_files(&names, Some(dir.path()));
+    assert_eq!(created.len(), 1);
+    assert_ne!(before, created);
+
+    // As a glob the bracket is a character class and misses the file.
+    assert!(snapshot(&names, Some(dir.path())).is_empty());
+
+    fs::write(&file, "A=22").unwrap();
+    assert_ne!(created, snapshot_files(&names, Some(dir.path())));
 }

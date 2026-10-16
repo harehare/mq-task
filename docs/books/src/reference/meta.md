@@ -5,9 +5,10 @@ A fenced block with the language `meta` (TOML) in a task section. Unknown or inv
 | Key | Type | Description |
 |---|---|---|
 | `depends` | array of strings | Tasks to run first; each may carry arguments (`"deploy env=prod"`) |
-| `parallel` | bool | Run `depends` (and loop iterations) concurrently |
-| `for` | array, `{ glob }` or `{ matrix }` | Run the task once per item ([Loops](../guide/loops.md)) |
-| `as` | string | Extra variable name for the loop item (`as = "file"` → `MX_FILE`) |
+| `once` | bool | Run at most once per run, even when called with different arguments |
+| `parallel` | bool | Run `depends` and the items of list, glob and matrix loops concurrently |
+| `for` | array, `{ glob }`, `{ matrix }` or `{ from }` | Run the task once per item ([Loops](../guide/loops.md)) |
+| `as` | string | Extra variable name for the loop item (`as = "file"` sets `MX_FILE`) |
 | `defer` | array of strings | Tasks run after this one, even on failure ([defer](../guide/defer.md)) |
 | `if` | string | Condition; task skipped when false |
 | `retries` | integer | Extra attempts after a failure |
@@ -20,6 +21,7 @@ A fenced block with the language `meta` (TOML) in a task section. Unknown or inv
 | `status` | array of strings | Shell commands; task skipped when all exit `0` ([guide](../guide/cache-watch.md#custom-up-to-date-checks-with-status)) |
 | `outputs` | array of paths | Files that must exist for the task to be considered up to date |
 | `params` | array of strings | Named parameters (`name` required, `name=value` default) |
+| `requires` | array of strings | Variables that must be set and not empty ([guide](../guide/params-env.md#required-variables)) |
 | `env` | array of `KEY=VALUE` | Default environment variables |
 | `dir` | string | Working directory |
 | `dotenv` | array of paths | `.env` files to load ([guide](../guide/params-env.md#env-files)) |
@@ -27,4 +29,4 @@ A fenced block with the language `meta` (TOML) in a task section. Unknown or inv
 | `private` | bool | Hide from listings |
 | `imports` | array of paths | Document-wide only: files to import |
 
-Environment variables set for tasks: `MX_ARGS`, `MX_ARG_<N>`, `MX_PARAM_<NAME>`, `MX_OUTPUT_<TASK>`, and in loops `MX_ITEM`, `MX_INDEX`, `MX_<AXIS>`.
+Environment variables set for tasks: `MX_ARGS`, `MX_ARG_<N>`, `MX_PARAM_<NAME>`, `MX_OUTPUT_<TASK>`, and in loops `MX_ITEM`, `MX_INDEX`, `MX_<AS>` and `MX_<AXIS>`.

@@ -12,12 +12,13 @@ pub mod exec;
 pub mod graph;
 pub mod runner;
 pub mod schedule;
+pub mod summary;
 pub mod tui;
 pub mod util;
 
 pub use config::{Config, ExecutionMode};
 pub use error::{Error, Result};
-pub use events::{ConsoleObserver, RunObserver, Stream, TaskStatus};
+pub use events::{ConsoleObserver, OutputMode, RunObserver, Stream, TaskStatus};
 pub use graph::GraphFormat;
 pub use runner::Runner;
 pub use runner::{RunOptions, WatchTarget};

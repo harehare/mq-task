@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 use crate::error::{Error, Result};
-use crate::events::{ConsoleObserver, RunObserver};
+use crate::events::{ConsoleObserver, OutputMode, RunObserver};
 use crate::exec::Executor;
 use crate::graph::{self, GraphFormat};
 use crate::schedule::{self, PlanContext, ScheduleOptions, build_plan_in, split_words};
@@ -40,6 +40,9 @@ pub enum LoopSpec {
     /// `for = { matrix = { os = ["linux", "macos"], arch = ["x64"] } }`
     /// Axes are kept sorted by name.
     Matrix(Vec<(String, Vec<String>)>),
+    /// Lines of a dependency's captured output (`capture = true`):
+    /// `for = { from = "list-files" }`. Items run sequentially in the task.
+    From(String),
 }
 
 impl LoopSpec {
@@ -52,6 +55,7 @@ impl LoopSpec {
                 format!("{}{}", shown.join(", "), more)
             }
             LoopSpec::Glob(patterns) => format!("glob {}", patterns.join(", ")),
+            LoopSpec::From(task) => format!("output of {}", task),
             LoopSpec::Matrix(axes) => format!(
                 "matrix {}",
                 axes.iter()
@@ -84,13 +88,21 @@ impl LoopSpec {
             toml::Value::Array(_) => Ok(LoopSpec::List(list(value)?)),
             toml::Value::Table(table) => {
                 if table.len() != 1 {
-                    return Err(invalid("expected exactly one of `glob` or `matrix`"));
+                    return Err(invalid(
+                        "expected exactly one of `glob`, `matrix` or `from`",
+                    ));
                 }
                 let (key, v) = table.iter().next().expect("one entry");
                 match key.as_str() {
                     "glob" => match v {
                         toml::Value::String(s) => Ok(LoopSpec::Glob(vec![s.clone()])),
                         other => Ok(LoopSpec::Glob(list(other)?)),
+                    },
+                    "from" => match v {
+                        toml::Value::String(task) if !task.trim().is_empty() => {
+                            Ok(LoopSpec::From(task.trim().to_string()))
+                        }
+                        _ => Err(invalid("`from` must name a task")),
                     },
                     "matrix" => {
                         let toml::Value::Table(axes) = v else {
@@ -104,13 +116,13 @@ impl LoopSpec {
                         Ok(LoopSpec::Matrix(out))
                     }
                     other => Err(invalid(&format!(
-                        "unknown key '{}' (expected `glob` or `matrix`)",
+                        "unknown key '{}' (expected `glob`, `matrix` or `from`)",
                         other
                     ))),
                 }
             }
             _ => Err(invalid(
-                "expected an array, `{ glob = ... }` or `{ matrix = ... }`",
+                "expected an array, `{ glob = ... }`, `{ matrix = ... }` or `{ from = ... }`",
             )),
         }
     }
@@ -197,6 +209,12 @@ struct TaskMeta {
     /// Shell commands; the task is up to date when all of them exit 0
     #[serde(default)]
     status: Vec<String>,
+    /// Run only once per run, however it is called
+    #[serde(default)]
+    once: bool,
+    /// Variables that must be set (and not empty), e.g. `["API_TOKEN"]`
+    #[serde(default)]
+    requires: Vec<String>,
 }
 
 /// A named task parameter, e.g. `params = ["env=staging", "verbose"]`.
@@ -278,30 +296,31 @@ pub struct Section {
     /// `for` loop: the task runs once per item
     #[serde(default)]
     pub for_each: Option<LoopSpec>,
-    /// Name given to the loop item in addition to `MX_ITEM` (`as = "file"`
-    /// exposes `MX_FILE`)
+    /// Extra name for the loop item (`as = "file"` sets `MX_FILE`)
     #[serde(default)]
     pub loop_var: Option<String>,
     /// Tasks (optionally with arguments) run after this one finishes,
     /// whatever its outcome
     #[serde(default)]
     pub defer: Vec<String>,
-    /// A failed run (after retries and timeouts) is reported but does not
-    /// fail the task, block its dependents or change the exit code
+    /// A failed run (after retries) is reported but not treated as a failure
     #[serde(default)]
     pub ignore_error: bool,
-    /// Confirmation message; the task runs only after the user answers yes
-    /// (or `--yes` is given)
+    /// Confirmation message; the task runs only on yes or `--yes`
     #[serde(default)]
     pub prompt: Option<String>,
-    /// `.env` files (relative to the task's working directory) whose
-    /// variables become part of the task's environment
+    /// `.env` files, relative to the task's working directory
     #[serde(default)]
     pub dotenv: Vec<String>,
-    /// Shell commands checked before running; when every one exits 0 the
-    /// task is considered up to date and skipped
+    /// Shell commands; the task is skipped when all exit 0
     #[serde(default)]
     pub status: Vec<String>,
+    /// Runs once per run even if called with different arguments (first wins)
+    #[serde(default)]
+    pub once: bool,
+    /// Variables that must be set and not empty
+    #[serde(default)]
+    pub requires: Vec<String>,
 }
 
 /// Document-wide settings found in the preamble `meta` block.
@@ -326,6 +345,8 @@ pub struct RunOptions {
     pub jobs: Option<usize>,
     /// Keep running independent tasks after one fails
     pub keep_going: bool,
+    /// How task output is presented on the terminal
+    pub output: OutputMode,
     /// Receives progress and task output instead of the terminal. Task
     /// output is piped through it and stdin is closed.
     pub observer: Option<Arc<dyn RunObserver>>,
@@ -339,6 +360,19 @@ pub struct RunOptions {
 pub struct WatchTarget {
     pub patterns: Vec<String>,
     pub dir: Option<PathBuf>,
+    /// `patterns` are exact file names (`dotenv`), not globs (`sources`).
+    pub literal: bool,
+}
+
+impl WatchTarget {
+    /// Path, mtime and size of every watched file that exists.
+    pub fn snapshot(&self) -> std::collections::HashMap<PathBuf, crate::cache::FileStamp> {
+        if self.literal {
+            crate::cache::snapshot_files(&self.patterns, self.dir.as_deref())
+        } else {
+            crate::cache::snapshot(&self.patterns, self.dir.as_deref())
+        }
+    }
 }
 
 /// Task runner that executes code blocks in Markdown sections
@@ -636,6 +670,8 @@ impl Runner {
             prompt: meta.prompt,
             dotenv: meta.dotenv,
             status: meta.status,
+            once: meta.once,
+            requires: meta.requires,
         })
     }
 
@@ -697,8 +733,7 @@ impl Runner {
             .execute_code(lang, code, args, &[], self.exec.working_dir.as_deref())
     }
 
-    /// Plan `target` with this runner's directories, so `for` globs resolve
-    /// where the tasks will run.
+    /// Plan `target`, resolving `for` globs where the tasks run.
     fn plan_for<'a>(
         &'a self,
         sections: &'a [Section],
@@ -775,10 +810,16 @@ impl Runner {
         };
 
         let names = plan.names();
-        let custom_observer = opts.observer.is_some();
+        let mode = opts.output;
+        // Prefixed and grouped output need piped task output.
+        let custom_observer =
+            opts.observer.is_some() || matches!(mode, OutputMode::Prefixed | OutputMode::Group);
         let observer: Arc<dyn RunObserver> = match opts.observer {
             Some(o) => o,
-            None if jobs > 1 => Arc::new(ConsoleObserver::prefixed_for(&names)),
+            None if mode == OutputMode::Group => Arc::new(ConsoleObserver::grouped()),
+            None if mode == OutputMode::Prefixed || (mode == OutputMode::Auto && jobs > 1) => {
+                Arc::new(ConsoleObserver::prefixed_for(&names))
+            }
             None => {
                 println!(
                     "{} {}",
@@ -809,7 +850,8 @@ impl Runner {
     }
 
     /// Files whose changes should re-run `task_name` in watch mode: every
-    /// `sources` glob of the task and its dependencies, plus the task file.
+    /// `sources` glob and `dotenv` file of the task and its dependencies,
+    /// plus the task file.
     pub fn watch_targets<P: AsRef<Path>>(
         &mut self,
         markdown_path: P,
@@ -821,16 +863,41 @@ impl Runner {
         let mut targets = vec![WatchTarget {
             patterns: vec![markdown_path.as_ref().to_string_lossy().into_owned()],
             dir: None,
+            literal: true,
         }];
         for node in &plan.nodes {
+            let dir = self.exec.effective_dir(node.section).map(Path::to_path_buf);
             if !node.section.sources.is_empty() {
                 targets.push(WatchTarget {
                     patterns: node.section.sources.clone(),
-                    dir: self.exec.effective_dir(node.section).map(Path::to_path_buf),
+                    dir: dir.clone(),
+                    literal: false,
+                });
+            }
+            let dotenv: Vec<String> = self
+                .exec
+                .global_dotenv
+                .iter()
+                .chain(&node.section.dotenv)
+                .cloned()
+                .collect();
+            if !dotenv.is_empty() {
+                targets.push(WatchTarget {
+                    patterns: dotenv,
+                    dir,
+                    literal: true,
                 });
             }
         }
         Ok(targets)
+    }
+
+    /// Describe a single task (`--summary`).
+    pub fn task_summary<P: AsRef<Path>>(&mut self, markdown_path: P, task: &str) -> Result<String> {
+        let sections = self.load_sections(markdown_path)?;
+        let section = schedule::find_section(&sections, task)
+            .ok_or_else(|| Error::SectionNotFound(task.to_string()))?;
+        Ok(crate::summary::render(section))
     }
 
     /// Render the dependency graph of `task` (or of every public task).
@@ -893,7 +960,6 @@ fn namespace_sections(sections: &mut [Section], namespace: &str) {
         .collect();
     let qualify = |name: &str| format!("{}:{}", namespace, name);
 
-    // A call is a task name optionally followed by arguments.
     let qualify_call = |spec: &str| -> String {
         if local.contains(spec.trim()) {
             return qualify(spec.trim());
@@ -913,6 +979,11 @@ fn namespace_sections(sections: &mut [Section], namespace: &str) {
     };
 
     for section in sections {
+        if let Some(LoopSpec::From(source)) = &mut section.for_each
+            && local.contains(source.as_str())
+        {
+            *source = qualify(source);
+        }
         section.title = qualify(&section.title);
         section.aliases = section.aliases.iter().map(|a| qualify(a)).collect();
         for dep in section.depends.iter_mut().chain(section.defer.iter_mut()) {
@@ -1886,5 +1957,104 @@ true
             parse(md).unwrap()[0].status,
             vec!["test -f out.txt", "true"]
         );
+    }
+
+    #[test]
+    fn parses_once() {
+        let md = "## t\n\n```meta\nonce = true\n```\n\n```bash\ntrue\n```\n";
+        assert!(parse(md).unwrap()[0].once);
+    }
+
+    #[test]
+    fn parses_requires() {
+        let md =
+            "## t\n\n```meta\nrequires = [\"API_TOKEN\", \"REGION\"]\n```\n\n```bash\ntrue\n```\n";
+        assert_eq!(parse(md).unwrap()[0].requires, vec!["API_TOKEN", "REGION"]);
+    }
+
+    #[test]
+    fn parses_for_from() {
+        let md = "## t\n\n```meta\nfor = { from = \" list \" }\n```\n\n```bash\ntrue\n```\n";
+        let sections = parse(md).unwrap();
+        assert_eq!(sections[0].for_each, Some(LoopSpec::From("list".into())));
+        assert_eq!(
+            sections[0].for_each.as_ref().unwrap().summary(),
+            "output of list"
+        );
+        for bad in ["for = { from = 3 }", "for = { from = \"\" }"] {
+            let md = format!("## t\n\n```meta\n{}\n```\n\n```bash\ntrue\n```\n", bad);
+            assert!(matches!(parse(&md), Err(Error::Invalid(_))), "{}", bad);
+        }
+    }
+
+    #[test]
+    fn namespacing_qualifies_the_for_from_source() {
+        let mut sections = vec![
+            Section {
+                title: "list".into(),
+                ..Default::default()
+            },
+            Section {
+                title: "each".into(),
+                for_each: Some(LoopSpec::From("list".into())),
+                ..Default::default()
+            },
+            Section {
+                title: "other".into(),
+                for_each: Some(LoopSpec::From("elsewhere:list".into())),
+                ..Default::default()
+            },
+        ];
+        namespace_sections(&mut sections, "ns");
+        assert_eq!(sections[1].for_each, Some(LoopSpec::From("ns:list".into())));
+        assert_eq!(
+            sections[2].for_each,
+            Some(LoopSpec::From("elsewhere:list".into()))
+        );
+    }
+
+    #[test]
+    fn loop_specs_have_short_summaries() {
+        let list = |n: usize| LoopSpec::List((0..n).map(|i| i.to_string()).collect());
+        assert_eq!(list(2).summary(), "0, 1");
+        assert_eq!(list(5).summary(), "0, 1, 2, ...");
+        assert_eq!(
+            LoopSpec::Glob(vec!["a/*".into(), "b/*".into()]).summary(),
+            "glob a/*, b/*"
+        );
+        let matrix = LoopSpec::Matrix(vec![("arch".into(), vec![]), ("os".into(), vec![])]);
+        assert_eq!(matrix.summary(), "matrix arch x os");
+        assert_eq!(LoopSpec::From("ls".into()).summary(), "output of ls");
+    }
+
+    #[test]
+    fn quote_word_round_trips_through_split_words() {
+        for word in ["plain", "a b", "k=v w", "say \"hi\"", "", "x'y"] {
+            let quoted = quote_word(word);
+            assert_eq!(split_words(&quoted), vec![word.to_string()], "{}", quoted);
+        }
+    }
+
+    #[test]
+    fn matrix_axes_are_sorted_and_scalars_become_strings() {
+        let md = "## t\n\n```meta\nfor = { matrix = { b = [1, 2.5], a = [true] } }\n```\n\n```bash\ntrue\n```\n";
+        assert_eq!(
+            parse(md).unwrap()[0].for_each,
+            Some(LoopSpec::Matrix(vec![
+                ("a".into(), vec!["true".into()]),
+                ("b".into(), vec!["1".into(), "2.5".into()]),
+            ]))
+        );
+    }
+
+    #[test]
+    fn a_glob_may_be_one_pattern_or_several() {
+        let one = "## t\n\n```meta\nfor = { glob = \"*.md\" }\n```\n\n```bash\ntrue\n```\n";
+        assert_eq!(
+            parse(one).unwrap()[0].for_each,
+            Some(LoopSpec::Glob(vec!["*.md".into()]))
+        );
+        let bad = "## t\n\n```meta\nfor = { glob = 3 }\n```\n\n```bash\ntrue\n```\n";
+        assert!(matches!(parse(bad), Err(Error::Invalid(_))));
     }
 }

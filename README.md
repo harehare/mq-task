@@ -26,12 +26,13 @@ It is implemented using [mq](https://github.com/harehare/mq), a jq-like command-
 - Execute code blocks from specific sections in Markdown files
 - Task [dependencies](https://task.mqlang.org/book/guide/dependencies.html) with automatic execution ordering, including calls that pass arguments
 - [Parallel execution](https://task.mqlang.org/book/guide/parallel.html) of independent dependencies, joined before the dependent task runs
-- [Loops](https://task.mqlang.org/book/guide/loops.html) (`for` over a list, a glob or a matrix)
+- [Loops](https://task.mqlang.org/book/guide/loops.html) (`for` over a list, a glob, a matrix or another task's output)
 - [`defer`](https://task.mqlang.org/book/guide/defer.html) cleanup tasks that run even after a failure
 - [Conditions](https://task.mqlang.org/book/guide/conditions.html) (`if`), [retries and timeouts](https://task.mqlang.org/book/guide/retries-timeouts.html) (plus `ignore_error`), [confirmation prompts](https://task.mqlang.org/book/guide/prompts.html), and [passing a task's output](https://task.mqlang.org/book/guide/output.html) to its dependents
 - [Importing tasks](https://task.mqlang.org/book/guide/imports.html) from other Markdown files
 - Skip [up-to-date tasks](https://task.mqlang.org/book/guide/cache-watch.html) (`sources`/`outputs` or custom `status` commands) and `--watch` mode
 - [Dependency graph](https://task.mqlang.org/book/guide/graph.html) output (`graph`) and [shell completions](https://task.mqlang.org/book/guide/completions.html)
+- [CLI options](https://task.mqlang.org/book/reference/cli.html) for scripts and CI: `--summary`, `list --json`, `--output group`, `--yes`
 - [Interactive TUI](https://task.mqlang.org/book/guide/tui.html) with search, details, argument prompts, per-task progress and a log pane
 - [Named task parameters](https://task.mqlang.org/book/guide/params-env.html) with defaults, plus positional args
 - Per-run `--env`/`--dir` overrides, plus `meta`-declared defaults for environment variables, `.env` files and working directory ([details](https://task.mqlang.org/book/guide/params-env.html))

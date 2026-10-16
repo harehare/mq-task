@@ -44,6 +44,28 @@ dir = "services/api"
 
 CLI `--env` / `--dir` override the `meta` defaults for that run.
 
+## Required variables
+
+`requires` fails a task early, before anything runs, when variables it needs are missing or empty:
+
+````markdown
+## deploy
+
+```meta
+requires = ["API_TOKEN", "REGION"]
+```
+
+```bash
+./deploy.sh
+```
+````
+
+```text
+Error: Task 'deploy' requires API_TOKEN, REGION to be set
+```
+
+Variables are looked up in `--env`, the task's `meta`, params and `dotenv` files, and the process environment. All missing names are reported at once. Tasks skipped by `if` are not checked, and `--dry-run` does not check at all.
+
 ## `.env` files
 
 `dotenv` loads variables from `.env`-style files. It works per task and, in a `meta` block before the first heading, for every task:
@@ -67,4 +89,5 @@ echo "deploying with $API_URL"
 - Paths are relative to the task's working directory (`dir`). A file that does not exist is ignored, so optional files such as `.env.local` are safe to list.
 - Files are read in the order listed and later files win.
 - Precedence, lowest first: `dotenv` files → document-wide `env` → the task's `env` → params → `--env`. A variable that is already set in the process environment is **not** overridden by a file, so `API_URL=... mq-task deploy` still wins over `.env`.
+- With `--watch`, changes to the listed `.env` files re-run the task.
 - Supported syntax: `KEY=value`, `export KEY=value`, `#` comments, single quotes (literal) and double quotes (with `\n`, `\t`, `\"`, `\\` escapes). There is no `$VAR` expansion. A malformed line is an error that names the file and line.

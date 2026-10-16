@@ -425,6 +425,7 @@ impl App {
                             keep_going: opts.keep_going,
                             observer: Some(observer.clone() as Arc<dyn RunObserver>),
                             cancel: Some(cancel),
+                            ..Default::default()
                         },
                     )
                 })();
@@ -870,6 +871,27 @@ fn section_details(s: &Section) -> Vec<Line<'static>> {
     }
     if !s.sources.is_empty() {
         flags.push("cached on sources".into());
+    }
+    if !s.status.is_empty() {
+        flags.push("status checks".into());
+    }
+    if let Some(spec) = &s.for_each {
+        flags.push(format!("for {}", spec.summary()));
+    }
+    if !s.defer.is_empty() {
+        flags.push(format!("defer {}", s.defer.join(", ")));
+    }
+    if s.once {
+        flags.push("once".into());
+    }
+    if !s.requires.is_empty() {
+        flags.push(format!("requires {}", s.requires.join(", ")));
+    }
+    if s.prompt.is_some() {
+        flags.push("asks to confirm".into());
+    }
+    if s.ignore_error {
+        flags.push("ignores errors".into());
     }
     if !flags.is_empty() {
         lines.push(Line::from(vec![
@@ -2016,6 +2038,13 @@ mod tests {
         s.timeout = Some(Duration::from_millis(2500));
         s.capture = true;
         s.sources = vec!["src/**".into()];
+        s.status = vec!["true".into()];
+        s.for_each = Some(crate::runner::LoopSpec::List(vec!["a".into(), "b".into()]));
+        s.defer = vec!["cleanup".into()];
+        s.once = true;
+        s.requires = vec!["TOKEN".into()];
+        s.prompt = Some("sure?".into());
+        s.ignore_error = true;
         s.dir = Some(PathBuf::from("svc"));
         s.env = vec![("A".into(), "1".into()), ("B".into(), "2".into())];
         s.codes = vec![crate::runner::CodeBlock {
@@ -2035,6 +2064,13 @@ mod tests {
             "timeout 2.5s",
             "captures output",
             "cached on sources",
+            "status checks",
+            "for a, b",
+            "defer cleanup",
+            "once",
+            "requires TOKEN",
+            "asks to confirm",
+            "ignores errors",
             "svc",
             "A=1 B=2",
             "[bash]",

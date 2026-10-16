@@ -89,8 +89,8 @@ pub fn is_fresh(scope: &str, section: &Section, fingerprint: &str, dir: Option<&
     is_fresh_named(scope, &section.title, section, fingerprint, dir)
 }
 
-/// [`is_fresh`] for a run recorded under `name` rather than the task title
-/// (loop iterations and calls with arguments each have their own entry).
+/// [`is_fresh`] keyed by `name`, so loop items and calls with arguments get
+/// their own entry.
 pub fn is_fresh_named(
     scope: &str,
     name: &str,
@@ -125,16 +125,34 @@ pub fn record(scope: &str, title: &str, fingerprint: &str) {
     }
 }
 
+/// Modification time and size of a watched file.
+pub type FileStamp = (std::time::SystemTime, u64);
+
+fn stamp(path: &Path) -> Option<FileStamp> {
+    let md = fs::metadata(path).ok()?;
+    Some((md.modified().ok()?, md.len()))
+}
+
 /// Cheap change detector for `--watch`: path + mtime + size of every match.
-pub fn snapshot(
-    patterns: &[String],
-    dir: Option<&Path>,
-) -> HashMap<PathBuf, (std::time::SystemTime, u64)> {
+pub fn snapshot(patterns: &[String], dir: Option<&Path>) -> HashMap<PathBuf, FileStamp> {
     expand(patterns, dir)
         .into_iter()
-        .filter_map(|p| {
-            let md = fs::metadata(&p).ok()?;
-            Some((p, (md.modified().ok()?, md.len())))
+        .filter_map(|p| Some((p.clone(), stamp(&p)?)))
+        .collect()
+}
+
+/// Like [`snapshot`] for exact file names, which are never read as globs.
+/// A file that does not exist yet is absent, so creating it changes the
+/// snapshot.
+pub fn snapshot_files(files: &[String], dir: Option<&Path>) -> HashMap<PathBuf, FileStamp> {
+    files
+        .iter()
+        .filter_map(|f| {
+            let path = match dir {
+                Some(d) if !Path::new(f).is_absolute() => d.join(f),
+                _ => PathBuf::from(f),
+            };
+            Some((path.clone(), stamp(&path)?))
         })
         .collect()
 }

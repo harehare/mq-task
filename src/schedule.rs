@@ -50,12 +50,11 @@ pub fn split_words(spec: &str) -> Vec<String> {
     words
 }
 
-/// Resolve a task call -- a task name optionally followed by arguments, as
-/// used by `depends` and `defer` -- into the task and its arguments.
+/// Resolve a call such as `deploy env=prod` (used by `depends` and `defer`)
+/// into the task and its arguments.
 ///
-/// The whole string is tried as a task name first, so titles containing
-/// spaces keep working; otherwise the longest leading run of words that names
-/// a task wins and the remaining words are its arguments.
+/// The whole string is tried as a title first, so titles with spaces keep
+/// working; otherwise the longest leading run of words naming a task wins.
 pub fn resolve_call<'a>(sections: &'a [Section], spec: &str) -> Option<(&'a Section, Vec<String>)> {
     if let Some(section) = find_section(sections, spec.trim()) {
         return Some((section, Vec::new()));
@@ -66,9 +65,8 @@ pub fn resolve_call<'a>(sections: &'a [Section], spec: &str) -> Option<(&'a Sect
     })
 }
 
-/// Directories used to resolve a task's working directory at plan time
-/// (needed to expand `for` globs). Mirrors [`Executor::effective_dir`]:
-/// the CLI `--dir`, then the task's own `dir`, then the document default.
+/// Directories needed to expand `for` globs at plan time. Same precedence
+/// as [`Executor::effective_dir`]: CLI `--dir`, task `dir`, document `dir`.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PlanContext<'a> {
     pub working_dir: Option<&'a Path>,
@@ -90,38 +88,34 @@ pub struct Deferred<'a> {
     pub args: Vec<String>,
 }
 
-/// One task execution in a plan. A task normally appears once; a task with
-/// `for` appears once per item, and a task depended upon with different
-/// arguments appears once per distinct argument list.
+/// One execution of a task: once per loop item, and once per distinct
+/// argument list it is called with.
 #[derive(Debug)]
 pub struct PlanNode<'a> {
     pub section: &'a Section,
-    /// Unique display name: the task title, followed by `[...]` when the
-    /// node was called with arguments or is one iteration of a loop.
+    /// Unique name: the title, plus `[...]` for call arguments or a loop item.
     pub label: String,
-    /// Arguments the task was called with by its dependent. The requested
-    /// task takes its arguments from the command line instead.
+    /// Arguments from the dependent's call (the requested task uses the CLI's).
     pub args: Vec<String>,
     /// Loop variables of this iteration (`MX_ITEM`, `MX_INDEX`, ...).
     pub vars: Vec<(String, String)>,
     /// True for the task(s) the user asked to run.
     pub requested: bool,
-    /// When set the node is reported as skipped with this reason instead of
-    /// running (a loop without items).
+    /// Reported as skipped with this reason instead of running.
     pub skip: Option<String>,
+    /// Task whose captured output this node loops over (`for.from`).
+    pub loop_source: Option<String>,
     /// Tasks to run once this one finishes (`defer`).
     pub defers: Vec<Deferred<'a>>,
     /// Declared dependencies (`depends`), as node indices.
     pub deps: Vec<usize>,
-    /// Everything that must finish before this node starts: the declared
-    /// dependencies plus ordering edges that keep non-`parallel` tasks'
-    /// dependencies (and loop iterations) sequential.
+    /// Everything that must finish first: `deps` plus the ordering edges
+    /// that keep non-`parallel` dependencies and loop items sequential.
     pub after: BTreeSet<usize>,
 }
 
 /// Tasks to run, ordered so every prerequisite precedes its dependents.
-/// The requested task is always the last node (a looped requested task
-/// occupies the last nodes, one per iteration).
+/// The requested task is always last (a looped one fills the last nodes).
 #[derive(Debug)]
 pub struct Plan<'a> {
     pub nodes: Vec<PlanNode<'a>>,
@@ -167,6 +161,9 @@ impl Plan<'_> {
     }
 }
 
+/// A node's label suffix (the loop item, if any) and its loop variables.
+type Variant = (Option<String>, Vec<(String, String)>);
+
 /// One iteration of a `for` loop.
 struct Iteration {
     /// Text shown in the node label.
@@ -189,20 +186,26 @@ pub fn loop_var(name: &str) -> String {
     format!("MX_{}", upper)
 }
 
+/// The variables of one item of a list-like loop: `MX_ITEM`, `MX_INDEX` and
+/// the task's `as` name.
+pub fn loop_item_vars(section: &Section, index: usize, value: &str) -> Vec<(String, String)> {
+    let mut vars = vec![
+        ("MX_ITEM".to_string(), value.to_string()),
+        ("MX_INDEX".to_string(), index.to_string()),
+    ];
+    if let Some(name) = section.loop_var.as_deref().map(loop_var)
+        && name != "MX_ITEM"
+    {
+        vars.push((name, value.to_string()));
+    }
+    vars
+}
+
 /// Expand a task's `for` into its iterations.
 fn expand_loop(section: &Section, spec: &LoopSpec, ctx: &PlanContext) -> Vec<Iteration> {
-    let alias = section.loop_var.as_deref().map(loop_var);
-    let item = |index: usize, value: String| {
-        let mut vars = vec![
-            ("MX_ITEM".to_string(), value.clone()),
-            ("MX_INDEX".to_string(), index.to_string()),
-        ];
-        if let Some(name) = &alias
-            && name != "MX_ITEM"
-        {
-            vars.push((name.clone(), value.clone()));
-        }
-        Iteration { label: value, vars }
+    let item = |index: usize, value: String| Iteration {
+        vars: loop_item_vars(section, index, &value),
+        label: value,
     };
 
     match spec {
@@ -238,6 +241,8 @@ fn expand_loop(section: &Section, spec: &LoopSpec, ctx: &PlanContext) -> Vec<Ite
                 .map(|(i, v)| item(i, v))
                 .collect()
         }
+        // Resolved at run time.
+        LoopSpec::From(_) => Vec::new(),
         LoopSpec::Matrix(axes) => {
             let mut combos: Vec<Vec<(String, String)>> = vec![Vec::new()];
             for (axis, values) in axes {
@@ -278,8 +283,8 @@ fn expand_loop(section: &Section, spec: &LoopSpec, ctx: &PlanContext) -> Vec<Ite
 /// A task without `parallel` runs its dependencies one after another in
 /// declaration order (every task newly pulled in by a later dependency waits
 /// for the previous dependency). With `parallel` -- or `force_parallel` --
-/// only the real dependency edges constrain the order. The iterations of a
-/// `for` loop follow the same rule.
+/// only the real dependency edges constrain the order. Loop items follow
+/// the same rule.
 pub fn build_plan<'a>(
     sections: &'a [Section],
     target: &str,
@@ -288,8 +293,7 @@ pub fn build_plan<'a>(
     build_plan_in(sections, target, force_parallel, &PlanContext::default())
 }
 
-/// Like [`build_plan`], resolving `for` globs against the directories in
-/// `ctx`.
+/// [`build_plan`] that resolves `for` globs against `ctx`.
 pub fn build_plan_in<'a>(
     sections: &'a [Section],
     target: &str,
@@ -306,12 +310,47 @@ pub fn build_plan_in<'a>(
     }
 
     impl<'a> Builder<'a, '_> {
-        /// Plan the call `spec` (a task name with optional arguments) and
-        /// return the nodes that represent it: one, or one per iteration.
+        /// Plan the call `spec` and return its nodes (one per loop item).
         fn visit(&mut self, spec: &str) -> Result<Vec<usize>> {
             let (section, args) = resolve_call(self.sections, spec)
                 .ok_or_else(|| Error::SectionNotFound(spec.to_string()))?;
             self.visit_section(section, args, spec)
+        }
+
+        /// Check that `for.from` names a capturing dependency; returns its title.
+        fn check_loop_source(
+            &self,
+            section: &Section,
+            source: &str,
+            deps: &[usize],
+        ) -> Result<String> {
+            let task = find_section(self.sections, source).ok_or_else(|| {
+                Error::Invalid(format!(
+                    "task '{}': `for.from` names unknown task '{}'",
+                    section.title, source
+                ))
+            })?;
+            if !task.capture {
+                return Err(Error::Invalid(format!(
+                    "task '{}': `for.from` task '{}' must set `capture = true`",
+                    section.title, task.title
+                )));
+            }
+            let mut seen = HashSet::new();
+            let mut stack: Vec<usize> = deps.to_vec();
+            while let Some(i) = stack.pop() {
+                if !seen.insert(i) {
+                    continue;
+                }
+                if self.nodes[i].section.title == task.title {
+                    return Ok(task.title.clone());
+                }
+                stack.extend(self.nodes[i].deps.iter().copied());
+            }
+            Err(Error::Invalid(format!(
+                "task '{}': `for.from` task '{}' must be one of its dependencies",
+                section.title, task.title
+            )))
         }
 
         fn visit_section(
@@ -330,7 +369,13 @@ pub fn build_plan_in<'a>(
             } else {
                 format!("{}[{}]", title, args.join(" "))
             };
-            if let Some(ids) = self.index.get(&base_label) {
+            // A `once` task is shared by every call, whatever its arguments.
+            let key = if section.once {
+                title.to_string()
+            } else {
+                base_label.clone()
+            };
+            if let Some(ids) = self.index.get(&key) {
                 return Ok(ids.clone());
             }
 
@@ -370,67 +415,60 @@ pub fn build_plan_in<'a>(
             }
             self.in_progress.remove(title);
 
-            let iterations = section
-                .for_each
-                .as_ref()
-                .map(|spec| expand_loop(section, spec, self.ctx));
-
-            let mut ids = Vec::new();
-            match iterations {
-                None => {
-                    ids.push(self.nodes.len());
-                    self.nodes.push(PlanNode {
-                        section,
-                        label: base_label.clone(),
-                        args,
-                        vars: Vec::new(),
-                        requested: false,
-                        skip: None,
-                        defers,
-                        deps,
-                        after,
-                    });
+            // One node per loop item; a plain task is a single node.
+            let mut loop_source = None;
+            let mut skip = None;
+            let plain = || vec![(None, Vec::new())];
+            let variants: Vec<Variant> = match &section.for_each {
+                Some(LoopSpec::From(source)) => {
+                    loop_source = Some(self.check_loop_source(section, source, &deps)?);
+                    plain()
                 }
-                Some(iterations) if iterations.is_empty() => {
-                    ids.push(self.nodes.len());
-                    self.nodes.push(PlanNode {
-                        section,
-                        label: base_label.clone(),
-                        args,
-                        vars: Vec::new(),
-                        requested: false,
-                        skip: Some("for: no items".into()),
-                        defers: Vec::new(),
-                        deps,
-                        after,
-                    });
-                }
-                Some(iterations) => {
+                Some(spec) => {
                     let mut seen = HashSet::new();
-                    for it in iterations {
-                        if !seen.insert(it.label.clone()) {
-                            continue;
-                        }
-                        let mut node_after = after.clone();
-                        if !parallel && let Some(&last) = ids.last() {
-                            node_after.insert(last);
-                        }
-                        ids.push(self.nodes.len());
-                        self.nodes.push(PlanNode {
-                            section,
-                            label: format!("{}[{}]", base_label, it.label),
-                            args: args.clone(),
-                            vars: it.vars,
-                            requested: false,
-                            skip: None,
-                            defers: defers.clone(),
-                            deps: deps.clone(),
-                            after: node_after,
-                        });
+                    let items: Vec<_> = expand_loop(section, spec, self.ctx)
+                        .into_iter()
+                        .filter(|it| seen.insert(it.label.clone()))
+                        .map(|it| (Some(it.label), it.vars))
+                        .collect();
+                    if items.is_empty() {
+                        skip = Some("for: no items".to_string());
+                        plain()
+                    } else {
+                        items
                     }
                 }
+                None => plain(),
+            };
+
+            let mut ids: Vec<usize> = Vec::new();
+            for (suffix, vars) in variants {
+                let mut node_after = after.clone();
+                if !parallel && let Some(&last) = ids.last() {
+                    node_after.insert(last);
+                }
+                ids.push(self.nodes.len());
+                self.nodes.push(PlanNode {
+                    section,
+                    label: match &suffix {
+                        Some(item) => format!("{}[{}]", base_label, item),
+                        None => base_label.clone(),
+                    },
+                    args: args.clone(),
+                    vars,
+                    requested: false,
+                    skip: skip.clone(),
+                    loop_source: loop_source.clone(),
+                    defers: if skip.is_some() {
+                        Vec::new()
+                    } else {
+                        defers.clone()
+                    },
+                    deps: deps.clone(),
+                    after: node_after,
+                });
             }
-            self.index.insert(base_label, ids.clone());
+            self.index.insert(key, ids.clone());
             Ok(ids)
         }
     }
@@ -482,8 +520,7 @@ pub fn run_plan(exec: &Executor, plan: &Plan, opts: &ScheduleOptions) -> Result<
     let ancestors: Vec<Vec<usize>> = (0..n).map(|i| plan.ancestors(i)).collect();
 
     // Captured stdout per node, exposed to dependents as MX_OUTPUT_<TASK>.
-    // When a task ran several times (a loop, or different arguments) the
-    // outputs are joined with newlines in plan order.
+    // A task that ran several times has its outputs joined by newlines.
     let mut outputs: Vec<Option<String>> = vec![None; n];
     let extra_env_for = |i: usize, outputs: &[Option<String>]| -> Vec<(String, String)> {
         let mut grouped: Vec<(String, String)> = Vec::new();
@@ -532,8 +569,7 @@ pub fn run_plan(exec: &Executor, plan: &Plan, opts: &ScheduleOptions) -> Result<
             &NodeParams {
                 section,
                 label: &node.label,
-                // The requested task takes the command-line arguments; the
-                // rest take the arguments their dependent called them with.
+                // The requested task takes the CLI arguments.
                 args: if node.requested {
                     opts.args
                 } else {
@@ -542,6 +578,7 @@ pub fn run_plan(exec: &Executor, plan: &Plan, opts: &ScheduleOptions) -> Result<
                 lang_filter: opts.lang_filter,
                 extra_env,
                 dependency: !node.requested,
+                loop_source: node.loop_source.as_deref(),
                 defers: &node.defers,
             },
             &io,
@@ -1029,6 +1066,80 @@ mod tests {
     }
 
     #[test]
+    fn a_once_task_is_shared_by_calls_with_different_arguments() {
+        let mut build = with_code(sec("build", &[], false));
+        build.once = true;
+        let sections = vec![
+            build,
+            with_code(sec("ci", &["build env=a", "build env=b"], false)),
+        ];
+        let plan = build_plan(&sections, "ci", false).unwrap();
+        // The first call wins.
+        assert_eq!(names(&plan), vec!["build[env=a]", "ci"]);
+        assert_eq!(plan.nodes[1].deps, vec![0, 0]);
+    }
+
+    fn from_loop(title: &str, source: &str, depends: &[&str]) -> Section {
+        Section {
+            for_each: Some(LoopSpec::From(source.into())),
+            ..with_code(sec(title, depends, false))
+        }
+    }
+
+    fn capturing(title: &str) -> Section {
+        Section {
+            capture: true,
+            ..with_code(sec(title, &[], false))
+        }
+    }
+
+    #[test]
+    fn a_from_loop_is_one_node_that_knows_its_source() {
+        let mut list = capturing("list");
+        list.aliases = vec!["ls".into()];
+        let sections = vec![list, from_loop("each", "ls", &["list"])];
+        let plan = build_plan(&sections, "each", false).unwrap();
+        assert_eq!(names(&plan), vec!["list", "each"]);
+        // The alias is resolved to the task's title.
+        assert_eq!(plan.nodes[1].loop_source.as_deref(), Some("list"));
+        assert_eq!(plan.nodes[0].loop_source, None);
+    }
+
+    #[test]
+    fn a_from_source_may_be_a_transitive_dependency() {
+        let sections = vec![
+            capturing("list"),
+            with_code(sec("wrapper", &["list"], false)),
+            from_loop("each", "list", &["wrapper"]),
+        ];
+        assert!(build_plan(&sections, "each", false).is_ok());
+    }
+
+    #[test]
+    fn a_from_source_must_exist_capture_and_be_a_dependency() {
+        let unknown = vec![from_loop("each", "nope", &[])];
+        assert!(matches!(
+            build_plan(&unknown, "each", false),
+            Err(Error::Invalid(m)) if m.contains("unknown task 'nope'")
+        ));
+
+        let no_capture = vec![
+            with_code(sec("list", &[], false)),
+            from_loop("each", "list", &["list"]),
+        ];
+        assert!(matches!(
+            build_plan(&no_capture, "each", false),
+            Err(Error::Invalid(m)) if m.contains("capture = true")
+        ));
+
+        let not_a_dependency = vec![capturing("list"), from_loop("each", "list", &[])];
+        assert!(matches!(
+            build_plan(&not_a_dependency, "each", false),
+            Err(Error::Invalid(m)) if m.contains("one of its dependencies")
+        ));
+    }
+
+    #[test]
     fn unknown_calls_report_the_whole_spec() {
         let sections = vec![with_code(sec("a", &["ghost x=1"], false))];
         let err = build_plan(&sections, "a", false).unwrap_err();
@@ -1062,5 +1173,130 @@ mod tests {
             build_plan(&sections, "main", false),
             Err(Error::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn split_words_is_lenient_about_unbalanced_quotes() {
+        assert_eq!(split_words(r#"a "b c"#), vec!["a", "b c"]);
+        assert_eq!(split_words("it's"), vec!["its"]);
+        assert_eq!(split_words(r#"x="a b" y"#), vec!["x=a b", "y"]);
+    }
+
+    #[test]
+    fn loop_item_vars_name_the_item_once() {
+        let mut s = sec("t", &[], false);
+        let names = |s: &Section| -> Vec<String> {
+            loop_item_vars(s, 2, "v")
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect()
+        };
+        assert_eq!(names(&s), vec!["MX_ITEM", "MX_INDEX"]);
+
+        s.loop_var = Some("file".into());
+        assert_eq!(names(&s), vec!["MX_ITEM", "MX_INDEX", "MX_FILE"]);
+
+        // `as = "item"` is the default name, not a duplicate.
+        s.loop_var = Some("item".into());
+        assert_eq!(names(&s), vec!["MX_ITEM", "MX_INDEX"]);
+        assert_eq!(loop_var("my-axis.x"), "MX_MY_AXIS_X");
+    }
+
+    #[test]
+    fn plan_context_prefers_cli_then_task_then_document_dir() {
+        let mut s = sec("t", &[], false);
+        let cli = Path::new("cli");
+        let doc = Path::new("doc");
+        let ctx = |working_dir, global_dir| PlanContext {
+            working_dir,
+            global_dir,
+        };
+        assert_eq!(ctx(None, None).dir_for(&s), None);
+        assert_eq!(ctx(None, Some(doc)).dir_for(&s), Some(doc));
+        s.dir = Some("task".into());
+        assert_eq!(ctx(None, Some(doc)).dir_for(&s), Some(Path::new("task")));
+        assert_eq!(ctx(Some(cli), Some(doc)).dir_for(&s), Some(cli));
+    }
+
+    #[test]
+    fn glob_loops_accept_absolute_patterns_and_ignore_invalid_ones() {
+        let dir = std::env::temp_dir().join(format!("mq-task-abs-glob-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "").unwrap();
+
+        let pattern = dir.join("*.txt").to_string_lossy().into_owned();
+        let spec = LoopSpec::Glob(vec![pattern.clone(), "[".into()]);
+        let sections = vec![with_code(looped("t", spec))];
+        let plan = build_plan(&sections, "t", false).unwrap();
+        assert_eq!(plan.nodes.len(), 1);
+        assert_eq!(
+            plan.nodes[0].label,
+            format!("t[{}]", dir.join("a.txt").display())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn empty_matrix_axes_make_an_empty_loop() {
+        let none = LoopSpec::Matrix(Vec::new());
+        let sections = vec![with_code(looped("t", none))];
+        let plan = build_plan(&sections, "t", false).unwrap();
+        assert!(plan.nodes[0].skip.is_some());
+
+        let empty_axis = LoopSpec::Matrix(vec![("os".into(), Vec::new())]);
+        let sections = vec![with_code(looped("t", empty_axis))];
+        let plan = build_plan(&sections, "t", false).unwrap();
+        assert!(plan.nodes[0].skip.is_some());
+    }
+
+    #[test]
+    fn an_empty_loop_drops_its_defers_and_keeps_dependencies() {
+        let mut each = with_code(looped("each", list(&[])));
+        each.depends = vec!["base".into()];
+        each.defer = vec!["cleanup".into()];
+        let sections = vec![
+            with_code(sec("base", &[], false)),
+            with_code(sec("cleanup", &[], false)),
+            each,
+        ];
+        let plan = build_plan(&sections, "each", false).unwrap();
+        let node = plan.nodes.last().unwrap();
+        assert!(node.skip.is_some() && node.defers.is_empty());
+        assert_eq!(node.deps, vec![0]);
+    }
+
+    #[test]
+    fn loop_items_inherit_defers_and_dependencies() {
+        let mut each = with_code(looped("each", list(&["a", "b"])));
+        each.depends = vec!["base".into()];
+        each.defer = vec!["cleanup".into()];
+        let sections = vec![
+            with_code(sec("base", &[], false)),
+            with_code(sec("cleanup", &[], false)),
+            each,
+        ];
+        let plan = build_plan(&sections, "each", false).unwrap();
+        assert_eq!(names(&plan), vec!["base", "each[a]", "each[b]"]);
+        for node in &plan.nodes[1..] {
+            assert_eq!(node.defers.len(), 1);
+            assert_eq!(node.deps, vec![0]);
+        }
+    }
+
+    #[test]
+    fn edges_use_labels() {
+        let sections = vec![
+            with_code(sec("build", &[], false)),
+            with_code(sec("ci", &["build env=a"], false)),
+        ];
+        let plan = build_plan(&sections, "ci", false).unwrap();
+        assert_eq!(
+            plan.edges(),
+            vec![
+                ("build[env=a]".to_string(), vec![]),
+                ("ci".to_string(), vec!["build[env=a]".to_string()])
+            ]
+        );
     }
 }

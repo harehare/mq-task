@@ -11,7 +11,7 @@
 - [Writing Tasks](https://task.mqlang.org/book/guide/tasks.html): Headings as tasks, code blocks, meta blocks
 - [Dependencies](https://task.mqlang.org/book/guide/dependencies.html): depends
 - [Parallel Execution](https://task.mqlang.org/book/guide/parallel.html): parallel, --parallel, -j, -k
-- [Loops](https://task.mqlang.org/book/guide/loops.html): for, as, glob, matrix, MX_ITEM, MX_INDEX
+- [Loops](https://task.mqlang.org/book/guide/loops.html): for, as, glob, matrix, from, MX_ITEM, MX_INDEX
 - [Cleanup with defer](https://task.mqlang.org/book/guide/defer.html): defer
 - [Confirmation Prompts](https://task.mqlang.org/book/guide/prompts.html): prompt, --yes, -y
 - [Conditions](https://task.mqlang.org/book/guide/conditions.html): if expressions

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 use crate::error::{Error, Result};
-use crate::events::{ConsoleObserver, OutputMode, RunObserver};
+use crate::events::{ConsoleObserver, FailureTracker, OutputMode, RunObserver};
 use crate::exec::Executor;
 use crate::graph::{self, GraphFormat};
 use crate::schedule::{self, PlanContext, ScheduleOptions, build_plan_in, split_words};
@@ -842,6 +842,7 @@ impl Runner {
         let no_cancel = AtomicBool::new(false);
         let cancel = opts.cancel.as_deref().unwrap_or(&no_cancel);
 
+        let tracker = FailureTracker::new(observer.as_ref());
         schedule::run_plan(
             &self.exec,
             &plan,
@@ -852,9 +853,13 @@ impl Runner {
                 keep_going: opts.keep_going,
                 piped: custom_observer,
                 cancel,
-                observer: observer.as_ref(),
+                observer: &tracker,
             },
         )
+        .map_err(|err| match tracker.first_failure() {
+            Some(task) => err.in_task(&task),
+            None => err,
+        })
     }
 
     /// Files whose changes should re-run `task_name` in watch mode: every

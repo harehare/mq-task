@@ -373,6 +373,51 @@ impl ConsoleObserver {
     }
 }
 
+/// Passes everything on to `inner` and remembers which task failed first, so
+/// the error of a run can name it.
+pub struct FailureTracker<'a> {
+    inner: &'a dyn RunObserver,
+    first: Mutex<Option<String>>,
+}
+
+impl<'a> FailureTracker<'a> {
+    pub fn new(inner: &'a dyn RunObserver) -> Self {
+        Self {
+            inner,
+            first: Mutex::new(None),
+        }
+    }
+
+    /// The first task that reported a failure.
+    pub fn first_failure(&self) -> Option<String> {
+        self.first.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+impl RunObserver for FailureTracker<'_> {
+    fn plan(&self, tasks: &[String]) {
+        self.inner.plan(tasks);
+    }
+
+    fn graph(&self, edges: &[(String, Vec<String>)]) {
+        self.inner.graph(edges);
+    }
+
+    fn output(&self, task: &str, stream: Stream, line: &str) {
+        self.inner.output(task, stream, line);
+    }
+
+    fn status(&self, task: &str, status: &TaskStatus) {
+        if matches!(status, TaskStatus::Failed { .. }) {
+            self.first
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get_or_insert_with(|| task.to_string());
+        }
+        self.inner.status(task, status);
+    }
+}
+
 /// An observer that discards everything (used for plain library calls).
 pub struct NullObserver;
 
@@ -485,6 +530,18 @@ mod tests {
         NullObserver.output("t", Stream::Stdout, "ignored");
         NullObserver.plan(&["t".into()]);
         NullObserver.graph(&[("t".into(), vec![])]);
+    }
+
+    #[test]
+    fn the_failure_tracker_remembers_the_first_failed_task() {
+        let tracker = FailureTracker::new(&NullObserver);
+        assert_eq!(tracker.first_failure(), None);
+        tracker.status("ok", &TaskStatus::Started { dependency: false });
+        tracker.status("cancelled", &TaskStatus::Cancelled { reason: "x".into() });
+        assert_eq!(tracker.first_failure(), None);
+        tracker.status("first", &TaskStatus::Failed { error: "a".into() });
+        tracker.status("second", &TaskStatus::Failed { error: "b".into() });
+        assert_eq!(tracker.first_failure().as_deref(), Some("first"));
     }
 
     #[rstest]

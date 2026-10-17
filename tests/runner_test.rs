@@ -670,7 +670,9 @@ fn run_propagates_task_failures() {
     let dir = tempfile::tempdir().unwrap();
     let file = write(dir.path(), "t.md", "## f\n\n```bash\nexit 4\n```\n");
     let err = runner().run_task(&file, "f").unwrap_err();
-    assert!(matches!(err, Error::ExecutionFailed(4)));
+    assert!(matches!(err.root(), Error::ExecutionFailed(4)));
+    assert_eq!(err.exit_code(), 4);
+    assert!(err.to_string().ends_with("(in task 'f')"), "{err}");
 }
 
 #[test]

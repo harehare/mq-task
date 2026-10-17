@@ -306,14 +306,8 @@ fn main() -> ExitCode {
     match dispatch(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            let code = match &err {
-                Error::ExecutionFailed(code) => *code,
-                // Same as coreutils `timeout`
-                Error::Timeout(_) => 124,
-                _ => 1,
-            };
             eprintln!("{} {}", "Error:".red().bold(), err);
-            ExitCode::from(code.clamp(0, 255) as u8)
+            ExitCode::from(err.exit_code().clamp(0, 255) as u8)
         }
     }
 }

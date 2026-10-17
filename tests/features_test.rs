@@ -2623,3 +2623,96 @@ echo ci
         stderr(&out)
     );
 }
+
+#[test]
+fn a_failure_names_the_task_that_failed_and_keeps_its_exit_code() {
+    let dir = workdir("fail-context");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## build
+
+```bash
+exit 4
+```
+
+## ci
+
+```meta
+depends = ["build"]
+```
+
+```bash
+echo ci
+```
+
+## each
+
+```meta
+for = ["a", "b"]
+```
+
+```bash
+[ "$MX_ITEM" != b ] || exit 5
+```
+"#,
+    );
+    let out = mq_task(&dir, &["ci"]);
+    assert_eq!(out.status.code(), Some(4));
+    assert!(
+        stderr(&out).contains("status code 4 (in task 'build')"),
+        "{}",
+        stderr(&out)
+    );
+
+    let out = mq_task(&dir, &["each"]);
+    assert_eq!(out.status.code(), Some(5));
+    assert!(
+        stderr(&out).contains("(in task 'each[b]')"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn a_missing_runtime_names_the_task_and_a_timeout_is_not_doubled() {
+    let dir = workdir("fail-context-kinds");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## cobol-task
+
+```cobol
+DISPLAY 'hi'.
+```
+
+## slow
+
+```meta
+timeout = "100ms"
+```
+
+```bash
+sleep 5
+```
+"#,
+    );
+    let out = mq_task(&dir, &["cobol-task"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("Runtime not found for language: cobol (in task 'cobol-task')"),
+        "{}",
+        stderr(&out)
+    );
+
+    let out = mq_task(&dir, &["slow"]);
+    assert_eq!(out.status.code(), Some(124));
+    assert!(
+        stderr(&out).contains("Task 'slow' timed out"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!stderr(&out).contains("(in task"), "{}", stderr(&out));
+}

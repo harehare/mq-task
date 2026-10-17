@@ -36,6 +36,7 @@ mq-task ci
 - Import tasks from other Markdown files
 - Skip up-to-date tasks (`sources` / `outputs` / `status`) and `--watch` mode
 - Dependency graph (text and Mermaid) and shell completions
+- Finds `tasks.md` (or `README.md`) from any subdirectory; completes task names; suggests fixes for typos in `meta` and task names
 - Scripting and CI options: `--summary`, `list --json`, `--output group`, `--yes`
 - Interactive TUI with search, argument prompts and live progress
 

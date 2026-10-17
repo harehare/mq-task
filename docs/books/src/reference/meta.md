@@ -28,6 +28,7 @@ Error: Invalid task file: task 'flaky': `meta` block: unknown key `retires` on l
 | `outputs` | array of paths | Files that must exist for the task to be considered up to date |
 | `params` | array of strings | Named parameters (`name` required, `name=value` default) |
 | `requires` | array of strings | Variables that must be set and not empty ([guide](../guide/params-env.md#required-variables)) |
+| `vars` | table | Named values, fixed or `{ sh = "command" }`; `${NAME}` refers to another ([Variables](../guide/vars.md)) |
 | `env` | array of `KEY=VALUE` | Default environment variables |
 | `dir` | string | Working directory |
 | `dotenv` | array of paths | `.env` files to load ([guide](../guide/params-env.md#env-files)) |
@@ -35,4 +36,4 @@ Error: Invalid task file: task 'flaky': `meta` block: unknown key `retires` on l
 | `private` | bool | Hide from listings |
 | `imports` | array of paths | Document-wide only: files to import |
 
-Environment variables set for tasks: `MX_ARGS`, `MX_ARG_<N>`, `MX_PARAM_<NAME>`, `MX_OUTPUT_<TASK>`, and in loops `MX_ITEM`, `MX_INDEX`, `MX_<AS>` and `MX_<AXIS>`.
+Environment variables set for tasks: `MX_ARGS`, `MX_ARG_<N>`, `MX_PARAM_<NAME>`, `MX_OUTPUT_<TASK>`, `vars` entries as variables of their own name, and in loops `MX_ITEM`, `MX_INDEX`, `MX_<AS>` and `MX_<AXIS>`.

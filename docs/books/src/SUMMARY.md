@@ -18,6 +18,7 @@
   - [Importing Tasks](guide/imports.md)
   - [Caching and Watch Mode](guide/cache-watch.md)
   - [Parameters, Env and Working Directory](guide/params-env.md)
+  - [Variables](guide/vars.md)
   - [Aliases, Default and Private Tasks](guide/aliases-private.md)
   - [Interactive TUI](guide/tui.md)
   - [Dependency Graph](guide/graph.md)

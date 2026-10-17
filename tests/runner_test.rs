@@ -842,3 +842,26 @@ fn dotenv_watch_targets_are_literal_paths() {
     assert!(env_target.literal);
     assert!(targets.iter().filter(|t| !t.literal).count() == 0);
 }
+
+#[test]
+fn computed_vars_are_evaluated_again_on_every_run() {
+    // `--watch` re-runs a task on one runner, so values must not go stale.
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out.txt");
+    let src = dir.path().join("src.txt");
+    let file = write(
+        dir.path(),
+        "t.md",
+        &format!(
+            "## t\n\n```meta\nvars = {{ V = {{ sh = \"cat {}\" }} }}\n```\n\n```bash\necho \"$V\" >> {}\n```\n",
+            src.display(),
+            out.display()
+        ),
+    );
+    let mut r = runner();
+    std::fs::write(&src, "first").unwrap();
+    r.run_task(&file, "t").unwrap();
+    std::fs::write(&src, "second").unwrap();
+    r.run_task(&file, "t").unwrap();
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), "first\nsecond\n");
+}

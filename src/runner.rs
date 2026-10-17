@@ -16,6 +16,7 @@ use crate::exec::Executor;
 use crate::graph::{self, GraphFormat};
 use crate::schedule::{self, PlanContext, ScheduleOptions, build_plan_in, split_words};
 use crate::util::parse_duration;
+use crate::vars::{self, VarDef};
 
 const SECTIONS_QUERY: &str = include_str!("../sections.mq");
 
@@ -146,6 +147,9 @@ struct GlobalMeta {
     /// `.env` files loaded for every task
     #[serde(default)]
     dotenv: Vec<String>,
+    /// Variables available to every task
+    #[serde(default)]
+    vars: Option<toml::Table>,
 }
 
 /// Task metadata parsed from a `meta` code block within a section
@@ -211,6 +215,9 @@ struct TaskMeta {
     /// Shell commands; the task is up to date when all of them exit 0
     #[serde(default)]
     status: Vec<String>,
+    /// Variables: fixed values or `{ sh = "command" }`
+    #[serde(default)]
+    vars: Option<toml::Table>,
     /// Run only once per run, however it is called
     #[serde(default)]
     once: bool,
@@ -323,6 +330,9 @@ pub struct Section {
     /// Variables that must be set and not empty
     #[serde(default)]
     pub requires: Vec<String>,
+    /// Named values for the task, fixed or computed by a shell command
+    #[serde(default)]
+    pub vars: Vec<VarDef>,
 }
 
 /// Document-wide settings found in the preamble `meta` block.
@@ -332,6 +342,7 @@ struct Globals {
     dir: Option<PathBuf>,
     imports: Vec<String>,
     dotenv: Vec<String>,
+    vars: Vec<VarDef>,
 }
 
 /// Options for [`Runner::run_task_with_options`].
@@ -456,6 +467,7 @@ impl Runner {
         self.exec.global_env = globals.env;
         self.exec.global_dir = globals.dir;
         self.exec.global_dotenv = globals.dotenv;
+        self.exec.global_vars = globals.vars;
         self.imports = globals.imports;
 
         let query = format!("{}\n | nodes | sections_with_code()", SECTIONS_QUERY);
@@ -483,6 +495,7 @@ impl Runner {
         self.exec.global_env = globals.env;
         self.exec.global_dir = globals.dir;
         self.exec.global_dotenv = globals.dotenv;
+        self.exec.global_vars = globals.vars;
         self.exec.cache_scope = path.as_ref().to_string_lossy().into_owned();
         Ok(sections)
     }
@@ -510,6 +523,7 @@ impl Runner {
             dir: self.exec.global_dir.clone(),
             imports: std::mem::take(&mut self.imports),
             dotenv: self.exec.global_dotenv.clone(),
+            vars: self.exec.global_vars.clone(),
         };
 
         let base = path.parent().unwrap_or_else(|| Path::new("."));
@@ -574,6 +588,10 @@ impl Runner {
             dir: meta.dir.map(PathBuf::from),
             imports: meta.imports,
             dotenv: meta.dotenv,
+            vars: match &meta.vars {
+                Some(table) => vars::parse_table("document `meta` block", table)?,
+                None => Vec::new(),
+            },
         })
     }
 
@@ -634,6 +652,11 @@ impl Runner {
         let env = Self::parse_env_overrides(&meta.env)?;
         let dir = meta.dir.map(PathBuf::from);
 
+        let vars = match &meta.vars {
+            Some(table) => vars::parse_table(&format!("task '{}': `meta` block", title), table)?,
+            None => Vec::new(),
+        };
+
         let for_each = meta
             .for_each
             .as_ref()
@@ -680,6 +703,7 @@ impl Runner {
             status: meta.status,
             once: meta.once,
             requires: meta.requires,
+            vars,
         })
     }
 
@@ -799,6 +823,7 @@ impl Runner {
         opts: RunOptions,
     ) -> Result<()> {
         let sections = self.load_sections(markdown_path)?;
+        self.exec.clear_var_cache();
 
         let explicit_parallel = opts.parallel || opts.jobs.is_some_and(|j| j > 1);
         let plan = self.plan_for(&sections, task_name, explicit_parallel)?;
@@ -961,6 +986,9 @@ fn apply_globals(sections: &mut [Section], globals: &Globals) {
         let mut dotenv = globals.dotenv.clone();
         dotenv.append(&mut section.dotenv);
         section.dotenv = dotenv;
+        let mut vars = globals.vars.clone();
+        vars.append(&mut section.vars);
+        section.vars = vars;
     }
 }
 
@@ -1836,6 +1864,7 @@ echo "deploying"
             dir: Some(PathBuf::from("gdir")),
             imports: Vec::new(),
             dotenv: vec![".env".into()],
+            vars: Vec::new(),
         };
         let mut with_dir = named("a", &[], &[]);
         with_dir.env = vec![("K".into(), "task".into())];
@@ -2177,5 +2206,60 @@ true
             vec!["b"]
         );
         assert_eq!(unknown_field("invalid type: string"), None);
+    }
+
+    #[test]
+    fn parses_vars_in_tasks_and_the_preamble() {
+        let md = "```meta\nvars = { A = \"1\", B = { sh = \"echo b\" } }\n```\n\n## t\n\n```meta\nvars = { C = 3 }\n```\n\n```bash\ntrue\n```\n";
+        let mut runner = Runner::with_default_config();
+        let sections = runner.extract_sections(md).unwrap();
+        let names = |vars: &[VarDef]| vars.iter().map(|v| v.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&runner.exec.global_vars), vec!["A", "B"]);
+        assert_eq!(
+            sections[0].vars[0].value,
+            crate::vars::VarValue::Literal("3".into())
+        );
+    }
+
+    #[test]
+    fn invalid_vars_name_the_task_and_the_variable() {
+        let md = "## t\n\n```meta\nvars = { \"a-b\" = 1 }\n```\n\n```bash\ntrue\n```\n";
+        let Err(Error::Invalid(msg)) = parse(md) else {
+            panic!("expected an error");
+        };
+        assert!(
+            msg.contains("task 't'") && msg.contains("var `a-b`"),
+            "{}",
+            msg
+        );
+
+        let md = "```meta\nvars = { A = [1] }\n```\n\n## t\n\n```bash\ntrue\n```\n";
+        let Err(Error::Invalid(msg)) = parse(md) else {
+            panic!("expected an error");
+        };
+        assert!(msg.starts_with("document `meta` block"), "{}", msg);
+    }
+
+    #[test]
+    fn imported_files_bring_their_document_vars_along() {
+        let globals = Globals {
+            env: Vec::new(),
+            dir: None,
+            imports: Vec::new(),
+            dotenv: Vec::new(),
+            vars: vec![crate::vars::VarDef {
+                name: "FROM_FILE".into(),
+                value: crate::vars::VarValue::Literal("1".into()),
+            }],
+        };
+        let mut own = named("a", &[], &[]);
+        own.vars = vec![crate::vars::VarDef {
+            name: "OWN".into(),
+            value: crate::vars::VarValue::Literal("2".into()),
+        }];
+        let mut sections = vec![own];
+        apply_globals(&mut sections, &globals);
+        let names: Vec<&str> = sections[0].vars.iter().map(|v| v.name.as_str()).collect();
+        assert_eq!(names, vec!["FROM_FILE", "OWN"]);
     }
 }

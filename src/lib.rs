@@ -16,6 +16,7 @@ pub mod schedule;
 pub mod summary;
 pub mod tui;
 pub mod util;
+pub mod vars;
 
 pub use config::{Config, ExecutionMode};
 pub use error::{Error, Result};

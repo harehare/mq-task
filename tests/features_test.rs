@@ -2828,3 +2828,404 @@ sleep 5
     );
     assert!(!stderr(&out).contains("(in task"), "{}", stderr(&out));
 }
+
+#[test]
+fn vars_share_fixed_and_computed_values_between_tasks() {
+    let dir = workdir("vars-basic");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+```meta
+vars = { NAME = "app", VERSION = { sh = "echo 1.2.3" }, IMAGE = "${NAME}:${VERSION}" }
+```
+
+## show
+
+```meta
+vars = { TAG = "v${VERSION}", WHO = { sh = "echo built-by-$NAME-${NAME}" } }
+```
+
+```bash
+echo "image=$IMAGE tag=$TAG who=$WHO"
+```
+"#,
+    );
+    let out = mq_task(&dir, &["show"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    // `${NAME}` is expanded by mq-task; `$NAME` is the shell reading the
+    // variable mq-task exported because the command refers to it.
+    assert!(
+        stdout(&out).contains("image=app:1.2.3 tag=v1.2.3 who=built-by-app-app"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn env_and_the_command_line_override_vars_and_dependent_vars_follow() {
+    let dir = workdir("vars-precedence");
+    write(&dir, ".env", "FROM_DOTENV=dotenv\nSHARED=dotenv\n");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+```meta
+dotenv = [".env"]
+env = ["STATIC=env"]
+vars = { VERSION = { sh = "exit 9" }, SHARED = "var", STATIC = "var", TAG = "v${VERSION}", SEE = "${FROM_DOTENV}" }
+```
+
+## show
+
+```bash
+echo "version=$VERSION shared=$SHARED static=$STATIC tag=$TAG see=$SEE"
+```
+"#,
+    );
+    // `--env` wins over the var, which is then not evaluated (it would fail).
+    let out = mq_task(&dir, &["show", "--env", "VERSION=7"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("version=7 shared=var static=env tag=v7 see=dotenv"),
+        "{}",
+        stdout(&out)
+    );
+
+    // Without it the failing command is reported and nothing runs.
+    let out = mq_task(&dir, &["show"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("Variable 'VERSION'"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!stdout(&out).contains("version="));
+}
+
+#[test]
+fn vars_can_use_loop_items_dependency_output_and_params() {
+    let dir = workdir("vars-context");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## version
+
+```meta
+capture = true
+```
+
+```bash
+echo 4.5
+```
+
+## build
+
+```meta
+depends = ["version"]
+params = ["profile=dev"]
+for = ["a", "b"]
+vars = { OUT = "dist/${MX_ITEM}-${MX_OUTPUT_VERSION}", LABEL = { sh = "echo item-${MX_ITEM}" } }
+```
+
+```bash
+echo "out=$OUT label=$LABEL profile=$MX_PARAM_PROFILE"
+```
+"#,
+    );
+    let out = mq_task(&dir, &["build"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("out=dist/a-4.5 label=item-a profile=dev"),
+        "{}",
+        text
+    );
+    assert!(
+        text.contains("out=dist/b-4.5 label=item-b profile=dev"),
+        "{}",
+        text
+    );
+}
+
+#[test]
+fn vars_are_visible_to_conditions_requires_and_status() {
+    let dir = workdir("vars-checks");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## on
+
+```meta
+vars = { MODE = "release", TOKEN = "t" }
+if = 'getenv("MODE") == "release"'
+requires = ["TOKEN"]
+status = ['test "$MODE" = debug']
+```
+
+```bash
+echo ran-on
+```
+
+## off
+
+```meta
+vars = { MODE = "debug" }
+if = 'getenv("MODE") == "release"'
+```
+
+```bash
+echo ran-off
+```
+"#,
+    );
+    let on = mq_task(&dir, &["on"]);
+    assert!(
+        stdout(&on).contains("ran-on"),
+        "{}{}",
+        stdout(&on),
+        stderr(&on)
+    );
+    let off = mq_task(&dir, &["off"]);
+    assert!(off.status.success());
+    assert!(!stdout(&off).contains("ran-off"));
+}
+
+#[test]
+fn a_computed_var_runs_once_for_the_whole_run() {
+    let dir = workdir("vars-once");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+```meta
+vars = { STAMP = { sh = "echo run >> counter.txt; echo stamp" } }
+```
+
+## a
+
+```bash
+echo "a=$STAMP"
+```
+
+## b
+
+```bash
+echo "b=$STAMP"
+```
+
+## all
+
+```meta
+depends = ["a", "b"]
+```
+
+```bash
+echo "all=$STAMP"
+```
+"#,
+    );
+    let out = mq_task(&dir, &["all"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("a=stamp") && stdout(&out).contains("all=stamp"));
+    let runs = fs::read_to_string(dir.join("counter.txt")).unwrap();
+    assert_eq!(
+        runs.lines().count(),
+        1,
+        "the command ran once, not per task"
+    );
+}
+
+#[test]
+fn a_dry_run_does_not_run_computed_vars() {
+    let dir = workdir("vars-dry");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## show
+
+```meta
+vars = { SIDE = { sh = "touch side-effect" } }
+```
+
+```bash
+echo hi
+```
+"#,
+    );
+    let out = mq_task(&dir, &["show", "--dry-run"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!dir.join("side-effect").exists());
+    assert!(
+        stdout(&out).contains("<sh: touch side-effect>"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn a_changed_var_invalidates_the_up_to_date_check() {
+    let dir = workdir("vars-cache");
+    fs::write(dir.join("in.txt"), "x").unwrap();
+    fs::write(dir.join("version.txt"), "1").unwrap();
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## gen
+
+```meta
+sources = ["in.txt"]
+vars = { VERSION = { sh = "cat version.txt" } }
+```
+
+```bash
+echo "generating $VERSION"
+```
+"#,
+    );
+    assert!(stdout(&mq_task(&dir, &["gen"])).contains("generating 1"));
+    let again = mq_task(&dir, &["gen"]);
+    assert!(!stdout(&again).contains("generating"), "{}", stdout(&again));
+    assert!(stdout(&again).contains("up to date"));
+
+    fs::write(dir.join("version.txt"), "2").unwrap();
+    assert!(stdout(&mq_task(&dir, &["gen"])).contains("generating 2"));
+}
+
+#[test]
+fn vars_errors_are_clear_and_stop_the_task() {
+    let dir = workdir("vars-errors");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## cycle
+
+```meta
+vars = { A = "${B}", B = "${A}" }
+```
+
+```bash
+echo ran
+```
+
+## unknown
+
+```meta
+vars = { A = "${MQ_TASK_SURELY_UNSET}" }
+```
+
+```bash
+echo ran
+```
+
+## fails
+
+```meta
+vars = { A = { sh = "echo bad >&2; exit 2" } }
+```
+
+```bash
+echo ran
+```
+"#,
+    );
+    for (task, needle) in [
+        ("cycle", "circular reference: A -> B -> A"),
+        ("unknown", "unknown variable `${MQ_TASK_SURELY_UNSET}`"),
+        ("fails", "exited with code 2: bad"),
+    ] {
+        let out = mq_task(&dir, &[task]);
+        assert!(!out.status.success(), "{task}");
+        assert!(stderr(&out).contains(needle), "{task}: {}", stderr(&out));
+        assert!(!stdout(&out).contains("ran"), "{task}");
+    }
+}
+
+#[test]
+fn an_imported_files_vars_apply_to_its_tasks() {
+    let dir = workdir("vars-import");
+    write(
+        &dir,
+        "lib.md",
+        r#"
+```meta
+vars = { LIB = "from-lib" }
+```
+
+## show
+
+```bash
+echo "lib=$LIB"
+```
+"#,
+    );
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+```meta
+imports = ["lib.md"]
+```
+
+## go
+
+```meta
+depends = ["lib:show"]
+```
+
+```bash
+echo done
+```
+"#,
+    );
+    let out = mq_task(&dir, &["go"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("lib=from-lib"), "{}", stdout(&out));
+}
+
+#[test]
+fn dollar_dollar_brace_writes_a_literal_reference() {
+    let dir = workdir("vars-escape");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## show
+
+```meta
+vars = { SNIPPET = "use $${HOME} here" }
+```
+
+```bash
+echo "snippet=$SNIPPET"
+```
+"#,
+    );
+    let out = mq_task(&dir, &["show"]);
+    assert!(
+        stdout(&out).contains("snippet=use ${HOME} here"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn summary_lists_vars() {
+    let dir = workdir("vars-summary");
+    write(
+        &dir,
+        "tasks.md",
+        "## t\n\n```meta\nvars = { A = \"1\", B = { sh = \"echo b\" } }\n```\n\n```bash\ntrue\n```\n",
+    );
+    let out = mq_task(&dir, &["t", "--summary"]);
+    assert!(
+        stdout(&out).contains("vars     A, B (sh)"),
+        "{}",
+        stdout(&out)
+    );
+}

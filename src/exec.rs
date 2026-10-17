@@ -20,6 +20,7 @@ use crate::error::{Error, Result};
 use crate::events::{NullObserver, RunObserver, Stream, TaskStatus};
 use crate::runner::{ParamDef, Section};
 use crate::schedule::{Deferred, loop_item_vars};
+use crate::vars::{self, ShellCache, VarDef};
 
 /// Maps a signal-killed process to the shell convention `128 + signal`.
 fn exit_code_from_status(status: &ExitStatus) -> i32 {
@@ -117,6 +118,10 @@ pub struct Executor {
     pub global_dir: Option<PathBuf>,
     /// Document-wide `dotenv` files of the main file.
     pub global_dotenv: Vec<String>,
+    /// Document-wide `vars` of the main file.
+    pub global_vars: Vec<VarDef>,
+    /// Shell variables already evaluated in this run.
+    var_cache: Arc<ShellCache>,
     /// Honor `sources`/`outputs` up-to-date checks.
     pub use_cache: bool,
     /// Distinguishes cache entries of different task files.
@@ -137,6 +142,8 @@ impl Executor {
             global_env: Vec::new(),
             global_dir: None,
             global_dotenv: Vec::new(),
+            global_vars: Vec::new(),
+            var_cache: Arc::default(),
             use_cache: true,
             cache_scope: String::new(),
             assume_yes: false,
@@ -183,12 +190,65 @@ impl Executor {
         Ok(vars)
     }
 
-    /// Env for a task before `--env` overrides: `dotenv` files, document
-    /// defaults, the task's own `meta`, then bound params.
-    fn task_env(&self, section: &Section, args: &[String]) -> Result<Vec<(String, String)>> {
-        let mut env = self.dotenv_vars(section)?;
-        env.extend(self.global_env.clone());
-        env.extend(section.env.clone());
+    /// Forget shell variables evaluated so far; call before each run so a
+    /// re-run (`--watch`) sees fresh values.
+    pub fn clear_var_cache(&self) {
+        self.var_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+    }
+
+    /// Env for a task before `--env` overrides, in increasing precedence:
+    /// `dotenv` files, `vars`, document and task `env`, then bound params.
+    /// `extra` (loop variables, dependency outputs) can be used by `vars`.
+    fn task_env(
+        &self,
+        section: &Section,
+        args: &[String],
+        extra: &[(String, String)],
+    ) -> Result<Vec<(String, String)>> {
+        let dotenv = self.dotenv_vars(section)?;
+        let fixed_env: Vec<(String, String)> = self
+            .global_env
+            .iter()
+            .chain(&section.env)
+            .cloned()
+            .collect();
+
+        let defs: Vec<VarDef> = self
+            .global_vars
+            .iter()
+            .chain(&section.vars)
+            .cloned()
+            .collect();
+        let vars = if defs.is_empty() {
+            Vec::new()
+        } else {
+            let mut base = dotenv.clone();
+            base.extend(extra.iter().cloned());
+            base.extend(fixed_env.iter().cloned());
+            base.extend(self.env_overrides.iter().cloned());
+            let fixed: Vec<String> = fixed_env
+                .iter()
+                .chain(&self.env_overrides)
+                .map(|(k, _)| k.clone())
+                .collect();
+            vars::resolve(
+                &defs,
+                &vars::ResolveContext {
+                    base: &base,
+                    fixed: &fixed,
+                    dir: self.effective_dir(section),
+                    dry_run: self.dry_run,
+                    cache: &self.var_cache,
+                },
+            )?
+        };
+
+        let mut env = dotenv;
+        env.extend(vars);
+        env.extend(fixed_env);
         env.extend(Self::bind_params(&section.params, args, &section.title)?);
         Ok(env)
     }
@@ -278,7 +338,7 @@ impl Executor {
             cancel: &cancel,
             deadline: None,
         };
-        let env = self.task_env(section, args)?;
+        let env = self.task_env(section, args, &[])?;
         self.run_blocks(section, args, lang_filter, &env, &io)?;
         Ok(())
     }
@@ -345,7 +405,7 @@ impl Executor {
             e
         };
 
-        let mut task_env = self.task_env(section, p.args).map_err(fail)?;
+        let mut task_env = self.task_env(section, p.args, &p.extra_env).map_err(fail)?;
         task_env.extend(p.extra_env.iter().cloned());
         let dir = self.effective_dir(section);
 
@@ -649,10 +709,12 @@ impl Executor {
         };
         let mut first: Option<Error> = None;
         for d in p.defers {
-            let result = self.task_env(d.section, &d.args).and_then(|mut env| {
-                env.extend(p.extra_env.iter().cloned());
-                self.run_blocks(d.section, &d.args, None, &env, &io)
-            });
+            let result = self
+                .task_env(d.section, &d.args, &p.extra_env)
+                .and_then(|mut env| {
+                    env.extend(p.extra_env.iter().cloned());
+                    self.run_blocks(d.section, &d.args, None, &env, &io)
+                });
             if let Err(e) = result {
                 io.observer.output(
                     p.label,

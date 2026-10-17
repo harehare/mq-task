@@ -37,6 +37,7 @@ It is implemented using [mq](https://github.com/harehare/mq), a jq-like command-
 - [Interactive TUI](https://task.mqlang.org/book/guide/tui.html) with search, details, argument prompts, per-task progress and a log pane
 - [Named task parameters](https://task.mqlang.org/book/guide/params-env.html) with defaults, plus positional args
 - Per-run `--env`/`--dir` overrides, plus `meta`-declared defaults for environment variables, `.env` files and working directory ([details](https://task.mqlang.org/book/guide/params-env.html))
+- Shared [variables](https://task.mqlang.org/book/guide/vars.html), fixed or computed by a command (`vars = { VERSION = { sh = "git describe" } }`)
 - Default task, [aliases, and private tasks](https://task.mqlang.org/book/guide/aliases-private.html)
 - Configurable [runtimes](https://task.mqlang.org/book/start/configuration.html) for different programming languages, with real exit codes and interactive stdin
 - Support for custom heading levels

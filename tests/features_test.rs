@@ -3571,3 +3571,62 @@ fn check_reports_a_missing_task_file() {
     assert_eq!(out.status.code(), Some(1));
     assert!(stdout(&out).contains("error:"), "{}", stdout(&out));
 }
+
+const VERBOSE_TASKS: &str = r#"
+## cleanup
+
+```bash
+echo cleaning
+```
+
+## build
+
+```meta
+defer = ["cleanup"]
+for = ["a", "b"]
+```
+
+```bash
+echo "building $MX_ITEM"
+```
+"#;
+
+#[test]
+fn verbose_prints_the_code_on_stderr_and_leaves_stdout_alone() {
+    let dir = workdir("verbose");
+    write(&dir, "tasks.md", VERBOSE_TASKS);
+    let quiet = mq_task(&dir, &["build"]);
+    assert!(!stderr(&quiet).contains('▸'), "{}", stderr(&quiet));
+
+    let out = mq_task(&dir, &["build", "-v"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let err = stderr(&out);
+    // Once per iteration, and for the deferred task too.
+    assert_eq!(err.matches("▸ bash").count(), 4, "{}", err);
+    assert!(err.contains("  echo \"building $MX_ITEM\""), "{}", err);
+    assert!(err.contains("  echo cleaning"), "{}", err);
+    assert!(!stdout(&out).contains('▸'), "{}", stdout(&out));
+    assert!(stdout(&out).contains("building a") && stdout(&out).contains("cleaning"));
+
+    let long = mq_task(&dir, &["build", "--verbose"]);
+    assert_eq!(stderr(&long).matches("▸ bash").count(), 4);
+}
+
+#[test]
+fn verbose_follows_grouped_output_and_is_ignored_by_dry_runs() {
+    let dir = workdir("verbose-group");
+    write(&dir, "tasks.md", VERBOSE_TASKS);
+    let group = mq_task(&dir, &["cleanup", "-v", "--output", "group"]);
+    assert!(group.status.success(), "{}", stderr(&group));
+    // The code is part of the task's block.
+    assert!(
+        stdout(&group).contains("▶ cleanup\ncleaning"),
+        "{}",
+        stdout(&group)
+    );
+    assert!(stderr(&group).contains("▸ bash"), "{}", stderr(&group));
+
+    let dry = mq_task(&dir, &["cleanup", "-v", "--dry-run"]);
+    assert!(!stderr(&dry).contains('▸'));
+    assert!(stdout(&dry).contains("[dry-run] code:"));
+}

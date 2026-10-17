@@ -30,6 +30,19 @@ dir = "services/api"
 
 Precedence, lowest to highest: document-wide `meta` → the task's own `meta` → CLI flags.
 
+## Seeing what runs
+
+`-v`/`--verbose` prints every code block just before it runs, on stderr so that captured output and pipes are not affected:
+
+```text
+$ mq-task build -v
+▶ build
+▸ bash
+  cargo build --release
+```
+
+The block is shown for each loop item and each deferred task, and with the working directory when the task has one (`▸ bash in services/api`). With `--output group` it is part of the task's block. `--dry-run` already shows the code and its context, so `-v` adds nothing there.
+
 ## Typos
 
 A task name that does not exist is reported with the closest match, and so is a mistyped entry in `depends`:

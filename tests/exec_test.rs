@@ -910,3 +910,69 @@ fn each_item_of_a_from_loop_is_retried() {
     assert_eq!(n.done(), None);
     assert!(n.rec.stdout("each").contains(&"recovered".to_string()));
 }
+
+fn stderr_lines(rec: &Recorder, task: &str) -> Vec<String> {
+    rec.events()
+        .into_iter()
+        .filter_map(|e| match e {
+            common::Event::Output(t, mq_task::events::Stream::Stderr, l) if t == task => Some(l),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn verbose_shows_each_block_before_running_it() {
+    let mut s = bash("t", &[], "echo one\n\necho two\n");
+    s.codes.push(CodeBlock {
+        lang: "sh".into(),
+        code: "echo three".into(),
+    });
+    let mut exec = executor();
+    exec.verbose = true;
+    let n = node(&exec, &s, &[], false);
+    assert_eq!(n.done(), None);
+    assert_eq!(
+        stderr_lines(&n.rec, "t"),
+        vec![
+            "▸ bash",
+            "  echo one",
+            "",
+            "  echo two",
+            "▸ sh",
+            "  echo three"
+        ]
+    );
+    // The program's own output is untouched.
+    assert_eq!(n.rec.stdout("t"), vec!["one", "two", "three"]);
+}
+
+#[test]
+fn verbose_is_quiet_by_default_and_in_dry_runs() {
+    let s = bash("t", &[], "echo hi");
+    let n = node(&executor(), &s, &[], false);
+    assert!(stderr_lines(&n.rec, "t").is_empty());
+
+    let mut exec = executor();
+    exec.verbose = true;
+    exec.dry_run = true;
+    let n = node(&exec, &s, &[], false);
+    assert!(
+        stderr_lines(&n.rec, "t").is_empty(),
+        "dry-run prints its own"
+    );
+}
+
+#[test]
+fn verbose_names_the_working_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut s = bash("t", &[], "true");
+    s.dir = Some(dir.path().to_path_buf());
+    let mut exec = executor();
+    exec.verbose = true;
+    let n = node(&exec, &s, &[], false);
+    assert_eq!(
+        stderr_lines(&n.rec, "t")[0],
+        format!("▸ bash in {}", dir.path().display())
+    );
+}

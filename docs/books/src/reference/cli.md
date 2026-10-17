@@ -25,6 +25,7 @@ mq-task [OPTIONS] [TASK] [-- <ARGS>...] [COMMAND]
 | `-r, --runtime <LANG:COMMAND>` | Override a runtime |
 | `-e, --execution-mode <MODE>` | `stdin`, `file` or `arg` for overrides |
 | `--lang <LANG>` | Only run code blocks of this language |
+| `-v, --verbose` | Print each code block (and its directory) on stderr before it runs |
 | `--dry-run` | Show what would run |
 | `--env <KEY=VALUE>` | Set an environment variable (repeatable) |
 | `-d, --dir <PATH>` | Working directory |

@@ -2636,7 +2636,7 @@ fn the_config_beside_the_task_file_is_used_for_an_explicit_file() {
 fn init_writes_the_file_that_is_loaded_automatically() {
     let dir = workdir("config-init");
     write(&dir, "tasks.md", "## hi\n\n```bash\necho hi\n```\n");
-    let init = mq_task(&dir, &["init"]);
+    let init = mq_task(&dir, &["init", "--config"]);
     assert!(init.status.success(), "{}", stderr(&init));
     assert!(dir.join("mq-task.toml").is_file());
     assert!(!dir.join("mq_task.toml").exists());
@@ -3629,4 +3629,75 @@ fn verbose_follows_grouped_output_and_is_ignored_by_dry_runs() {
     let dry = mq_task(&dir, &["cleanup", "-v", "--dry-run"]);
     assert!(!stderr(&dry).contains('▸'));
     assert!(stdout(&dry).contains("[dry-run] code:"));
+}
+
+#[test]
+fn init_writes_a_starter_task_file_that_works_and_checks_clean() {
+    let dir = workdir("init-tasks");
+    let init = mq_task(&dir, &["init"]);
+    assert!(init.status.success(), "{}", stderr(&init));
+    assert!(dir.join("tasks.md").is_file());
+    assert!(!dir.join("mq-task.toml").exists());
+    assert!(
+        stdout(&init).contains("Task file created: tasks.md"),
+        "{}",
+        stdout(&init)
+    );
+
+    // It is found without -f, lists its tasks and runs.
+    let list = mq_task(&dir, &[]);
+    for task in ["hello", "build", "test", "ci"] {
+        assert!(stdout(&list).contains(task), "{task}: {}", stdout(&list));
+    }
+    let hello = mq_task(&dir, &["hello", "--", "Ada"]);
+    assert!(stdout(&hello).contains("Hello, Ada!"), "{}", stdout(&hello));
+    let default = mq_task(&dir, &["hello"]);
+    assert!(
+        stdout(&default).contains("Hello, world!"),
+        "{}",
+        stdout(&default)
+    );
+    let ci = mq_task(&dir, &["ci"]);
+    assert!(ci.status.success(), "{}", stderr(&ci));
+    assert!(stdout(&ci).contains("all done"));
+
+    // And it has nothing for `check` to complain about.
+    let check = mq_task(&dir, &["check"]);
+    assert!(
+        check.status.success(),
+        "{}{}",
+        stdout(&check),
+        stderr(&check)
+    );
+    assert!(
+        stdout(&check).contains("no problems found"),
+        "{}",
+        stdout(&check)
+    );
+}
+
+#[test]
+fn init_never_overwrites_and_accepts_another_path() {
+    let dir = workdir("init-safe");
+    write(&dir, "tasks.md", "mine\n");
+    let again = mq_task(&dir, &["init"]);
+    assert!(!again.status.success());
+    assert!(
+        stderr(&again).contains("already exists"),
+        "{}",
+        stderr(&again)
+    );
+    assert_eq!(fs::read_to_string(dir.join("tasks.md")).unwrap(), "mine\n");
+
+    let other = mq_task(&dir, &["init", "-o", "dev.md"]);
+    assert!(other.status.success(), "{}", stderr(&other));
+    assert!(dir.join("dev.md").is_file());
+
+    let config = mq_task(&dir, &["init", "--config", "-o", "ci.toml"]);
+    assert!(config.status.success(), "{}", stderr(&config));
+    assert!(
+        fs::read_to_string(dir.join("ci.toml"))
+            .unwrap()
+            .contains("[runtimes")
+    );
 }

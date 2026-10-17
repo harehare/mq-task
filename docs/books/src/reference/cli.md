@@ -14,7 +14,7 @@ mq-task [OPTIONS] [TASK] [-- <ARGS>...] [COMMAND]
 | `check` | Look for mistakes without running anything (`--strict`, `--json`; see [Checking a Task File](../guide/check.md)) |
 | `graph [TASK]` | Print the dependency graph (`--format text\|mermaid`) |
 | `completions <SHELL>` | Generate shell completions |
-| `init` | Write a sample `mq-task.toml` |
+| `init` | Write a starter `tasks.md` (`-o` for another path); `init --config` writes a sample `mq-task.toml` |
 
 ## Options
 

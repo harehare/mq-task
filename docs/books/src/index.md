@@ -33,6 +33,7 @@ mq-task ci
 - Task dependencies, with parallel fan-out / fan-in and calls with arguments
 - Loops (`for` over lists, globs, matrices and another task's output) and `defer` cleanup
 - Conditions (`if`), retries, timeouts, `ignore_error`, `prompt` confirmation, and output passing between tasks
+- Shared variables, fixed or computed by a command (`vars`)
 - Import tasks from other Markdown files
 - Skip up-to-date tasks (`sources` / `outputs` / `status`) and `--watch` mode
 - Dependency graph (text and Mermaid) and shell completions

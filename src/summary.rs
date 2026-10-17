@@ -4,6 +4,7 @@ use std::fmt::Write;
 
 use crate::graph::badge_list;
 use crate::runner::Section;
+use crate::vars::VarValue;
 
 /// Describe `section`: title, description and its notable settings.
 pub fn render(section: &Section) -> String {
@@ -42,6 +43,17 @@ pub fn render(section: &Section) -> String {
             .map(|(k, v)| format!("{}={}", k, v))
             .collect();
         rows.push(("env", env.join(", ")));
+    }
+    if !section.vars.is_empty() {
+        let vars: Vec<String> = section
+            .vars
+            .iter()
+            .map(|v| match v.value {
+                VarValue::Literal(_) => v.name.clone(),
+                VarValue::Shell(_) => format!("{} (sh)", v.name),
+            })
+            .collect();
+        rows.push(("vars", vars.join(", ")));
     }
     if let Some(dir) = &section.dir {
         rows.push(("dir", dir.display().to_string()));
@@ -203,6 +215,16 @@ mod tests {
         let section = Section {
             title: "t".into(),
             env: vec![("A".into(), "1".into()), ("B".into(), "2".into())],
+            vars: vec![
+                crate::vars::VarDef {
+                    name: "NAME".into(),
+                    value: VarValue::Literal("app".into()),
+                },
+                crate::vars::VarDef {
+                    name: "VERSION".into(),
+                    value: VarValue::Shell("git describe".into()),
+                },
+            ],
             dir: Some("svc".into()),
             dotenv: vec![".env".into()],
             prompt: Some("sure?".into()),
@@ -213,6 +235,7 @@ mod tests {
         let text = render(&section);
         for row in [
             "  env      A=1, B=2\n",
+            "  vars     NAME, VERSION (sh)\n",
             "  dir      svc\n",
             "  dotenv   .env\n",
             "  options  prompt\n",

@@ -1,6 +1,6 @@
 # mq-task
 
-> mq-task is a task runner that executes code blocks in Markdown files, selected by section title. Built on mq (https://mqlang.org/). Supports dependencies (with arguments), parallel execution, loops (for), defer, conditions, retries, timeouts, ignore_error, confirmation prompts, dotenv, status checks, output passing, imports, caching, watch mode, a dependency graph, shell completions and an interactive TUI.
+> mq-task is a task runner that executes code blocks in Markdown files, selected by section title. Built on mq (https://mqlang.org/). Supports dependencies (with arguments), parallel execution, loops (for), defer, conditions, retries, timeouts, ignore_error, confirmation prompts, dotenv, vars, status checks, output passing, imports, caching, watch mode, a dependency graph, shell completions and an interactive TUI.
 
 ## Docs
 
@@ -12,6 +12,7 @@
 - [Dependencies](https://task.mqlang.org/book/guide/dependencies.html): depends
 - [Parallel Execution](https://task.mqlang.org/book/guide/parallel.html): parallel, --parallel, -j, -k
 - [Loops](https://task.mqlang.org/book/guide/loops.html): for, as, glob, matrix, from, MX_ITEM, MX_INDEX
+- [Variables](https://task.mqlang.org/book/guide/vars.html): vars, sh, ${NAME}
 - [Cleanup with defer](https://task.mqlang.org/book/guide/defer.html): defer
 - [Confirmation Prompts](https://task.mqlang.org/book/guide/prompts.html): prompt, --yes, -y
 - [Conditions](https://task.mqlang.org/book/guide/conditions.html): if expressions

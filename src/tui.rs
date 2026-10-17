@@ -887,6 +887,10 @@ fn section_details(s: &Section) -> Vec<Line<'static>> {
     if !s.requires.is_empty() {
         flags.push(format!("requires {}", s.requires.join(", ")));
     }
+    if !s.vars.is_empty() {
+        let names: Vec<&str> = s.vars.iter().map(|v| v.name.as_str()).collect();
+        flags.push(format!("vars {}", names.join(", ")));
+    }
     if s.prompt.is_some() {
         flags.push("asks to confirm".into());
     }
@@ -2044,6 +2048,10 @@ mod tests {
         s.once = true;
         s.requires = vec!["TOKEN".into()];
         s.prompt = Some("sure?".into());
+        s.vars = vec![crate::vars::VarDef {
+            name: "NAME".into(),
+            value: crate::vars::VarValue::Literal("app".into()),
+        }];
         s.ignore_error = true;
         s.dir = Some(PathBuf::from("svc"));
         s.env = vec![("A".into(), "1".into()), ("B".into(), "2".into())];
@@ -2070,6 +2078,7 @@ mod tests {
             "once",
             "requires TOKEN",
             "asks to confirm",
+            "vars NAME",
             "ignores errors",
             "svc",
             "A=1 B=2",

@@ -74,6 +74,10 @@ pub enum Error {
     #[error("Task '{1}' requires {0} to be set")]
     MissingVariable(String, String),
 
+    /// A `vars` entry could not be resolved
+    #[error("Variable '{0}': {1}")]
+    Variable(String, String),
+
     /// A task's `prompt` was declined
     #[error("Task '{0}' was not confirmed")]
     Declined(String),

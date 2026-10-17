@@ -7,6 +7,7 @@
 - [Introduction](https://task.mqlang.org/book/): Overview and features
 - [Install](https://task.mqlang.org/book/start/install.html): Install with the install script (curl -sSL https://task.mqlang.org/install.sh | bash) or Cargo
 - [Quick Start](https://task.mqlang.org/book/start/quickstart.html): Define and run a first task
+- [Coming from just or Task](https://task.mqlang.org/book/start/migrating.html): concept mapping and gaps
 - [Configuration](https://task.mqlang.org/book/start/configuration.html): mq-task.toml runtimes and execution modes
 - [Writing Tasks](https://task.mqlang.org/book/guide/tasks.html): Headings as tasks, code blocks, meta blocks
 - [Dependencies](https://task.mqlang.org/book/guide/dependencies.html): depends

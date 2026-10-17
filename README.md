@@ -45,7 +45,7 @@ It is implemented using [mq](https://github.com/harehare/mq), a jq-like command-
 - TOML-based configuration
 - Built on top of the mq query language
 
-See the [documentation](https://task.mqlang.org/book/) for the full guide and reference.
+See the [documentation](https://task.mqlang.org/book/) for the full guide and reference, or [how the concepts map](https://task.mqlang.org/book/start/migrating.html) if you come from `just` or Task.
 
 ## Installation
 

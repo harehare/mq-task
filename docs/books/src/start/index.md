@@ -3,3 +3,4 @@
 1. [Install](install.md) `mq-task`
 2. Run your first task with the [Quick Start](quickstart.md)
 3. Tune runtimes in [Configuration](configuration.md)
+4. Coming from `just` or Task? Read [how the concepts map](migrating.md)

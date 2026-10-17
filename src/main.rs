@@ -895,13 +895,6 @@ fn init(output: Option<PathBuf>, config: bool) -> Result<()> {
         ("tasks.md", "Task file")
     };
     let path = output.unwrap_or_else(|| PathBuf::from(default_name));
-    if path.exists() {
-        return Err(Error::Config(format!(
-            "{} already exists: {}",
-            kind,
-            path.display()
-        )));
-    }
 
     let content = if config {
         toml::to_string_pretty(&Config::default())
@@ -909,7 +902,19 @@ fn init(output: Option<PathBuf>, config: bool) -> Result<()> {
     } else {
         mq_task::template::TASKS_TEMPLATE.to_string()
     };
-    std::fs::write(&path, content)?;
+    // `create_new` makes the existence check and the creation one atomic step,
+    // so a file created concurrently is never truncated.
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => {
+                Error::Config(format!("{} already exists: {}", kind, path.display()))
+            }
+            _ => Error::from(e),
+        })?;
+    std::io::Write::write_all(&mut file, content.as_bytes())?;
     println!("{} created: {}", kind, path.display());
     if !config {
         println!(

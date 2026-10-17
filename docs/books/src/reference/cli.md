@@ -20,7 +20,7 @@ mq-task [OPTIONS] [TASK] [-- <ARGS>...] [COMMAND]
 | Option | Description |
 |---|---|
 | `-f, --file <FILE>` | Markdown file (default `README.md`) |
-| `-c, --config <CONFIG>` | Configuration file |
+| `-c, --config <CONFIG>` | Configuration file (default: `mq-task.toml` in the current directory; env `MQ_TASK_CONFIG`) |
 | `-r, --runtime <LANG:COMMAND>` | Override a runtime |
 | `-e, --execution-mode <MODE>` | `stdin`, `file` or `arg` for overrides |
 | `--lang <LANG>` | Only run code blocks of this language |

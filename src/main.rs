@@ -93,8 +93,8 @@ struct Cli {
     #[arg(short, long, default_value = DEFAULT_TASKS_FILE)]
     file: PathBuf,
 
-    /// Path to configuration file
-    #[arg(short, long)]
+    /// Path to configuration file (default: mq-task.toml in the current directory)
+    #[arg(short, long, env = "MQ_TASK_CONFIG")]
     config: Option<PathBuf>,
 
     /// Override runtime for a language (format: lang:command, e.g., python:python3.11)
@@ -159,8 +159,8 @@ enum Commands {
         #[arg(short, long, default_value = DEFAULT_TASKS_FILE)]
         file: PathBuf,
 
-        /// Path to configuration file
-        #[arg(short, long)]
+        /// Path to configuration file (default: mq-task.toml in the current directory)
+        #[arg(short, long, env = "MQ_TASK_CONFIG")]
         config: Option<PathBuf>,
 
         /// Override runtime for a language (format: lang:command, e.g., python:python3.11)
@@ -213,8 +213,8 @@ enum Commands {
         #[arg(short, long, default_value = DEFAULT_TASKS_FILE)]
         file: PathBuf,
 
-        /// Path to configuration file
-        #[arg(short, long)]
+        /// Path to configuration file (default: mq-task.toml in the current directory)
+        #[arg(short, long, env = "MQ_TASK_CONFIG")]
         config: Option<PathBuf>,
 
         /// Filter code blocks by language (e.g., bash, python, go)
@@ -236,8 +236,8 @@ enum Commands {
         #[arg(short, long, default_value = DEFAULT_TASKS_FILE)]
         file: PathBuf,
 
-        /// Path to configuration file
-        #[arg(short, long)]
+        /// Path to configuration file (default: mq-task.toml in the current directory)
+        #[arg(short, long, env = "MQ_TASK_CONFIG")]
         config: Option<PathBuf>,
 
         /// Filter code blocks by language (e.g., bash, python, go)
@@ -273,8 +273,8 @@ enum Commands {
         #[arg(short, long, default_value = DEFAULT_TASKS_FILE)]
         file: PathBuf,
 
-        /// Path to configuration file
-        #[arg(short, long)]
+        /// Path to configuration file (default: mq-task.toml in the current directory)
+        #[arg(short, long, env = "MQ_TASK_CONFIG")]
         config: Option<PathBuf>,
 
         /// Output format: text or mermaid
@@ -291,7 +291,7 @@ enum Commands {
     /// Generate a sample configuration file
     Init {
         /// Output path for configuration file
-        #[arg(short, long, default_value = "mq_task.toml")]
+        #[arg(short, long, default_value = mq_task::config::CONFIG_FILE)]
         output: PathBuf,
     },
 }
@@ -694,13 +694,11 @@ fn init_config(output_path: PathBuf) -> Result<()> {
     Ok(())
 }
 
-/// Load configuration from file or use default
+/// Load the configuration: `-c`, else `mq-task.toml` in the current
+/// directory, else the defaults.
 fn load_config(config_path: Option<PathBuf>) -> Result<Config> {
-    let config = if let Some(path) = config_path {
-        Config::from_file(&path)?
-    } else {
-        Config::default()
-    };
-
-    Ok(config)
+    match config_path {
+        Some(path) => Config::from_file(path),
+        None => Config::discover("."),
+    }
 }

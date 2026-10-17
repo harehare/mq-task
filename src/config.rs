@@ -71,6 +71,7 @@ impl RuntimeConfig {
 
 /// Configuration for mq_task task runner
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     /// Runtime mappings: language -> command or detailed config
     #[serde(default = "default_runtimes")]
@@ -89,7 +90,21 @@ impl Default for Config {
     }
 }
 
+/// Name of the configuration file that is loaded automatically.
+pub const CONFIG_FILE: &str = "mq-task.toml";
+
 impl Config {
+    /// The configuration in `dir` (`mq-task.toml`), or the defaults when
+    /// there is none.
+    pub fn discover<P: AsRef<Path>>(dir: P) -> Result<Self> {
+        let path = dir.as_ref().join(CONFIG_FILE);
+        if path.is_file() {
+            Self::from_file(path)
+        } else {
+            Ok(Self::default())
+        }
+    }
+
     /// Load configuration from a TOML file
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let content = fs::read_to_string(path)?;
@@ -326,5 +341,30 @@ execution_mode = "arg"
         // Detailed config with arg mode
         assert_eq!(config.get_runtime("mq"), Some("mq"));
         assert_eq!(config.get_execution_mode("mq"), ExecutionMode::Arg);
+    }
+
+    #[test]
+    fn unknown_top_level_keys_are_rejected() {
+        let err = toml::from_str::<Config>("defualt_task = \"build\"\n").unwrap_err();
+        assert!(err.to_string().contains("defualt_task"), "{}", err);
+    }
+
+    #[test]
+    fn discover_reads_mq_task_toml_from_the_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(Config::discover(dir.path()).unwrap().default_task, None);
+
+        fs::write(dir.path().join(CONFIG_FILE), "default_task = \"build\"\n").unwrap();
+        let config = Config::discover(dir.path()).unwrap();
+        assert_eq!(config.default_task.as_deref(), Some("build"));
+        // Runtimes keep their defaults when the file does not mention them.
+        assert!(config.has_runtime("bash"));
+    }
+
+    #[test]
+    fn discover_reports_a_broken_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(CONFIG_FILE), "not = [valid").unwrap();
+        assert!(Config::discover(dir.path()).is_err());
     }
 }

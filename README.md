@@ -525,7 +525,7 @@ mq-task list --all
 mq-task init
 ```
 
-This creates an `mq-task.toml` file with default runtime settings.
+This creates an `mq-task.toml` file with default runtime settings. It is loaded automatically from the current directory.
 
 ## Configuration
 

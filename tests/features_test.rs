@@ -2358,3 +2358,56 @@ echo "item $MX_FILE"
         text
     );
 }
+
+#[test]
+fn mq_task_toml_is_loaded_automatically() {
+    let dir = workdir("config-auto");
+    write(
+        &dir,
+        "README.md",
+        "## build\n\n```bash\necho building\n```\n",
+    );
+    write(&dir, "mq-task.toml", "default_task = \"build\"\n");
+    let out = mq_task(&dir, &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("building"), "{}", stdout(&out));
+}
+
+#[test]
+fn mq_task_config_selects_another_config_file() {
+    let dir = workdir("config-env");
+    write(
+        &dir,
+        "README.md",
+        "## build\n\n```bash\necho building\n```\n",
+    );
+    write(&dir, "ci.toml", "default_task = \"build\"\n");
+    let out = Command::new(env!("CARGO_BIN_EXE_mq-task"))
+        .env("MQ_TASK_CONFIG", "ci.toml")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(stdout(&out).contains("building"), "{}", stdout(&out));
+}
+
+#[test]
+fn init_writes_the_file_that_is_loaded_automatically() {
+    let dir = workdir("config-init");
+    write(&dir, "README.md", "## hi\n\n```bash\necho hi\n```\n");
+    let init = mq_task(&dir, &["init"]);
+    assert!(init.status.success(), "{}", stderr(&init));
+    assert!(dir.join("mq-task.toml").is_file());
+    assert!(!dir.join("mq_task.toml").exists());
+    let run = mq_task(&dir, &["hi"]);
+    assert!(run.status.success(), "{}", stderr(&run));
+}
+
+#[test]
+fn a_config_with_unknown_keys_is_rejected() {
+    let dir = workdir("config-typo");
+    write(&dir, "README.md", "## hi\n\n```bash\necho hi\n```\n");
+    write(&dir, "mq-task.toml", "defualt_task = \"hi\"\n");
+    let out = mq_task(&dir, &["hi"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("defualt_task"), "{}", stderr(&out));
+}

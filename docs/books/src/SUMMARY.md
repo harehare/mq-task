@@ -22,6 +22,7 @@
   - [Aliases, Default and Private Tasks](guide/aliases-private.md)
   - [Interactive TUI](guide/tui.md)
   - [Dependency Graph](guide/graph.md)
+  - [Checking a Task File](guide/check.md)
   - [Shell Completions](guide/completions.md)
 - [Cookbook](cookbook/index.md)
   - [A CI pipeline in one file](cookbook/ci-pipeline.md)

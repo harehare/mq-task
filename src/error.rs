@@ -78,6 +78,10 @@ pub enum Error {
     #[error("Variable '{0}': {1}")]
     Variable(String, String),
 
+    /// `mq-task check` found problems (already printed)
+    #[error("check failed")]
+    CheckFailed,
+
     /// A task's `prompt` was declined
     #[error("Task '{0}' was not confirmed")]
     Declined(String),

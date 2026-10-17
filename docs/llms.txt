@@ -22,6 +22,7 @@
 - [Caching and Watch Mode](https://task.mqlang.org/book/guide/cache-watch.html): sources, outputs, --watch
 - [Parameters, Env and Working Directory](https://task.mqlang.org/book/guide/params-env.html): params, env, dir
 - [Interactive TUI](https://task.mqlang.org/book/guide/tui.html): mq-task tui
+- [Checking a Task File](https://task.mqlang.org/book/guide/check.html): check, --strict, --json
 - [Dependency Graph](https://task.mqlang.org/book/guide/graph.html): mq-task graph
 - [Meta keys](https://task.mqlang.org/book/reference/meta.html): All meta keys
 - [CLI](https://task.mqlang.org/book/reference/cli.html): Commands and options

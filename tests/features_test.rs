@@ -3404,3 +3404,170 @@ fn summary_lists_vars() {
         stdout(&out)
     );
 }
+
+const BROKEN_TASKS: &str = r#"
+## build
+
+```meta
+retires = 2
+```
+
+```bash
+true
+```
+
+## deploy
+
+```meta
+depends = ["buil", "test"]
+```
+
+```bash
+true
+```
+
+## test
+
+```meta
+depends = ["lint"]
+```
+
+```bash
+true
+```
+
+## lint
+
+```meta
+depends = ["test"]
+```
+
+```cobol
+DISPLAY 'x'.
+```
+"#;
+
+#[test]
+fn check_reports_every_problem_at_once_and_fails() {
+    let dir = workdir("check-broken");
+    write(&dir, "tasks.md", BROKEN_TASKS);
+    let out = mq_task(&dir, &["check"]);
+    assert_eq!(out.status.code(), Some(1));
+    let text = stdout(&out);
+    for needle in [
+        "task 'build': `meta` block: unknown key `retires`",
+        "task 'deploy': depends on unknown task 'buil' (did you mean `build`?)",
+        "circular dependency: test -> lint -> test",
+        "no runtime is configured for language 'cobol'",
+        "4 errors, 0 warnings",
+    ] {
+        assert!(text.contains(needle), "missing {needle:?} in:\n{text}");
+    }
+    // The summary is the last thing, and nothing is printed twice on stderr.
+    assert!(stderr(&out).is_empty(), "{}", stderr(&out));
+}
+
+#[test]
+fn check_passes_on_a_good_file_and_runs_nothing() {
+    let dir = workdir("check-ok");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## build
+
+```bash
+touch side-effect
+```
+
+## ci
+
+```meta
+depends = ["build"]
+```
+
+```bash
+echo ci
+```
+"#,
+    );
+    let out = mq_task(&dir, &["check"]);
+    assert!(out.status.success(), "{}{}", stdout(&out), stderr(&out));
+    assert!(
+        stdout(&out).contains("2 tasks, no problems found"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(
+        !dir.join("side-effect").exists(),
+        "check must not run tasks"
+    );
+}
+
+#[test]
+fn check_warnings_fail_only_with_strict() {
+    let dir = workdir("check-strict");
+    write(&dir, "tasks.md", "## run\n\n```bash\ntrue\n```\n");
+    let lenient = mq_task(&dir, &["check"]);
+    assert!(lenient.status.success(), "{}", stdout(&lenient));
+    assert!(stdout(&lenient).contains("warning: task 'run': the name 'run' is also a command"));
+
+    let strict = mq_task(&dir, &["check", "--strict"]);
+    assert_eq!(strict.status.code(), Some(1));
+}
+
+#[test]
+fn check_can_print_json() {
+    let dir = workdir("check-json");
+    write(&dir, "tasks.md", BROKEN_TASKS);
+    let out = mq_task(&dir, &["check", "--json"]);
+    assert_eq!(out.status.code(), Some(1));
+    let value: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(value["tasks"], 3);
+    let diagnostics = value["diagnostics"].as_array().unwrap();
+    assert_eq!(diagnostics.len(), 4);
+    assert!(diagnostics.iter().all(|d| d["severity"] == "error"));
+    assert!(diagnostics.iter().any(|d| d["task"] == "deploy"));
+}
+
+#[test]
+fn check_follows_imports_and_reports_missing_ones() {
+    let dir = workdir("check-imports");
+    write(
+        &dir,
+        "lib.md",
+        "## helper\n\n```meta\nretires = 1\n```\n\n```bash\ntrue\n```\n",
+    );
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+```meta
+imports = ["lib.md", "gone.md"]
+```
+
+## go
+
+```meta
+depends = ["lib:helper"]
+```
+
+```bash
+true
+```
+"#,
+    );
+    let out = mq_task(&dir, &["check"]);
+    assert_eq!(out.status.code(), Some(1));
+    let text = stdout(&out);
+    assert!(text.contains("unknown key `retires`"), "{}", text);
+    assert!(text.contains("import 'gone.md'"), "{}", text);
+}
+
+#[test]
+fn check_reports_a_missing_task_file() {
+    let dir = workdir("check-nofile");
+    let out = mq_task(&dir, &["check", "-f", "nope.md"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stdout(&out).contains("error:"), "{}", stdout(&out));
+}

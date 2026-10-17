@@ -394,6 +394,16 @@ pub struct Runner {
     exec: Executor,
     /// `imports` of the file most recently passed to `extract_sections`.
     imports: Vec<String>,
+    /// When set, loading records problems here and carries on (`check`).
+    collected: Option<Collected>,
+}
+
+/// Problems found while loading in lenient mode.
+#[derive(Default)]
+struct Collected {
+    errors: Vec<Error>,
+    /// Titles of tasks that could not be parsed.
+    failed: Vec<String>,
 }
 
 impl Runner {
@@ -406,6 +416,7 @@ impl Runner {
             engine,
             exec: Executor::new(config),
             imports: Vec::new(),
+            collected: None,
         }
     }
 
@@ -463,7 +474,16 @@ impl Runner {
         let input = parse_markdown_input(markdown)
             .map_err(|e| Error::Markdown(format!("Failed to parse markdown: {}", e)))?;
 
-        let globals = self.parse_global_meta(input.clone())?;
+        let globals = match self.parse_global_meta(input.clone()) {
+            Ok(globals) => globals,
+            Err(e) => match self.collected.as_mut() {
+                Some(collected) => {
+                    collected.errors.push(e);
+                    Globals::default()
+                }
+                None => return Err(e),
+            },
+        };
         self.exec.global_env = globals.env;
         self.exec.global_dir = globals.dir;
         self.exec.global_dotenv = globals.dotenv;
@@ -479,6 +499,28 @@ impl Runner {
         let sections = self.parse_sections(result)?;
 
         Ok(sections)
+    }
+
+    /// Like [`Runner::load_sections`], but carries on after a broken task or
+    /// import. Returns the tasks that loaded, the problems found and the
+    /// titles of the tasks that could not be parsed.
+    pub fn load_sections_lenient<P: AsRef<Path>>(
+        &mut self,
+        path: P,
+    ) -> (Vec<Section>, Vec<Error>, Vec<String>) {
+        self.collected = Some(Collected::default());
+        let mut stack = Vec::new();
+        let sections = match self.load_file(path.as_ref(), &mut stack) {
+            Ok((sections, _)) => sections,
+            Err(e) => {
+                if let Some(collected) = self.collected.as_mut() {
+                    collected.errors.push(e);
+                }
+                Vec::new()
+            }
+        };
+        let collected = self.collected.take().unwrap_or_default();
+        (sections, collected.errors, collected.failed)
     }
 
     /// Load the tasks of a Markdown file together with those of the files
@@ -535,13 +577,28 @@ impl Runner {
                 .map(|s| s.to_string_lossy().into_owned())
                 .ok_or_else(|| Error::Invalid(format!("invalid import path '{}'", import)))?;
             if !namespaces.insert(stem.clone()) {
-                return Err(Error::Invalid(format!(
-                    "two imports share the namespace '{}'",
-                    stem
-                )));
+                let e = Error::Invalid(format!("two imports share the namespace '{}'", stem));
+                match self.collected.as_mut() {
+                    Some(collected) => {
+                        collected.errors.push(e);
+                        continue;
+                    }
+                    None => return Err(e),
+                }
             }
 
-            let (mut imported, child_globals) = self.load_file(&import_path, stack)?;
+            let (mut imported, child_globals) = match self.load_file(&import_path, stack) {
+                Ok(loaded) => loaded,
+                Err(e) => match self.collected.as_mut() {
+                    Some(collected) => {
+                        collected
+                            .errors
+                            .push(Error::Invalid(format!("import '{}': {}", import, e)));
+                        continue;
+                    }
+                    None => return Err(e),
+                },
+            };
             // Importing a file's own heading (its document title) as a task
             // is noise; keep only sections that do something.
             imported.retain(|s| !s.codes.is_empty() || !s.depends.is_empty());
@@ -595,13 +652,25 @@ impl Runner {
         })
     }
 
-    fn parse_sections(&self, result: mq_lang::RuntimeValues) -> Result<Vec<Section>> {
+    fn parse_sections(&mut self, result: mq_lang::RuntimeValues) -> Result<Vec<Section>> {
         let mut sections = Vec::new();
 
         for value in result.into_iter() {
             if let RuntimeValue::Dict(dict) = value {
-                let section = self.parse_section(&dict)?;
-                sections.push(section);
+                match self.parse_section(&dict) {
+                    Ok(section) => sections.push(section),
+                    Err(e) => match self.collected.as_mut() {
+                        Some(collected) => {
+                            if let Some(RuntimeValue::String(title)) =
+                                dict.get(&Ident::from("title"))
+                            {
+                                collected.failed.push(title.to_string());
+                            }
+                            collected.errors.push(e);
+                        }
+                        None => return Err(e),
+                    },
+                }
             }
         }
 

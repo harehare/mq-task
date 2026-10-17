@@ -4,6 +4,7 @@
 //! It uses mq query language to parse and extract sections from Markdown documents.
 
 pub mod cache;
+pub mod check;
 pub mod condition;
 pub mod config;
 pub mod discover;

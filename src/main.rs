@@ -265,6 +265,25 @@ enum Commands {
         flags: ExecFlags,
     },
 
+    /// Check the task file for mistakes without running anything
+    Check {
+        /// Markdown task file (default: the nearest tasks.md, else README.md)
+        #[arg(short, long, env = "MQ_TASK_FILE")]
+        file: Option<PathBuf>,
+
+        /// Path to configuration file (default: mq-task.toml next to the task file)
+        #[arg(short, long, env = "MQ_TASK_CONFIG")]
+        config: Option<PathBuf>,
+
+        /// Fail on warnings too
+        #[arg(long)]
+        strict: bool,
+
+        /// Print the result as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Print the dependency graph of a task (or of all tasks)
     Graph {
         /// Task to show the dependencies of; all public tasks when omitted
@@ -312,7 +331,10 @@ fn main() -> ExitCode {
     match dispatch(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("{} {}", "Error:".red().bold(), err);
+            // `check` has already printed what is wrong.
+            if !matches!(err, Error::CheckFailed) {
+                eprintln!("{} {}", "Error:".red().bold(), err);
+            }
             ExitCode::from(err.exit_code().clamp(0, 255) as u8)
         }
     }
@@ -376,6 +398,15 @@ fn dispatch(cli: Cli) -> Result<()> {
         }) => {
             let file = locate_task_file(file, &mut [&mut config, &mut dir])?;
             run_tui(file, config, lang, dry_run, env, dir, all, flags)?
+        }
+        Some(Commands::Check {
+            file,
+            mut config,
+            strict,
+            json,
+        }) => {
+            let file = locate_task_file(file, &mut [&mut config])?;
+            check_tasks(&file, config, strict, json)?
         }
         Some(Commands::Graph {
             task,
@@ -638,6 +669,75 @@ fn run_tui(
         },
     )?;
     Ok(())
+}
+
+/// Check the task file and print what is wrong with it.
+fn check_tasks(file: &Path, config: Option<PathBuf>, strict: bool, json: bool) -> Result<()> {
+    let config = load_config(config, file)?;
+    let mut runner = Runner::new(config.clone());
+    let command = Cli::command();
+    let reserved: Vec<String> = command
+        .get_subcommands()
+        .flat_map(|c| {
+            std::iter::once(c.get_name().to_string()).chain(c.get_all_aliases().map(str::to_string))
+        })
+        .chain(std::iter::once("help".to_string()))
+        .collect();
+    let report = mq_task::check::check_file(&mut runner, &config, file, &reserved);
+
+    if json {
+        let value = serde_json::json!({
+            "file": file.display().to_string(),
+            "tasks": report.tasks,
+            "diagnostics": report.diagnostics,
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&value).unwrap_or_default()
+        );
+    } else {
+        print!("{}", format_report(file, &report));
+    }
+    if report.passes(strict) {
+        Ok(())
+    } else {
+        Err(Error::CheckFailed)
+    }
+}
+
+/// The text report of `mq-task check`.
+fn format_report(file: &Path, report: &mq_task::check::Report) -> String {
+    use mq_task::check::Severity;
+    let mut out = String::new();
+    for d in &report.diagnostics {
+        let label = match d.severity {
+            Severity::Error => "error".red().bold(),
+            Severity::Warning => "warning".yellow().bold(),
+        };
+        match &d.task {
+            Some(task) => out.push_str(&format!("{}: task '{}': {}\n", label, task, d.message)),
+            None => out.push_str(&format!("{}: {}\n", label, d.message)),
+        }
+    }
+    let (errors, warnings) = (report.errors(), report.warnings());
+    if report.diagnostics.is_empty() {
+        out.push_str(&format!(
+            "{} {}: {} tasks, no problems found\n",
+            "✔".green().bold(),
+            file.display(),
+            report.tasks
+        ));
+    } else {
+        let plural =
+            |n: usize, word: &str| format!("{} {}{}", n, word, if n == 1 { "" } else { "s" });
+        out.push_str(&format!(
+            "\n{}: {}, {}\n",
+            file.display(),
+            plural(errors, "error"),
+            plural(warnings, "warning")
+        ));
+    }
+    out
 }
 
 /// Print the dependency graph

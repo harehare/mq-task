@@ -1449,12 +1449,31 @@ fn draw_run(f: &mut ratatui::Frame, app: &mut App) {
     );
 }
 
+/// Width of the task-name column in the combined log.
+fn log_name_width(tasks: &[TaskRow]) -> usize {
+    tasks
+        .iter()
+        .map(|t| text_width(&t.name))
+        .max()
+        .unwrap_or(0)
+        .min(MAX_NAME_W)
+}
+
+/// `name` cut or padded with spaces to exactly `width` columns.
+fn pad_name(name: &str, width: usize) -> String {
+    let name = fit(name, width);
+    let pad = width.saturating_sub(text_width(&name));
+    format!("{}{}", name, " ".repeat(pad))
+}
+
 fn log_widget<'a>(run: &'a RunView, area: Rect) -> Paragraph<'a> {
     let height = area.height.saturating_sub(2) as usize;
     let lines = run.visible_log();
     let end = lines.len().saturating_sub(run.scroll.min(lines.len()));
     let start = end.saturating_sub(height);
 
+    // Pad every name to the widest one so the `│` lines up.
+    let name_w = log_name_width(&run.tasks);
     let text: Vec<Line> = lines[start..end]
         .iter()
         .map(|l| {
@@ -1465,7 +1484,7 @@ fn log_widget<'a>(run: &'a RunView, area: Rect) -> Paragraph<'a> {
             if run.all_logs {
                 Line::from(vec![
                     Span::styled(
-                        format!("{} │ ", run.tasks[l.task].name),
+                        format!("{} │ ", pad_name(&run.tasks[l.task].name, name_w)),
                         Style::default().fg(Color::DarkGray),
                     ),
                     Span::styled(l.text.clone(), style),
@@ -1812,6 +1831,21 @@ mod tests {
     #[case("日本語テスト", 7, "日本語…")]
     fn fit_truncates_by_display_width(#[case] s: &str, #[case] max: usize, #[case] expected: &str) {
         assert_eq!(fit(s, max), expected);
+    }
+
+    #[rstest::rstest]
+    #[case("a", 4, "a   ")]
+    #[case("日本", 6, "日本  ")]
+    #[case("build-all", 5, "buil…")]
+    #[case("", 2, "  ")]
+    fn pad_name_fills_to_exact_display_width(
+        #[case] name: &str,
+        #[case] width: usize,
+        #[case] expected: &str,
+    ) {
+        let padded = pad_name(name, width);
+        assert_eq!(padded, expected);
+        assert_eq!(text_width(&padded), width);
     }
 
     #[test]

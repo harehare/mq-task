@@ -7,6 +7,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use colored::Colorize;
+use unicode_width::UnicodeWidthStr;
 
 /// How task output is presented on the terminal (`--output`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -233,7 +234,10 @@ fn tag(name: &str, width: usize) -> String {
         colored::Color::BrightRed,
     ];
     let idx = name.bytes().fold(0usize, |a, b| a.wrapping_add(b as usize)) % palette.len();
-    format!("{:<width$}", name, width = width)
+    // Pad by display width: `{:<width$}` counts chars, so wide (CJK) names
+    // would push the `│` out of line.
+    let pad = width.saturating_sub(name.width());
+    format!("{}{}", name, " ".repeat(pad))
         .color(palette[idx])
         .to_string()
 }
@@ -421,7 +425,7 @@ impl ConsoleObserver {
     pub fn prefixed_for(tasks: &[String]) -> Self {
         Self {
             prefixed: true,
-            width: tasks.iter().map(|t| t.chars().count()).max().unwrap_or(0),
+            width: tasks.iter().map(|t| t.width()).max().unwrap_or(0),
             ..Self::new()
         }
     }
@@ -457,6 +461,7 @@ mod tests {
     #[case("build", 0, "build")]
     #[case("build", 2, "build")]
     #[case("", 3, "   ")]
+    #[case("日本", 6, "日本  ")]
     fn tag_pads_to_the_requested_width(
         #[case] name: &str,
         #[case] width: usize,
@@ -471,9 +476,9 @@ mod tests {
     }
 
     #[test]
-    fn prefixed_for_uses_the_longest_name_in_characters() {
+    fn prefixed_for_uses_the_longest_name_in_display_columns() {
         let o = ConsoleObserver::prefixed_for(&["a".into(), "日本語".into(), "bb".into()]);
-        assert_eq!(o.width, 3);
+        assert_eq!(o.width, 6);
         assert!(o.prefixed);
         assert_eq!(ConsoleObserver::prefixed_for(&[]).width, 0);
     }

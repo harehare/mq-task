@@ -444,7 +444,7 @@ While a task runs, the top pane draws the dependency graph as a left-to-right wo
 
 ```bash
 mq-task completions zsh > ~/.zfunc/_mq-task
-mq-task completions bash > /etc/bash_completion.d/mq-task
+mq-task completions bash > /etc/bash_completion.d/mq-task   # also completes task names
 ```
 
 ### Named parameters

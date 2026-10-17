@@ -680,9 +680,121 @@ fn invalid_meta_is_reported() {
 #[test]
 fn completions_are_generated() {
     let dir = workdir("completions");
-    let out = mq_task(&dir, &["completions", "zsh"]);
-    assert!(out.status.success());
-    assert!(stdout(&out).contains("mq-task"));
+    for shell in ["bash", "zsh", "fish", "elvish", "powershell"] {
+        let out = mq_task(&dir, &["completions", shell]);
+        assert!(out.status.success(), "{shell}: {}", stderr(&out));
+        let script = stdout(&out);
+        assert!(script.contains("mq-task"), "{shell}");
+        // The script asks mq-task itself, so task names can be completed.
+        assert!(script.contains("COMPLETE"), "{shell}: {script}");
+    }
+}
+
+/// What fish would be offered after typing `mq-task <words>`.
+fn fish_candidates(dir: &Path, words: &[&str], file_env: Option<&str>) -> Vec<String> {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mq-task"));
+    cmd.env("COMPLETE", "fish")
+        .arg("--")
+        .arg("mq-task")
+        .args(words)
+        .current_dir(dir);
+    if let Some(file) = file_env {
+        cmd.env("MQ_TASK_FILE", file);
+    }
+    let out = cmd.output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    stdout(&out).lines().map(str::to_string).collect()
+}
+
+const COMPLETION_TASKS: &str = r#"
+## deploy
+
+Ship it to production.
+More detail that is not shown.
+
+```meta
+alias = ["ship"]
+```
+
+```bash
+true
+```
+
+## build
+
+```bash
+true
+```
+
+## _hidden
+
+```bash
+true
+```
+"#;
+
+#[test]
+fn task_names_are_completed_from_the_task_file() {
+    let dir = workdir("complete-tasks");
+    write(&dir, "tasks.md", COMPLETION_TASKS);
+
+    let all = fish_candidates(&dir, &[""], None);
+    assert!(
+        all.contains(&"deploy\tShip it to production.".to_string()),
+        "{all:?}"
+    );
+    assert!(
+        all.contains(&"ship\tShip it to production.".to_string()),
+        "{all:?}"
+    );
+    assert!(all.contains(&"build".to_string()), "{all:?}");
+    assert!(
+        all.iter().any(|c| c.starts_with("run\t")),
+        "subcommands too: {all:?}"
+    );
+    assert!(!all.iter().any(|c| c.contains("_hidden")), "{all:?}");
+
+    assert_eq!(
+        fish_candidates(&dir, &["b"], None),
+        vec!["build".to_string()]
+    );
+    assert_eq!(
+        fish_candidates(&dir, &["d"], None),
+        vec!["deploy\tShip it to production.".to_string()]
+    );
+    assert!(fish_candidates(&dir, &["zzz"], None).is_empty());
+}
+
+#[test]
+fn task_names_are_completed_after_a_subcommand_too() {
+    let dir = workdir("complete-sub");
+    write(&dir, "tasks.md", COMPLETION_TASKS);
+    for sub in ["run", "graph"] {
+        assert_eq!(
+            fish_candidates(&dir, &[sub, "bu"], None),
+            vec!["build".to_string()],
+            "{sub}"
+        );
+    }
+}
+
+#[test]
+fn completion_follows_mq_task_file_and_survives_a_missing_file() {
+    let dir = workdir("complete-env");
+    write(&dir, "other.md", "## from-other\n\n```bash\ntrue\n```\n");
+    assert_eq!(
+        fish_candidates(&dir, &["f"], Some("other.md")),
+        vec!["from-other".to_string()]
+    );
+    // No task file at all: no candidates, and no error.
+    assert!(fish_candidates(&dir, &["f"], None).is_empty());
+
+    write(
+        &dir,
+        "broken.md",
+        "```meta\nnot = [valid\n```\n## zeta\n\n```bash\ntrue\n```\n",
+    );
+    assert!(fish_candidates(&dir, &["z"], Some("broken.md")).is_empty());
 }
 
 #[test]

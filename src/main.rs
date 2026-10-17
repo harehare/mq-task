@@ -1,6 +1,7 @@
 //! mq_task - Markdown-based task runner CLI
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap_complete::{ArgValueCompleter, CompleteEnv, CompletionCandidate};
 use colored::*;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -85,7 +86,7 @@ struct RunRequest {
 #[command(version)]
 struct Cli {
     /// Task name to execute (shorthand for 'run' command)
-    #[arg(value_name = "TASK")]
+    #[arg(value_name = "TASK", add = ArgValueCompleter::new(complete_task))]
     task: Option<String>,
 
     /// Markdown task file (default: the nearest tasks.md, else README.md)
@@ -152,6 +153,7 @@ enum Commands {
     /// Run a task from a markdown file
     Run {
         /// Task name (section title) to execute
+        #[arg(add = ArgValueCompleter::new(complete_task))]
         task: String,
 
         /// Markdown task file (default: the nearest tasks.md, else README.md)
@@ -266,6 +268,7 @@ enum Commands {
     /// Print the dependency graph of a task (or of all tasks)
     Graph {
         /// Task to show the dependencies of; all public tasks when omitted
+        #[arg(add = ArgValueCompleter::new(complete_task))]
         task: Option<String>,
 
         /// Markdown task file (default: the nearest tasks.md, else README.md)
@@ -281,7 +284,7 @@ enum Commands {
         format: GraphFormat,
     },
 
-    /// Generate shell completions
+    /// Print the shell completion script (completes options and task names)
     Completions {
         /// Shell to generate completions for
         shell: clap_complete::Shell,
@@ -300,6 +303,9 @@ fn main() -> ExitCode {
     // that as a hard error and trip wrapper tooling like npm/pnpm.
     // The flag lets long-running loops such as `--watch` shut down.
     let _ = ctrlc::set_handler(|| INTERRUPTED.store(true, Ordering::SeqCst));
+
+    // Answers shell completion requests (`COMPLETE=<shell> mq-task ...`).
+    CompleteEnv::with_factory(Cli::command).complete();
 
     let cli = Cli::parse();
 
@@ -380,10 +386,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             let file = locate_task_file(file, &mut [&mut config])?;
             show_graph(file, config, task, format)?
         }
-        Some(Commands::Completions { shell }) => {
-            let mut cmd = Cli::command();
-            clap_complete::generate(shell, &mut cmd, "mq-task", &mut std::io::stdout());
-        }
+        Some(Commands::Completions { shell }) => print_completion_script(shell)?,
         Some(Commands::Init { output }) => init_config(output)?,
         None => {
             let (mut config, mut dir) = (cli.config, cli.dir);
@@ -444,6 +447,63 @@ fn build_runner(
     runner.set_use_cache(!flags.no_cache);
     runner.set_assume_yes(flags.yes);
     Ok(runner)
+}
+
+/// Task and alias names of the task file, for shell completion. The file is
+/// found the same way as for a run: `MQ_TASK_FILE`, else a search from the
+/// current directory. Anything that goes wrong simply yields no candidates.
+fn complete_task(current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
+    let Some(prefix) = current.to_str() else {
+        return Vec::new();
+    };
+    let Some(file) = std::env::var_os("MQ_TASK_FILE")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .and_then(|dir| mq_task::discover::find_task_file(&dir))
+        })
+    else {
+        return Vec::new();
+    };
+    let Ok(sections) = Runner::with_default_config().list_task_sections(&file) else {
+        return Vec::new();
+    };
+    sections
+        .iter()
+        .filter(|s| !s.private)
+        .flat_map(|s| {
+            let help = s
+                .description
+                .as_deref()
+                .and_then(|d| d.lines().next())
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty());
+            std::iter::once(s.title.as_str())
+                .chain(s.aliases.iter().map(String::as_str))
+                .map(move |name| CompletionCandidate::new(name).help(help.clone().map(Into::into)))
+                .collect::<Vec<_>>()
+        })
+        .filter(|c| c.get_value().to_string_lossy().starts_with(prefix))
+        .collect()
+}
+
+/// Print the registration script that makes the shell ask mq-task for
+/// completions (see [`complete_task`]).
+fn print_completion_script(shell: clap_complete::Shell) -> Result<()> {
+    let name = shell.to_string();
+    let shells = clap_complete::env::Shells::builtins();
+    let completer = shells
+        .completer(&name)
+        .ok_or_else(|| Error::Config(format!("no completions for shell '{}'", name)))?;
+    completer.write_registration(
+        "COMPLETE",
+        "mq-task",
+        "mq-task",
+        "mq-task",
+        &mut std::io::stdout(),
+    )?;
+    Ok(())
 }
 
 /// Add a "did you mean" hint to an unknown-task error, using the task and

@@ -32,6 +32,12 @@ pub enum Error {
     #[error("TOML parse error: {0}")]
     TomlParse(#[from] toml::de::Error),
 
+    /// No task file was given and none could be found
+    #[error(
+        "No task file found: looked for tasks.md and README.md in {0} and its parent directories up to the repository root. Use -f/--file or set MQ_TASK_FILE"
+    )]
+    NoTaskFile(String),
+
     /// Section not found
     #[error("Section not found: {0}")]
     SectionNotFound(String),

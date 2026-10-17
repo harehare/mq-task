@@ -90,14 +90,19 @@ impl Default for Config {
     }
 }
 
-/// Name of the configuration file that is loaded automatically.
+/// Name of the configuration file looked up next to the task file.
 pub const CONFIG_FILE: &str = "mq-task.toml";
 
 impl Config {
-    /// The configuration in `dir` (`mq-task.toml`), or the defaults when
-    /// there is none.
-    pub fn discover<P: AsRef<Path>>(dir: P) -> Result<Self> {
-        let path = dir.as_ref().join(CONFIG_FILE);
+    /// The configuration beside `task_file` (`mq-task.toml`), or the
+    /// defaults when there is none.
+    pub fn discover<P: AsRef<Path>>(task_file: P) -> Result<Self> {
+        let dir = task_file
+            .as_ref()
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        let path = dir.join(CONFIG_FILE);
         if path.is_file() {
             Self::from_file(path)
         } else {
@@ -350,12 +355,13 @@ execution_mode = "arg"
     }
 
     #[test]
-    fn discover_reads_mq_task_toml_from_the_directory() {
+    fn discover_reads_the_file_next_to_the_task_file() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(Config::discover(dir.path()).unwrap().default_task, None);
+        let task_file = dir.path().join("tasks.md");
+        assert_eq!(Config::discover(&task_file).unwrap().default_task, None);
 
         fs::write(dir.path().join(CONFIG_FILE), "default_task = \"build\"\n").unwrap();
-        let config = Config::discover(dir.path()).unwrap();
+        let config = Config::discover(&task_file).unwrap();
         assert_eq!(config.default_task.as_deref(), Some("build"));
         // Runtimes keep their defaults when the file does not mention them.
         assert!(config.has_runtime("bash"));
@@ -365,6 +371,6 @@ execution_mode = "arg"
     fn discover_reports_a_broken_config_file() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join(CONFIG_FILE), "not = [valid").unwrap();
-        assert!(Config::discover(dir.path()).is_err());
+        assert!(Config::discover(dir.path().join("tasks.md")).is_err());
     }
 }

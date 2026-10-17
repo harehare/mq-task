@@ -68,7 +68,7 @@ $ cargo install --git https://github.com/harehare/mq-task.git
 ### Run a task (shorthand)
 
 ```bash
-# Run from README.md (default)
+# Run from tasks.md, else README.md (searched up to the repository root)
 mq-task "Task Name"
 
 # Run from a specific file
@@ -508,7 +508,7 @@ rm -rf tmp/
 ### List available tasks
 
 ```bash
-# List tasks from README.md (default)
+# List tasks from tasks.md, else README.md
 mq-task
 
 # List tasks from a specific file
@@ -525,7 +525,7 @@ mq-task list --all
 mq-task init
 ```
 
-This creates an `mq-task.toml` file with default runtime settings. It is loaded automatically from the current directory.
+This creates an `mq-task.toml` file with default runtime settings. It is loaded automatically from the directory of the task file.
 
 ## Configuration
 

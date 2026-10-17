@@ -522,13 +522,14 @@ mq-task list --file tasks.md
 mq-task list --all
 ```
 
-### Initialize configuration
+### Get started
 
 ```bash
-mq-task init
+mq-task init            # writes a starter tasks.md
+mq-task init --config   # writes mq-task.toml with the default runtimes
 ```
 
-This creates an `mq-task.toml` file with default runtime settings. It is loaded automatically from the directory of the task file.
+`mq-task.toml` is loaded automatically from the directory of the task file.
 
 ## Configuration
 

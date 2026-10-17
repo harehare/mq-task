@@ -313,11 +313,15 @@ enum Commands {
         shell: clap_complete::Shell,
     },
 
-    /// Generate a sample configuration file
+    /// Create a starter task file (or, with --config, a configuration file)
     Init {
-        /// Output path for configuration file
-        #[arg(short, long, default_value = mq_task::config::CONFIG_FILE)]
-        output: PathBuf,
+        /// Where to write it (default: tasks.md, or mq-task.toml with --config)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+
+        /// Write a sample configuration file instead of a task file
+        #[arg(long)]
+        config: bool,
     },
 }
 
@@ -422,7 +426,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             show_graph(file, config, task, format)?
         }
         Some(Commands::Completions { shell }) => print_completion_script(shell)?,
-        Some(Commands::Init { output }) => init_config(output)?,
+        Some(Commands::Init { output, config }) => init(output, config)?,
         None => {
             let (mut config, mut dir) = (cli.config, cli.dir);
             let file = locate_task_file(cli.file, &mut [&mut config, &mut dir])?;
@@ -882,22 +886,42 @@ fn list_tasks(
     Ok(())
 }
 
-/// Initialize configuration file
-fn init_config(output_path: PathBuf) -> Result<()> {
-    if output_path.exists() {
-        return Err(Error::Config(format!(
-            "Configuration file already exists: {}",
-            output_path.display()
-        )));
+/// Write a starter task file, or a configuration file with `--config`.
+/// Existing files are never overwritten.
+fn init(output: Option<PathBuf>, config: bool) -> Result<()> {
+    let (default_name, kind) = if config {
+        (mq_task::config::CONFIG_FILE, "Configuration file")
+    } else {
+        ("tasks.md", "Task file")
+    };
+    let path = output.unwrap_or_else(|| PathBuf::from(default_name));
+
+    let content = if config {
+        toml::to_string_pretty(&Config::default())
+            .map_err(|e| Error::Config(format!("Failed to serialize configuration: {}", e)))?
+    } else {
+        mq_task::template::TASKS_TEMPLATE.to_string()
+    };
+    // `create_new` makes the existence check and the creation one atomic step,
+    // so a file created concurrently is never truncated.
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::AlreadyExists => {
+                Error::Config(format!("{} already exists: {}", kind, path.display()))
+            }
+            _ => Error::from(e),
+        })?;
+    std::io::Write::write_all(&mut file, content.as_bytes())?;
+    println!("{} created: {}", kind, path.display());
+    if !config {
+        println!(
+            "{}",
+            "Try `mq-task` to list the tasks and `mq-task hello` to run one.".dimmed()
+        );
     }
-
-    let config = Config::default();
-    let toml = toml::to_string_pretty(&config)
-        .map_err(|e| Error::Config(format!("Failed to serialize configuration: {}", e)))?;
-
-    std::fs::write(&output_path, toml)?;
-    println!("Configuration file created: {}", output_path.display());
-
     Ok(())
 }
 

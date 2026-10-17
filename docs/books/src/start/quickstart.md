@@ -1,6 +1,6 @@
 # Quick Start
 
-A task is a **heading** followed by one or more **code blocks**. Create `tasks.md` (or put the tasks in your `README.md`):
+A task is a **heading** followed by one or more **code blocks**. `mq-task init` writes a small `tasks.md` to start from; or create one yourself (the tasks can also live in your `README.md`):
 
 ````markdown
 ## hello

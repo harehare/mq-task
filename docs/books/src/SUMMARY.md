@@ -5,6 +5,7 @@
   - [Install](start/install.md)
   - [Quick Start](start/quickstart.md)
   - [Configuration](start/configuration.md)
+  - [Coming from just or Task](start/migrating.md)
 - [Guide](guide/index.md)
   - [Writing Tasks](guide/tasks.md)
   - [Dependencies](guide/dependencies.md)

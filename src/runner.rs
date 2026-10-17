@@ -435,6 +435,11 @@ impl Runner {
         self.exec.use_cache = use_cache;
     }
 
+    /// Show each code block before it runs (`-v`).
+    pub fn set_verbose(&mut self, verbose: bool) {
+        self.exec.verbose = verbose;
+    }
+
     /// Answer yes to every `prompt` without asking (`--yes`).
     pub fn set_assume_yes(&mut self, assume_yes: bool) {
         self.exec.assume_yes = assume_yes;

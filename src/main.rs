@@ -57,6 +57,10 @@ struct ExecFlags {
     #[arg(short = 'y', long)]
     yes: bool,
 
+    /// Show each code block before it runs
+    #[arg(short = 'v', long)]
+    verbose: bool,
+
     /// How task output is shown: interleaved, prefixed or group
     #[arg(long, value_name = "MODE")]
     output: Option<OutputMode>,
@@ -477,6 +481,7 @@ fn build_runner(
     runner.set_working_dir(dir);
     runner.set_use_cache(!flags.no_cache);
     runner.set_assume_yes(flags.yes);
+    runner.set_verbose(flags.verbose);
     Ok(runner)
 }
 
@@ -666,6 +671,7 @@ fn run_tui(
             keep_going: flags.keep_going,
             no_cache: flags.no_cache,
             yes: flags.yes,
+            verbose: flags.verbose,
         },
     )?;
     Ok(())

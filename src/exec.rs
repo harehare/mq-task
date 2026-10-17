@@ -92,6 +92,22 @@ fn source_items(env: &[(String, String)], source: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Print the code about to run (`-v`) on stderr, through the observer so
+/// it follows `--output` and shows in the TUI log.
+fn show_block(lang: &str, code: &str, dir: Option<&Path>, io: &TaskIo) {
+    let place = dir.map_or(String::new(), |d| format!(" in {}", d.display()));
+    io.observer
+        .output(io.name, Stream::Stderr, &format!("▸ {}{}", lang, place));
+    for line in code.trim_end().lines() {
+        let text = if line.trim().is_empty() {
+            String::new()
+        } else {
+            format!("  {}", line)
+        };
+        io.observer.output(io.name, Stream::Stderr, &text);
+    }
+}
+
 /// Name of the env var that exposes a captured task's stdout to dependents.
 pub fn output_var(title: &str) -> String {
     let name: String = title
@@ -128,6 +144,8 @@ pub struct Executor {
     pub cache_scope: String,
     /// Answer yes to `prompt`s without asking.
     pub assume_yes: bool,
+    /// Show each code block before it runs (`-v`).
+    pub verbose: bool,
     /// Tasks already confirmed in this run, so a loop asks only once.
     confirmed: Arc<Mutex<HashSet<String>>>,
 }
@@ -147,6 +165,7 @@ impl Executor {
             use_cache: true,
             cache_scope: String::new(),
             assume_yes: false,
+            verbose: false,
             confirmed: Arc::default(),
         }
     }
@@ -854,6 +873,10 @@ impl Executor {
         let parts: Vec<&str> = runtime.split_whitespace().collect();
         if parts.is_empty() {
             return Err(Error::RuntimeNotFound(lang.to_string()));
+        }
+
+        if self.verbose && !self.dry_run {
+            show_block(lang, code, working_dir, io);
         }
 
         if self.dry_run {

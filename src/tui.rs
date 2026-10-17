@@ -46,6 +46,8 @@ pub struct TuiOptions {
     /// Answer yes to every `prompt`; otherwise tasks with a prompt cannot
     /// run inside the TUI (use `x` to run them in the terminal).
     pub yes: bool,
+    /// Show each code block in the log before it runs.
+    pub verbose: bool,
 }
 
 const MAX_LOG_LINES: usize = 20_000;
@@ -414,6 +416,7 @@ impl App {
                     runner.set_working_dir(opts.dir.clone());
                     runner.set_use_cache(!opts.no_cache);
                     runner.set_assume_yes(opts.yes);
+                    runner.set_verbose(opts.verbose);
                     runner.run_task_with_options(
                         &path,
                         &task,
@@ -642,6 +645,7 @@ pub fn run_tui(markdown_path: PathBuf, config: Config, opts: TuiOptions) -> Resu
         runner.set_working_dir(opts.dir);
         runner.set_use_cache(!opts.no_cache);
         runner.set_assume_yes(opts.yes);
+        runner.set_verbose(opts.verbose);
         runner.run_task_with_options(
             &markdown_path,
             &task,

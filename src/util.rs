@@ -36,6 +36,44 @@ pub fn parse_duration(raw: &str) -> Result<Duration> {
     Duration::try_from_secs_f64(seconds).map_err(|_| invalid())
 }
 
+/// Edit distance between two strings: insertions, deletions, substitutions
+/// and swaps of adjacent characters each cost one.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut rows = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+    for (i, row) in rows.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, cell) in rows[0].iter_mut().enumerate() {
+        *cell = j;
+    }
+    for i in 1..=a.len() {
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            let mut best = (rows[i - 1][j - 1] + cost)
+                .min(rows[i - 1][j] + 1)
+                .min(rows[i][j - 1] + 1);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                best = best.min(rows[i - 2][j - 2] + 1);
+            }
+            rows[i][j] = best;
+        }
+    }
+    rows[a.len()][b.len()]
+}
+
+/// The candidate most like `word`, when it is close enough to be a typo.
+pub fn closest<'a>(word: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    let word = word.to_lowercase();
+    let limit = (word.chars().count() / 3).clamp(1, 3);
+    candidates
+        .into_iter()
+        .map(|c| (edit_distance(&word, &c.to_lowercase()), c))
+        .filter(|(d, c)| *d > 0 && *d <= limit && c.to_lowercase() != word)
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, c)| c)
+}
+
 /// Parse the contents of a `.env` file into `KEY=VALUE` pairs.
 ///
 /// Supports `KEY=value`, an optional `export ` prefix, `#` comments (whole
@@ -202,5 +240,34 @@ mod tests {
         let mut c = Fnv::default();
         c.field(b"hellp");
         assert_ne!(a.finish(), c.finish());
+    }
+
+    #[test]
+    fn edit_distance_counts_single_character_edits() {
+        assert_eq!(edit_distance("", ""), 0);
+        assert_eq!(edit_distance("abc", "abc"), 0);
+        assert_eq!(edit_distance("abc", ""), 3);
+        assert_eq!(edit_distance("kitten", "sitting"), 3);
+        assert_eq!(edit_distance("retires", "retries"), 1, "a swap is one edit");
+        assert_eq!(edit_distance("dri", "dir"), 1);
+        assert_eq!(edit_distance("日本", "日本語"), 1);
+    }
+
+    #[test]
+    fn suggests_only_close_matches() {
+        let keys = ["retries", "timeout", "depends", "alias"];
+        assert_eq!(closest("retires", keys), Some("retries"));
+        assert_eq!(closest("timeuot", keys), Some("timeout"));
+        assert_eq!(
+            closest("DEPENDS", keys),
+            None,
+            "an exact match is not a typo"
+        );
+        assert_eq!(closest("depend", keys), Some("depends"));
+        assert_eq!(closest("zzzzzz", keys), None);
+        // Short words must be nearly identical.
+        assert_eq!(closest("al", keys), None);
+        assert_eq!(closest("alia", keys), Some("alias"));
+        assert_eq!(closest("x", std::iter::empty()), None);
     }
 }

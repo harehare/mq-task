@@ -2541,3 +2541,19 @@ fn a_config_with_unknown_keys_is_rejected() {
     assert!(!out.status.success());
     assert!(stderr(&out).contains("defualt_task"), "{}", stderr(&out));
 }
+
+#[test]
+fn a_typo_in_meta_is_an_error_with_a_suggestion() {
+    let dir = workdir("meta-typo");
+    write(
+        &dir,
+        "tasks.md",
+        "## flaky\n\n```meta\nretires = 3\n```\n\n```bash\necho ran\n```\n",
+    );
+    let out = mq_task(&dir, &["flaky"]);
+    assert!(!out.status.success());
+    assert!(!stdout(&out).contains("ran"), "the task must not run");
+    let err = stderr(&out);
+    assert!(err.contains("unknown key `retires`"), "{}", err);
+    assert!(err.contains("did you mean `retries`?"), "{}", err);
+}

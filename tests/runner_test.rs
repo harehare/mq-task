@@ -269,9 +269,13 @@ fn invalid_meta_is_reported_with_the_task_name(#[case] meta: &str, #[case] needl
 }
 
 #[test]
-fn unknown_meta_keys_are_ignored() {
+fn unknown_meta_keys_are_rejected_so_typos_are_not_silently_ignored() {
     let md = "## t\n\n```meta\nfuture_option = true\n```\n\n```bash\ntrue\n```\n";
-    assert!(runner().extract_sections(md).is_ok());
+    let err = runner().extract_sections(md).unwrap_err();
+    assert!(
+        err.to_string().contains("unknown key `future_option`"),
+        "{err}"
+    );
 }
 
 #[test]

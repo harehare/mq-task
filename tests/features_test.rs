@@ -2950,6 +2950,181 @@ echo "out=$OUT label=$LABEL profile=$MX_PARAM_PROFILE"
 }
 
 #[test]
+fn vars_can_use_params() {
+    let dir = workdir("vars-params");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## build
+
+```meta
+params = ["profile=dev"]
+vars = { DEST = "dist/${MX_PARAM_PROFILE}", WHO = { sh = "echo for-${MX_PARAM_PROFILE}" } }
+```
+
+```bash
+echo "dest=$DEST who=$WHO"
+```
+"#,
+    );
+    let default = mq_task(&dir, &["build"]);
+    assert!(default.status.success(), "{}", stderr(&default));
+    assert!(
+        stdout(&default).contains("dest=dist/dev who=for-dev"),
+        "{}",
+        stdout(&default)
+    );
+    let given = mq_task(&dir, &["build", "--", "profile=prod"]);
+    assert!(
+        stdout(&given).contains("dest=dist/prod who=for-prod"),
+        "{}",
+        stdout(&given)
+    );
+}
+
+#[test]
+fn a_missing_param_fails_before_computed_vars_run() {
+    let dir = workdir("vars-params-missing");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## build
+
+```meta
+params = ["profile"]
+vars = { SIDE = { sh = "touch side-effect" } }
+```
+
+```bash
+echo hi
+```
+"#,
+    );
+    let out = mq_task(&dir, &["build"]);
+    assert!(!out.status.success());
+    assert!(!dir.join("side-effect").exists());
+}
+
+#[test]
+fn vars_can_use_the_items_of_a_for_from_loop() {
+    let dir = workdir("vars-for-from");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## files
+
+```meta
+capture = true
+```
+
+```bash
+printf 'a\nb\n'
+```
+
+## process
+
+```meta
+depends = ["files"]
+for = { from = "files" }
+requires = ["DEST"]
+vars = { DEST = "out/${MX_ITEM}", FIXED = { sh = "echo fixed >> fixed-runs; echo fixed" }, BOTH = "${FIXED}:${DEST}", LABEL = { sh = "echo item-${MX_ITEM}" } }
+```
+
+```bash
+echo "dest=$DEST both=$BOTH label=$LABEL"
+```
+"#,
+    );
+    let out = mq_task(&dir, &["process"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("dest=out/a both=fixed:out/a label=item-a"),
+        "{}",
+        text
+    );
+    assert!(
+        text.contains("dest=out/b both=fixed:out/b label=item-b"),
+        "{}",
+        text
+    );
+    // Only the vars that need the item run per item.
+    let runs = fs::read_to_string(dir.join("fixed-runs")).unwrap();
+    assert_eq!(runs.lines().count(), 1, "{}", runs);
+}
+
+#[test]
+fn a_computed_var_is_not_shared_between_tasks_with_different_env() {
+    let dir = workdir("vars-env-cache");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## a
+
+```meta
+env = ["REGION=eu"]
+vars = { TARGET = { sh = 'printf %s "$REGION"' } }
+```
+
+```bash
+echo "a=$TARGET"
+```
+
+## b
+
+```meta
+env = ["REGION=us"]
+vars = { TARGET = { sh = 'printf %s "$REGION"' } }
+```
+
+```bash
+echo "b=$TARGET"
+```
+
+## all
+
+```meta
+depends = ["a", "b"]
+```
+"#,
+    );
+    let out = mq_task(&dir, &["all"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("a=eu") && text.contains("b=us"), "{}", text);
+}
+
+#[test]
+fn the_timeout_also_stops_a_computed_var() {
+    let dir = workdir("vars-timeout");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## slow
+
+```meta
+timeout = "300ms"
+vars = { VERSION = { sh = "sleep 30" } }
+```
+
+```bash
+echo "version=$VERSION"
+```
+"#,
+    );
+    let start = Instant::now();
+    let out = mq_task(&dir, &["slow"]);
+    assert_eq!(out.status.code(), Some(124), "{}", stderr(&out));
+    assert!(start.elapsed().as_secs_f64() < 5.0);
+    assert!(stderr(&out).contains("timed out"), "{}", stderr(&out));
+}
+
+#[test]
 fn vars_are_visible_to_conditions_requires_and_status() {
     let dir = workdir("vars-checks");
     write(

@@ -34,7 +34,8 @@ vars = { REGISTRY = "ghcr.io/me", IMAGE = "${REGISTRY}/app:${VERSION}", VERSION 
 ```
 
 - Order does not matter; mq-task evaluates what a variable needs first. A loop (`A` needs `B` needs `A`) is an error that names the path.
-- `${NAME}` can also name a `.env` value, an `env` entry, a loop variable (`${MX_ITEM}`), a dependency's output (`${MX_OUTPUT_VERSION}`) or any variable of the process environment.
+- `${NAME}` can also name a `.env` value, an `env` entry, a [parameter](params-env.md) (`${MX_PARAM_PROFILE}`), a loop variable (`${MX_ITEM}`), a dependency's output (`${MX_OUTPUT_VERSION}`) or any variable of the process environment.
+- With `for = { from = "task" }` the item is known only when the task runs, so a variable that uses `${MX_ITEM}` (directly or through another variable) is evaluated once per item. Variables that do not use it are evaluated once.
 - A variable that mentions its own name extends the outer value: `PATH = "${PATH}:/opt/tools"`.
 - In a plain value an unknown name is an error. Inside an `sh` command it is left alone, so the shell can use its own `${i}` or `${x:-default}`.
 - `$${NAME}` writes a literal `${NAME}`. Only the braced form is expanded: `$NAME` and `$(...)` are left to the shell.
@@ -50,7 +51,9 @@ mq-task release --env VERSION=2.0.0   # the `git describe` command is skipped
 
 ## When commands run
 
-- A command runs **once per run**, however many tasks use it, and again on the next run (`--watch` evaluates it afresh each time). Commands that differ in text or directory are separate.
+- A command runs **once per run** for the same text, directory and environment, however many tasks use it, and again on the next run (`--watch` evaluates it afresh each time). Tasks whose environment differs (for example `REGION` set by `env`) each get their own result.
+- Commands run before the task starts, so they run even when the task is then skipped (`if` is false, it is up to date) or its `prompt` is declined. They need the variables to decide that, so keep them free of side effects.
+- A command is stopped by the task's `timeout` and when the run is cancelled, like the task itself.
 - Variables are part of what decides whether a task is up to date: if a computed value changes, a task with `sources` runs again.
 - `if`, `requires` and `status` see the variables.
 - `--dry-run` does not run commands; it shows `<sh: command>` instead.

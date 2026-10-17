@@ -199,16 +199,54 @@ impl Executor {
             .clear();
     }
 
+    /// The `vars` that apply to a section: document-wide ones, then its own.
+    fn var_defs(&self, section: &Section) -> Vec<VarDef> {
+        self.global_vars
+            .iter()
+            .chain(&section.vars)
+            .cloned()
+            .collect()
+    }
+
+    /// Names of the loop variables that exist only per item (`for.from`)
+    /// and of the vars that use them.
+    fn item_dependent(&self, section: &Section) -> Vec<String> {
+        let roots: Vec<String> = loop_item_vars(section, 0, "")
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        let mut names = vars::depending_on(&self.var_defs(section), &roots);
+        names.extend(roots);
+        names
+    }
+
+    /// Names a var cannot replace: set by `env`, `--env` or a bound param.
+    fn fixed_names(&self, section: &Section, params: &[(String, String)]) -> Vec<String> {
+        self.global_env
+            .iter()
+            .chain(&section.env)
+            .chain(params)
+            .chain(&self.env_overrides)
+            .map(|(k, _)| k.clone())
+            .collect()
+    }
+
     /// Env for a task before `--env` overrides, in increasing precedence:
     /// `dotenv` files, `vars`, document and task `env`, then bound params.
-    /// `extra` (loop variables, dependency outputs) can be used by `vars`.
+    /// `extra` (loop variables, dependency outputs) and the params can be
+    /// used by `vars`. With `defer_items`, the vars that need the item of a
+    /// `for.from` loop are left for [`Self::item_env`]. Computed vars are
+    /// stopped by `io`'s cancellation and deadline.
     fn task_env(
         &self,
         section: &Section,
         args: &[String],
         extra: &[(String, String)],
+        io: &TaskIo,
+        defer_items: bool,
     ) -> Result<Vec<(String, String)>> {
         let dotenv = self.dotenv_vars(section)?;
+        let params = Self::bind_params(&section.params, args, &section.title)?;
         let fixed_env: Vec<(String, String)> = self
             .global_env
             .iter()
@@ -216,32 +254,30 @@ impl Executor {
             .cloned()
             .collect();
 
-        let defs: Vec<VarDef> = self
-            .global_vars
-            .iter()
-            .chain(&section.vars)
-            .cloned()
-            .collect();
+        let defs = self.var_defs(section);
         let vars = if defs.is_empty() {
             Vec::new()
         } else {
             let mut base = dotenv.clone();
             base.extend(extra.iter().cloned());
             base.extend(fixed_env.iter().cloned());
+            base.extend(params.iter().cloned());
             base.extend(self.env_overrides.iter().cloned());
-            let fixed: Vec<String> = fixed_env
-                .iter()
-                .chain(&self.env_overrides)
-                .map(|(k, _)| k.clone())
-                .collect();
+            let deferred = if defer_items {
+                self.item_dependent(section)
+            } else {
+                Vec::new()
+            };
             vars::resolve(
                 &defs,
                 &vars::ResolveContext {
                     base: &base,
-                    fixed: &fixed,
+                    fixed: &self.fixed_names(section, &params),
                     dir: self.effective_dir(section),
                     dry_run: self.dry_run,
                     cache: &self.var_cache,
+                    select: vars::Select::Except(&deferred),
+                    io,
                 },
             )?
         };
@@ -249,8 +285,43 @@ impl Executor {
         let mut env = dotenv;
         env.extend(vars);
         env.extend(fixed_env);
-        env.extend(Self::bind_params(&section.params, args, &section.title)?);
+        env.extend(params);
         Ok(env)
+    }
+
+    /// The vars [`Self::task_env`] left out because they need the item of a
+    /// `for.from` loop, evaluated for one item. `task_env` is the env the
+    /// task already has and `item` the loop variables of that item.
+    fn item_env(
+        &self,
+        section: &Section,
+        task_env: &[(String, String)],
+        item: &[(String, String)],
+        io: &TaskIo,
+    ) -> Result<Vec<(String, String)>> {
+        let defs = self.var_defs(section);
+        let deferred = vars::depending_on(
+            &defs,
+            &item.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>(),
+        );
+        if deferred.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut base = task_env.to_vec();
+        base.extend(item.iter().cloned());
+        base.extend(self.env_overrides.iter().cloned());
+        vars::resolve(
+            &defs,
+            &vars::ResolveContext {
+                base: &base,
+                fixed: &self.fixed_names(section, &[]),
+                dir: self.effective_dir(section),
+                dry_run: self.dry_run,
+                cache: &self.var_cache,
+                select: vars::Select::Only(&deferred),
+                io,
+            },
+        )
     }
 
     /// Bind declared params to CLI args: `name=value` binds by name, the
@@ -338,7 +409,7 @@ impl Executor {
             cancel: &cancel,
             deadline: None,
         };
-        let env = self.task_env(section, args, &[])?;
+        let env = self.task_env(section, args, &[], &io, false)?;
         self.run_blocks(section, args, lang_filter, &env, &io)?;
         Ok(())
     }
@@ -405,7 +476,20 @@ impl Executor {
             e
         };
 
-        let mut task_env = self.task_env(section, p.args, &p.extra_env).map_err(fail)?;
+        // Computed vars run before the task proper, under its timeout.
+        let var_io = TaskIo {
+            deadline: section.timeout.map(|t| Instant::now() + t),
+            ..*io
+        };
+        let mut task_env = self
+            .task_env(
+                section,
+                p.args,
+                &p.extra_env,
+                &var_io,
+                p.loop_source.is_some(),
+            )
+            .map_err(fail)?;
         task_env.extend(p.extra_env.iter().cloned());
         let dir = self.effective_dir(section);
 
@@ -428,13 +512,11 @@ impl Executor {
         full_env.extend(self.env_overrides.iter().cloned());
 
         if !self.dry_run {
-            // Item variables of a `for.from` loop only exist once its items
-            // are resolved; `run_items` checks those per item.
+            // Item variables of a `for.from` loop, and the vars that use them,
+            // only exist once its items are resolved; `run_items` checks
+            // those per item.
             let per_item: Vec<String> = if p.loop_source.is_some() {
-                loop_item_vars(section, 0, "")
-                    .into_iter()
-                    .map(|(k, _)| k)
-                    .collect()
+                self.item_dependent(section)
             } else {
                 Vec::new()
             };
@@ -644,7 +726,13 @@ impl Executor {
             io.observer
                 .output(p.label, Stream::Stdout, &format!("↳ {}[{}]", p.label, item));
             let mut env = task_env.to_vec();
-            env.extend(loop_item_vars(p.section, index, item));
+            let item_vars = loop_item_vars(p.section, index, item);
+            env.extend(item_vars.iter().cloned());
+            let var_io = TaskIo {
+                deadline: p.section.timeout.map(|t| Instant::now() + t),
+                ..*io
+            };
+            env.extend(self.item_env(p.section, task_env, &item_vars, &var_io)?);
             if !self.dry_run {
                 let missing =
                     self.missing_requires(p.section, &self.prepare_env_vars(p.args, &env), &[]);
@@ -710,7 +798,7 @@ impl Executor {
         let mut first: Option<Error> = None;
         for d in p.defers {
             let result = self
-                .task_env(d.section, &d.args, &p.extra_env)
+                .task_env(d.section, &d.args, &p.extra_env, &io, false)
                 .and_then(|mut env| {
                     env.extend(p.extra_env.iter().cloned());
                     self.run_blocks(d.section, &d.args, None, &env, &io)
@@ -951,7 +1039,11 @@ fn kill_task(child: &mut std::process::Child, own_group: bool) {
 }
 
 /// Wait for `child`, killing it on cancellation or deadline expiry.
-fn wait_for(child: &mut std::process::Child, io: &TaskIo, own_group: bool) -> Result<ExitStatus> {
+pub(crate) fn wait_for(
+    child: &mut std::process::Child,
+    io: &TaskIo,
+    own_group: bool,
+) -> Result<ExitStatus> {
     let mut nap = Duration::from_millis(1);
     loop {
         match child.try_wait() {

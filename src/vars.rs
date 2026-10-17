@@ -8,14 +8,18 @@
 //! (or an `sh` command) refers to another variable; `$${` writes a literal
 //! `${`. Shell commands run once per run for the same command and directory.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex, TryLockError};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::exec::{TaskIo, wait_for};
 
 /// The value of a variable.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -33,9 +37,25 @@ pub struct VarDef {
     pub value: VarValue,
 }
 
-/// Results of shell variables for this run, keyed by directory and command,
-/// so a command used by several tasks runs once.
-pub type ShellCache = Mutex<HashMap<(Option<PathBuf>, String), String>>;
+/// What decides a shell variable's value: where it runs, the command and the
+/// environment it sees (sorted, the last definition of a name winning).
+type ShellKey = (Option<PathBuf>, String, Vec<(String, String)>);
+
+/// Results of shell variables for this run, so a command used by several
+/// tasks with the same environment runs once. Each entry is its own lock so
+/// that a slow command does not hold up unrelated ones; it stays empty until
+/// the command succeeds.
+pub type ShellCache = Mutex<HashMap<ShellKey, Arc<Mutex<Option<String>>>>>;
+
+/// Which of the declared vars `resolve` evaluates, by name.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Select<'a> {
+    All,
+    /// Every var except these.
+    Except(&'a [String]),
+    /// Only these; the rest are taken from `ResolveContext::base`.
+    Only(&'a [String]),
+}
 
 fn is_ident(s: &str) -> bool {
     let mut chars = s.chars();
@@ -137,12 +157,23 @@ fn interpolate(
     Ok(out.replace("$${", "${"))
 }
 
+fn read_all<R: Read>(pipe: Option<&mut R>) -> Vec<u8> {
+    let mut buf = Vec::new();
+    if let Some(pipe) = pipe {
+        let _ = pipe.read_to_end(&mut buf);
+    }
+    buf
+}
+
 /// Run `command` with `sh -c` (`cmd /C` on Windows) and return its output.
+/// Like a task's own process it is stopped on cancellation and at `io`'s
+/// deadline.
 fn run_shell(
     name: &str,
     command: &str,
-    env: &[(String, String)],
+    env: &BTreeMap<String, String>,
     dir: Option<&Path>,
+    io: &TaskIo,
 ) -> Result<String> {
     #[cfg(unix)]
     let mut cmd = {
@@ -156,28 +187,49 @@ fn run_shell(
         c.arg("/C").arg(command);
         c
     };
-    cmd.envs(env.iter().map(|(k, v)| (k, v)))
+    cmd.envs(env)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Its own process group, so stopping it also stops what it started.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     if let Some(dir) = dir {
         cmd.current_dir(dir);
     }
-    let out = cmd.output().map_err(|e| {
+    let failed = |e: std::io::Error| {
         Error::Variable(
             name.to_string(),
             format!("could not run `{}`: {}", command, e),
         )
-    })?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
+    };
+    let mut child = cmd.spawn().map_err(failed)?;
+    let mut stdout = child.stdout.take();
+    let mut stderr = child.stderr.take();
+
+    let (status, out, err) = std::thread::scope(|s| {
+        let out = s.spawn(|| read_all(stdout.as_mut()));
+        let err = s.spawn(|| read_all(stderr.as_mut()));
+        let status = wait_for(&mut child, io, cfg!(unix));
+        (
+            status,
+            out.join().unwrap_or_default(),
+            err.join().unwrap_or_default(),
+        )
+    });
+    let status = status?;
+    if !status.success() {
+        let stderr = String::from_utf8_lossy(&err);
         let detail = stderr.lines().next().unwrap_or("").trim();
         return Err(Error::Variable(
             name.to_string(),
             format!(
                 "`{}` exited with {}{}{}",
                 command,
-                out.status
+                status
                     .code()
                     .map_or("a signal".to_string(), |c| format!("code {}", c)),
                 if detail.is_empty() { "" } else { ": " },
@@ -185,7 +237,7 @@ fn run_shell(
             ),
         ));
     }
-    Ok(String::from_utf8_lossy(&out.stdout)
+    Ok(String::from_utf8_lossy(&out)
         .trim_end_matches(['\n', '\r'])
         .to_string())
 }
@@ -204,6 +256,58 @@ pub struct ResolveContext<'a> {
     /// Do not run commands; show them instead.
     pub dry_run: bool,
     pub cache: &'a ShellCache,
+    /// Which vars to evaluate.
+    pub select: Select<'a>,
+    /// Cancellation and deadline for the commands, as for the task itself.
+    pub io: &'a TaskIo<'a>,
+}
+
+/// Names of the vars in `defs` that use any of `roots` (such as loop
+/// variables), directly or through other vars, in declaration order.
+pub fn depending_on(defs: &[VarDef], roots: &[String]) -> Vec<String> {
+    let mut found: Vec<String> = Vec::new();
+    loop {
+        let before = found.len();
+        for def in defs {
+            if found.contains(&def.name) {
+                continue;
+            }
+            let text = match &def.value {
+                VarValue::Literal(s) | VarValue::Shell(s) => s,
+            };
+            if references(text)
+                .iter()
+                .any(|r| *r != def.name && (roots.contains(r) || found.contains(r)))
+            {
+                found.push(def.name.clone());
+            }
+        }
+        if found.len() == before {
+            return found;
+        }
+    }
+}
+
+/// Wait for the entry of a command another task is running, giving up when
+/// the run is cancelled or the deadline passes.
+fn lock_entry<'a>(
+    entry: &'a Mutex<Option<String>>,
+    io: &TaskIo,
+) -> Result<std::sync::MutexGuard<'a, Option<String>>> {
+    loop {
+        match entry.try_lock() {
+            Ok(guard) => return Ok(guard),
+            Err(TryLockError::Poisoned(e)) => return Ok(e.into_inner()),
+            Err(TryLockError::WouldBlock) => {}
+        }
+        if io.cancel.load(Ordering::SeqCst) {
+            return Err(Error::Cancelled);
+        }
+        if io.deadline.is_some_and(|d| Instant::now() >= d) {
+            return Err(Error::Timeout(io.name.to_string()));
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 /// Evaluate `defs` (later definitions of a name replace earlier ones) and
@@ -216,6 +320,11 @@ pub fn resolve(defs: &[VarDef], ctx: &ResolveContext) -> Result<Vec<(String, Str
         by_name.push(def);
     }
     by_name.retain(|d| !ctx.fixed.contains(&d.name));
+    by_name.retain(|d| match ctx.select {
+        Select::All => true,
+        Select::Except(names) => !names.contains(&d.name),
+        Select::Only(names) => names.contains(&d.name),
+    });
     let index: HashMap<&str, usize> = by_name
         .iter()
         .enumerate()
@@ -303,15 +412,23 @@ pub fn resolve(defs: &[VarDef], ctx: &ResolveContext) -> Result<Vec<(String, Str
                 if ctx.dry_run {
                     format!("<sh: {}>", cmd)
                 } else {
-                    let key = (ctx.dir.map(Path::to_path_buf), cmd.clone());
-                    let mut cache = ctx.cache.lock().unwrap_or_else(|e| e.into_inner());
-                    match cache.get(&key) {
+                    let env: BTreeMap<String, String> =
+                        ctx.base.iter().chain(resolved.iter()).cloned().collect();
+                    let key = (
+                        ctx.dir.map(Path::to_path_buf),
+                        cmd.clone(),
+                        env.clone().into_iter().collect(),
+                    );
+                    let entry = {
+                        let mut cache = ctx.cache.lock().unwrap_or_else(|e| e.into_inner());
+                        cache.entry(key).or_default().clone()
+                    };
+                    let mut slot = lock_entry(&entry, ctx.io)?;
+                    match &*slot {
                         Some(hit) => hit.clone(),
                         None => {
-                            let mut env: Vec<(String, String)> = ctx.base.to_vec();
-                            env.extend(resolved.iter().cloned());
-                            let out = run_shell(&def.name, &cmd, &env, ctx.dir)?;
-                            cache.insert(key, out.clone());
+                            let out = run_shell(&def.name, &cmd, &env, ctx.dir, ctx.io)?;
+                            *slot = Some(out.clone());
                             out
                         }
                     }
@@ -331,6 +448,19 @@ pub fn resolve(defs: &[VarDef], ctx: &ResolveContext) -> Result<Vec<(String, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::events::NullObserver;
+    use std::sync::atomic::AtomicBool;
+
+    fn io(cancel: &AtomicBool, deadline: Option<Instant>) -> TaskIo<'_> {
+        TaskIo {
+            name: "t",
+            observer: &NullObserver,
+            piped: false,
+            capture: false,
+            cancel,
+            deadline,
+        }
+    }
 
     fn lit(name: &str, value: &str) -> VarDef {
         VarDef {
@@ -359,6 +489,7 @@ mod tests {
         fixed: &[&str],
     ) -> Result<Vec<(String, String)>> {
         let cache = ShellCache::default();
+        let cancel = AtomicBool::new(false);
         resolve(
             defs,
             &ResolveContext {
@@ -367,6 +498,8 @@ mod tests {
                 dir: None,
                 dry_run: false,
                 cache: &cache,
+                select: Select::All,
+                io: &io(&cancel, None),
             },
         )
     }
@@ -531,6 +664,8 @@ mod tests {
                 dir: None,
                 dry_run: false,
                 cache: &cache,
+                select: Select::All,
+                io: &io(&AtomicBool::new(false), None),
             },
         )
         .unwrap();
@@ -592,26 +727,29 @@ mod tests {
         let log = dir.path().join("runs");
         let cmd = format!("echo x >> {}; echo value", log.display());
         let cache = ShellCache::default();
-        let ctx = |cache: &ShellCache| {
+        // Two tasks declaring the same command.
+        let ctx = |cache: &ShellCache, name: &str| {
             resolve(
-                &[sh("A", &cmd), sh("B", &cmd)],
+                &[sh(name, &cmd)],
                 &ResolveContext {
                     base: &[],
                     fixed: &[],
                     dir: None,
                     dry_run: false,
                     cache,
+                    select: Select::All,
+                    io: &io(&AtomicBool::new(false), None),
                 },
             )
             .unwrap()
         };
-        assert_eq!(value(&ctx(&cache), "A"), "value");
-        assert_eq!(value(&ctx(&cache), "B"), "value");
+        assert_eq!(value(&ctx(&cache, "A"), "A"), "value");
+        assert_eq!(value(&ctx(&cache, "B"), "B"), "value");
         let runs = std::fs::read_to_string(&log).unwrap().lines().count();
         assert_eq!(runs, 1, "cached after the first run");
 
         // A fresh cache (the next run) evaluates again.
-        ctx(&ShellCache::default());
+        ctx(&ShellCache::default(), "A");
         assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 2);
     }
 
@@ -628,6 +766,8 @@ mod tests {
                 dir: Some(dir.path()),
                 dry_run: false,
                 cache: &cache,
+                select: Select::All,
+                io: &io(&AtomicBool::new(false), None),
             },
         )
         .unwrap();
@@ -649,9 +789,144 @@ mod tests {
                 dir: None,
                 dry_run: true,
                 cache: &cache,
+                select: Select::All,
+                io: &io(&AtomicBool::new(false), None),
             },
         )
         .unwrap();
         assert_eq!(value(&vars, "V"), "<sh: exit 9 # app>");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_same_command_runs_again_for_a_different_environment() {
+        let cmd = "printf %s \"$REGION\"";
+        let cache = ShellCache::default();
+        let cancel = AtomicBool::new(false);
+        let region = |value: &str| {
+            let vars = resolve(
+                &[sh("TARGET", cmd)],
+                &ResolveContext {
+                    base: &pairs(&[("REGION", value)]),
+                    fixed: &[],
+                    dir: None,
+                    dry_run: false,
+                    cache: &cache,
+                    select: Select::All,
+                    io: &io(&cancel, None),
+                },
+            )
+            .unwrap();
+            value_of(&vars, "TARGET")
+        };
+        assert_eq!(region("eu"), "eu");
+        assert_eq!(region("us"), "us");
+        assert_eq!(region("eu"), "eu");
+        assert_eq!(cache.lock().unwrap().len(), 2);
+    }
+
+    fn value_of(vars: &[(String, String)], name: &str) -> String {
+        value(vars, name)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hanging_command_is_stopped_at_the_deadline() {
+        let cache = ShellCache::default();
+        let cancel = AtomicBool::new(false);
+        let started = Instant::now();
+        let err = resolve(
+            &[sh("V", "sleep 30")],
+            &ResolveContext {
+                base: &[],
+                fixed: &[],
+                dir: None,
+                dry_run: false,
+                cache: &cache,
+                select: Select::All,
+                io: &io(&cancel, Some(Instant::now() + Duration::from_millis(200))),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::Timeout(_)), "{err}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hanging_command_is_stopped_by_cancellation() {
+        let cache = ShellCache::default();
+        let cancel = AtomicBool::new(false);
+        let err = std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(Duration::from_millis(200));
+                cancel.store(true, Ordering::SeqCst);
+            });
+            resolve(
+                &[sh("V", "sleep 30")],
+                &ResolveContext {
+                    base: &[],
+                    fixed: &[],
+                    dir: None,
+                    dry_run: false,
+                    cache: &cache,
+                    select: Select::All,
+                    io: &io(&cancel, None),
+                },
+            )
+            .unwrap_err()
+        });
+        assert!(matches!(err, Error::Cancelled), "{err}");
+    }
+
+    #[test]
+    fn depending_on_follows_references_through_other_vars() {
+        let defs = [
+            lit("OUT", "out/${MX_ITEM}"),
+            lit("DEEP", "${OUT}/x"),
+            lit("PLAIN", "p"),
+            lit("SELF", "${SELF}:${PLAIN}"),
+        ];
+        assert_eq!(
+            depending_on(&defs, &["MX_ITEM".to_string()]),
+            vec!["OUT", "DEEP"]
+        );
+        assert!(depending_on(&defs, &["NOPE".to_string()]).is_empty());
+    }
+
+    #[test]
+    fn select_limits_which_vars_are_evaluated() {
+        let defs = [lit("A", "a"), lit("B", "${A}-${MX_ITEM}")];
+        let cache = ShellCache::default();
+        let cancel = AtomicBool::new(false);
+        let b = ["B".to_string()];
+        let only = resolve(
+            &defs,
+            &ResolveContext {
+                base: &pairs(&[("A", "from-base"), ("MX_ITEM", "x")]),
+                fixed: &[],
+                dir: None,
+                dry_run: false,
+                cache: &cache,
+                select: Select::Only(&b),
+                io: &io(&cancel, None),
+            },
+        )
+        .unwrap();
+        assert_eq!(only, pairs(&[("B", "from-base-x")]));
+        let except = resolve(
+            &defs,
+            &ResolveContext {
+                base: &[],
+                fixed: &[],
+                dir: None,
+                dry_run: false,
+                cache: &cache,
+                select: Select::Except(&b),
+                io: &io(&cancel, None),
+            },
+        )
+        .unwrap();
+        assert_eq!(except, pairs(&[("A", "a")]));
     }
 }

@@ -452,6 +452,32 @@ fn build_runner(
     Ok(runner)
 }
 
+/// Add a "did you mean" hint to an unknown-task error, using the task and
+/// alias names of `file`.
+fn with_task_hint(err: Error, runner: &mut Runner, file: &Path) -> Error {
+    let Error::SectionNotFound(name) = &err else {
+        return err;
+    };
+    let Ok(sections) = runner.list_task_sections(file) else {
+        return err;
+    };
+    let names = || {
+        sections.iter().flat_map(|s| {
+            std::iter::once(s.title.as_str()).chain(s.aliases.iter().map(String::as_str))
+        })
+    };
+    // A dependency call such as `deploi env=prod` is looked up by its first word.
+    let first_word = name.split_whitespace().next().unwrap_or(name);
+    match mq_task::util::closest(name, names())
+        .or_else(|| mq_task::util::closest(first_word, names()))
+    {
+        Some(suggestion) => {
+            Error::SectionNotFound(format!("{} (did you mean `{}`?)", name, suggestion))
+        }
+        None => err,
+    }
+}
+
 /// Run a specific task, once or (with `--watch`) whenever its inputs change
 fn run_task(req: RunRequest) -> Result<()> {
     let mut runner = build_runner(
@@ -466,7 +492,10 @@ fn run_task(req: RunRequest) -> Result<()> {
     )?;
 
     if req.summary {
-        print!("{}", runner.task_summary(&req.file, &req.task)?);
+        let text = runner
+            .task_summary(&req.file, &req.task)
+            .map_err(|e| with_task_hint(e, &mut runner, &req.file))?;
+        print!("{}", text);
         return Ok(());
     }
 
@@ -482,12 +511,15 @@ fn run_task(req: RunRequest) -> Result<()> {
     };
 
     if !req.watch {
-        return runner.run_task_with_options(&req.file, &req.task, options());
+        return runner
+            .run_task_with_options(&req.file, &req.task, options())
+            .map_err(|e| with_task_hint(e, &mut runner, &req.file));
     }
     let interval = watch_interval(&req.interval)?;
 
     loop {
         if let Err(err) = runner.run_task_with_options(&req.file, &req.task, options()) {
+            let err = with_task_hint(err, &mut runner, &req.file);
             eprintln!("{} {}", "Error:".red().bold(), err);
         }
         if INTERRUPTED.load(Ordering::SeqCst) {

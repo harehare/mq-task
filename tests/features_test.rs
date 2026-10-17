@@ -2557,3 +2557,69 @@ fn a_typo_in_meta_is_an_error_with_a_suggestion() {
     assert!(err.contains("unknown key `retires`"), "{}", err);
     assert!(err.contains("did you mean `retries`?"), "{}", err);
 }
+
+#[test]
+fn an_unknown_task_suggests_a_similar_one() {
+    let dir = workdir("task-hint");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## deploy
+
+```meta
+alias = ["ship"]
+```
+
+```bash
+echo deploying
+```
+
+## ci
+
+```meta
+depends = ["deploi staging"]
+```
+
+```bash
+echo ci
+```
+"#,
+    );
+    let out = mq_task(&dir, &["deploi"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("did you mean `deploy`?"),
+        "{}",
+        stderr(&out)
+    );
+
+    // Aliases are candidates too.
+    let out = mq_task(&dir, &["shi"]);
+    assert!(
+        stderr(&out).contains("did you mean `ship`?"),
+        "{}",
+        stderr(&out)
+    );
+
+    // A mistyped dependency in `depends` is reported with the same hint.
+    let out = mq_task(&dir, &["ci"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("did you mean `deploy`?"),
+        "{}",
+        stderr(&out)
+    );
+
+    // Nothing close: no hint.
+    let out = mq_task(&dir, &["zzzzzz"]);
+    assert!(stderr(&out).contains("Section not found: zzzzzz"));
+    assert!(!stderr(&out).contains("did you mean"));
+
+    let out = mq_task(&dir, &["deploi", "--summary"]);
+    assert!(
+        stderr(&out).contains("did you mean `deploy`?"),
+        "{}",
+        stderr(&out)
+    );
+}

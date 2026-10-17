@@ -38,6 +38,7 @@ mq-task ci
 - Skip up-to-date tasks (`sources` / `outputs` / `status`) and `--watch` mode
 - Dependency graph (text and Mermaid) and shell completions
 - Finds `tasks.md` (or `README.md`) from any subdirectory; completes task names; suggests fixes for typos in `meta` and task names
+- `mq-task check` validates the task file (unknown keys, missing dependencies, cycles, missing runtimes)
 - Scripting and CI options: `--summary`, `list --json`, `--output group`, `--yes`
 - Interactive TUI with search, argument prompts and live progress
 

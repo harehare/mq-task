@@ -11,6 +11,7 @@ mq-task [OPTIONS] [TASK] [-- <ARGS>...] [COMMAND]
 | `run` | Run a task |
 | `list` | List tasks (`-a/--all` includes private; `--json` prints `name`, `description`, `aliases`, `depends`, `params`, `private` and `languages` as JSON) |
 | `tui` | Select and run a task interactively |
+| `check` | Look for mistakes without running anything (`--strict`, `--json`; see [Checking a Task File](../guide/check.md)) |
 | `graph [TASK]` | Print the dependency graph (`--format text\|mermaid`) |
 | `completions <SHELL>` | Generate shell completions |
 | `init` | Write a sample `mq-task.toml` |

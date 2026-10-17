@@ -3,8 +3,6 @@
 //! the TUI's progress/log panes.
 
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -98,65 +96,48 @@ pub struct ConsoleObserver {
     width: usize,
     /// Hold output until the task finishes (`--output group`).
     group: bool,
-    held: Mutex<HashMap<String, Spool>>,
+    held: Mutex<HashMap<String, Held>>,
+    /// Bytes a task may hold before its output is streamed instead.
+    group_limit: u64,
 }
 
-/// Output of one task held for `--output group`. Lines go to an anonymous
-/// temporary file, so a verbose task costs disk rather than memory, and the
-/// file disappears when the spool is dropped, however the task ends.
-struct Spool {
-    writer: BufWriter<File>,
+/// Most memory a task holds back for `--output group` (64 MiB) before it
+/// streams instead.
+const GROUP_LIMIT: u64 = 64 * 1024 * 1024;
+
+/// What `--output group` holds for one task.
+enum Held {
+    /// Output waiting for the task to finish.
+    Lines(Lines),
+    /// The limit was reached: what was held has been printed and the rest of
+    /// the output is printed as it arrives.
+    Streaming,
 }
 
-impl Spool {
-    fn new() -> io::Result<Self> {
-        Ok(Self {
-            writer: BufWriter::new(tempfile::tempfile()?),
-        })
-    }
+/// Lines held for one task, with a running estimate of their memory use.
+#[derive(Default)]
+struct Lines {
+    lines: Vec<(Stream, String)>,
+    bytes: u64,
+}
 
-    /// Append one line as a stream tag, a length and the bytes.
-    fn push(&mut self, stream: Stream, line: &str) -> io::Result<()> {
-        let tag = match stream {
-            Stream::Stdout => 0u8,
-            Stream::Stderr => 1u8,
-        };
-        let len = u32::try_from(line.len()).map_err(io::Error::other)?;
-        self.writer.write_all(&[tag])?;
-        self.writer.write_all(&len.to_le_bytes())?;
-        self.writer.write_all(line.as_bytes())
-    }
+impl Lines {
+    /// Estimated per-line cost besides the text (tuple and `String` header).
+    const OVERHEAD: u64 = 32;
 
-    /// Hand every held line to `each`, in order.
-    fn drain(self, mut each: impl FnMut(Stream, &str)) -> io::Result<()> {
-        let mut file = self.writer.into_inner().map_err(|e| e.into_error())?;
-        file.seek(SeekFrom::Start(0))?;
-        let mut reader = BufReader::new(file);
-        let mut head = [0u8; 5];
-        loop {
-            match reader.read_exact(&mut head) {
-                Ok(()) => {}
-                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
-                Err(e) => return Err(e),
-            }
-            let mut buf =
-                vec![0u8; u32::from_le_bytes([head[1], head[2], head[3], head[4]]) as usize];
-            reader.read_exact(&mut buf)?;
-            let stream = if head[0] == 0 {
-                Stream::Stdout
-            } else {
-                Stream::Stderr
-            };
-            each(stream, &String::from_utf8_lossy(&buf));
-        }
+    fn push(&mut self, stream: Stream, line: &str) {
+        self.bytes += Self::OVERHEAD + line.len() as u64;
+        self.lines.push((stream, line.to_string()));
     }
 
     /// Print everything held, in order.
-    fn replay(self) -> io::Result<()> {
-        self.drain(|stream, line| match stream {
-            Stream::Stdout => println!("{}", line),
-            Stream::Stderr => eprintln!("{}", line),
-        })
+    fn replay(self) {
+        for (stream, line) in self.lines {
+            match stream {
+                Stream::Stdout => println!("{}", line),
+                Stream::Stderr => eprintln!("{}", line),
+            }
+        }
     }
 }
 
@@ -167,6 +148,7 @@ impl ConsoleObserver {
             width: 0,
             group: false,
             held: Mutex::default(),
+            group_limit: GROUP_LIMIT,
         }
     }
 
@@ -185,13 +167,46 @@ impl ConsoleObserver {
         }
     }
 
-    /// Print the held output of `task` under its name.
-    fn flush(&self, task: &str, held: &mut HashMap<String, Spool>) {
+    /// Print the held output of `task` under its name. A task that already
+    /// streamed has had its header printed.
+    fn flush(&self, task: &str, held: &mut HashMap<String, Held>) {
+        let lines = match held.remove(task) {
+            Some(Held::Streaming) => return,
+            Some(Held::Lines(lines)) => Some(lines),
+            None => None,
+        };
         println!("{} {}", "▶".cyan().bold(), task.bold());
-        if let Some(spool) = held.remove(task)
-            && let Err(e) = spool.replay()
-        {
-            eprintln!("{}", format!("{}: output lost ({})", task, e).yellow());
+        if let Some(lines) = lines {
+            lines.replay();
+        }
+    }
+
+    /// One line of output under `--output group`.
+    fn output_grouped(&self, task: &str, stream: Stream, line: &str) {
+        let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
+        if !matches!(held.get(task), Some(Held::Streaming)) {
+            let entry = held
+                .entry(task.to_string())
+                .or_insert_with(|| Held::Lines(Lines::default()));
+            if let Held::Lines(lines) = entry
+                && lines.bytes < self.group_limit
+            {
+                lines.push(stream, line);
+                return;
+            }
+            // Over the limit: show what is held and print the rest as it
+            // comes rather than keep growing.
+            self.flush(task, &mut held);
+            println!(
+                "{}",
+                format!("· {}: not grouped any more, streaming the rest", task).dimmed()
+            );
+            held.insert(task.to_string(), Held::Streaming);
+        }
+        let line = format!("{} {} {}", tag(task, 0), "│".dimmed(), line);
+        match stream {
+            Stream::Stdout => println!("{}", line),
+            Stream::Stderr => eprintln!("{}", line),
         }
     }
 }
@@ -199,22 +214,6 @@ impl ConsoleObserver {
 impl Default for ConsoleObserver {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// Hold `line` in `task`'s spool, creating the spool on its first line.
-fn spool_line(
-    held: &mut HashMap<String, Spool>,
-    task: &str,
-    stream: Stream,
-    line: &str,
-) -> io::Result<()> {
-    if !held.contains_key(task) {
-        held.insert(task.to_string(), Spool::new()?);
-    }
-    match held.get_mut(task) {
-        Some(spool) => spool.push(stream, line),
-        None => Err(io::Error::other("spool missing")),
     }
 }
 
@@ -242,16 +241,7 @@ fn tag(name: &str, width: usize) -> String {
 impl RunObserver for ConsoleObserver {
     fn output(&self, task: &str, stream: Stream, line: &str) {
         if self.group {
-            let mut held = self.held.lock().unwrap_or_else(|e| e.into_inner());
-            if spool_line(&mut held, task, stream, line).is_ok() {
-                return;
-            }
-            // The spool is unusable (e.g. disk full): print the line now
-            // rather than lose it.
-            match stream {
-                Stream::Stdout => println!("{}", line),
-                Stream::Stderr => eprintln!("{}", line),
-            }
+            self.output_grouped(task, stream, line);
             return;
         }
         let line = if self.prefixed {
@@ -501,6 +491,13 @@ mod tests {
         assert!("loud".parse::<OutputMode>().unwrap_err().contains("loud"));
     }
 
+    fn lines(held: Held) -> Vec<(Stream, String)> {
+        match held {
+            Held::Lines(l) => l.lines,
+            Held::Streaming => panic!("expected held output"),
+        }
+    }
+
     #[test]
     fn grouped_output_is_held_until_the_task_finishes() {
         let o = ConsoleObserver::grouped();
@@ -508,7 +505,7 @@ mod tests {
         o.output("t", Stream::Stderr, "err");
         o.output("u", Stream::Stdout, "other");
         assert_eq!(
-            drained(o.held.lock().unwrap().remove("t").unwrap()),
+            lines(o.held.lock().unwrap().remove("t").unwrap()),
             vec![
                 (Stream::Stdout, "line".to_string()),
                 (Stream::Stderr, "err".to_string())
@@ -523,33 +520,30 @@ mod tests {
         );
         let mut held = o.held.lock().unwrap();
         assert!(!held.contains_key("t"));
-        assert_eq!(drained(held.remove("u").unwrap()).len(), 1);
-    }
-
-    fn drained(spool: Spool) -> Vec<(Stream, String)> {
-        let mut lines = Vec::new();
-        spool
-            .drain(|stream, line| lines.push((stream, line.to_string())))
-            .unwrap();
-        lines
+        assert_eq!(lines(held.remove("u").unwrap()).len(), 1);
     }
 
     #[test]
-    fn spool_keeps_order_streams_and_unicode_lines() {
-        let mut spool = Spool::new().unwrap();
-        let long = "x".repeat(100_000);
-        for (stream, line) in [
-            (Stream::Stdout, "日本語"),
-            (Stream::Stderr, ""),
-            (Stream::Stdout, long.as_str()),
-        ] {
-            spool.push(stream, line).unwrap();
-        }
-        let lines = drained(spool);
-        assert_eq!(lines.len(), 3);
-        assert_eq!(lines[0], (Stream::Stdout, "日本語".to_string()));
-        assert_eq!(lines[1], (Stream::Stderr, String::new()));
-        assert_eq!(lines[2].1.len(), 100_000);
+    fn grouped_output_streams_once_a_task_passes_the_limit() {
+        let mut o = ConsoleObserver::grouped();
+        o.group_limit = 2 * Lines::OVERHEAD;
+        o.output("t", Stream::Stdout, "short");
+        assert!(matches!(o.held.lock().unwrap()["t"], Held::Lines(_)));
+        // Under the limit before this line, so it is the last one held.
+        o.output("t", Stream::Stdout, "0123456789");
+        assert!(matches!(o.held.lock().unwrap()["t"], Held::Lines(_)));
+        o.output("t", Stream::Stdout, "over the limit");
+        assert!(matches!(o.held.lock().unwrap()["t"], Held::Streaming));
+        // Other tasks are unaffected.
+        o.output("u", Stream::Stdout, "x");
+        assert!(matches!(o.held.lock().unwrap()["u"], Held::Lines(_)));
+        o.status(
+            "t",
+            &TaskStatus::Failed {
+                error: "boom".into(),
+            },
+        );
+        assert!(!o.held.lock().unwrap().contains_key("t"));
     }
 
     proptest! {

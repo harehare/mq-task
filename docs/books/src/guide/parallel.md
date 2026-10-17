@@ -30,7 +30,7 @@ echo "all checks passed"
 | (default) | raw output for sequential runs, prefixed lines (`lint │ ...`) for concurrent ones |
 | `interleaved` | raw lines as they arrive, never prefixed |
 | `prefixed` | every line tagged with its task name, even when sequential |
-| `group` | each task's output is held back and printed as one block when the task finishes, which keeps CI logs readable (held output is spooled to a temporary file, not kept in memory) |
+| `group` | each task's output is held back and printed as one block when the task finishes, which keeps CI logs readable (each task holds at most 64 MiB; past that the held part is printed and the rest streams with a `task │` prefix) |
 
 ```sh
 mq-task ci --output group

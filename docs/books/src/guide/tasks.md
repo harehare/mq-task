@@ -29,3 +29,12 @@ dir = "services/api"
 ````
 
 Precedence, lowest to highest: document-wide `meta` → the task's own `meta` → CLI flags.
+
+## Typos
+
+A task name that does not exist is reported with the closest match, and so is a mistyped entry in `depends`:
+
+```text
+$ mq-task deploi
+Error: Section not found: deploi (did you mean `deploy`?)
+```

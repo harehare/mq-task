@@ -1,6 +1,6 @@
 # mq-task
 
-`mq-task` is a task runner that executes code blocks in Markdown files, selected by section title. Your `README.md` (or any Markdown file) *is* the task file: the documentation and the automation are the same text.
+`mq-task` is a task runner that executes code blocks in Markdown files, selected by section title. Your `tasks.md` or `README.md` (or any Markdown file) *is* the task file: the documentation and the automation are the same text.
 
 It is built on [mq](https://mqlang.org/), a jq-like tool for Markdown, which parses the document and extracts sections.
 
@@ -36,6 +36,7 @@ mq-task ci
 - Import tasks from other Markdown files
 - Skip up-to-date tasks (`sources` / `outputs` / `status`) and `--watch` mode
 - Dependency graph (text and Mermaid) and shell completions
+- Finds `tasks.md` (or `README.md`) from any subdirectory; completes task names; suggests fixes for typos in `meta` and task names
 - Scripting and CI options: `--summary`, `list --json`, `--output group`, `--yes`
 - Interactive TUI with search, argument prompts and live progress
 

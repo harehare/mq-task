@@ -1,8 +1,9 @@
 //! mq_task - Markdown-based task runner CLI
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap_complete::{ArgValueCompleter, CompleteEnv, CompletionCandidate};
 use colored::*;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -11,7 +12,6 @@ use mq_task::{
     Config, Error, ExecutionMode, GraphFormat, INTERRUPTED, OutputMode, Result, RunOptions, Runner,
 };
 
-const DEFAULT_TASKS_FILE: &str = "README.md";
 /// Shortest pause between `--watch` polls.
 const MIN_WATCH_INTERVAL: Duration = Duration::from_millis(50);
 
@@ -86,15 +86,15 @@ struct RunRequest {
 #[command(version)]
 struct Cli {
     /// Task name to execute (shorthand for 'run' command)
-    #[arg(value_name = "TASK")]
+    #[arg(value_name = "TASK", add = ArgValueCompleter::new(complete_task))]
     task: Option<String>,
 
-    /// Path to the markdown file
-    #[arg(short, long, default_value = DEFAULT_TASKS_FILE)]
-    file: PathBuf,
+    /// Markdown task file (default: the nearest tasks.md, else README.md)
+    #[arg(short, long, env = "MQ_TASK_FILE")]
+    file: Option<PathBuf>,
 
-    /// Path to configuration file
-    #[arg(short, long)]
+    /// Path to configuration file (default: mq-task.toml next to the task file)
+    #[arg(short, long, env = "MQ_TASK_CONFIG")]
     config: Option<PathBuf>,
 
     /// Override runtime for a language (format: lang:command, e.g., python:python3.11)
@@ -153,14 +153,15 @@ enum Commands {
     /// Run a task from a markdown file
     Run {
         /// Task name (section title) to execute
+        #[arg(add = ArgValueCompleter::new(complete_task))]
         task: String,
 
-        /// Path to the markdown file
-        #[arg(short, long, default_value = DEFAULT_TASKS_FILE)]
-        file: PathBuf,
+        /// Markdown task file (default: the nearest tasks.md, else README.md)
+        #[arg(short, long, env = "MQ_TASK_FILE")]
+        file: Option<PathBuf>,
 
-        /// Path to configuration file
-        #[arg(short, long)]
+        /// Path to configuration file (default: mq-task.toml next to the task file)
+        #[arg(short, long, env = "MQ_TASK_CONFIG")]
         config: Option<PathBuf>,
 
         /// Override runtime for a language (format: lang:command, e.g., python:python3.11)
@@ -209,12 +210,12 @@ enum Commands {
 
     /// List all available tasks in a markdown file
     List {
-        /// Path to the markdown file
-        #[arg(short, long, default_value = DEFAULT_TASKS_FILE)]
-        file: PathBuf,
+        /// Markdown task file (default: the nearest tasks.md, else README.md)
+        #[arg(short, long, env = "MQ_TASK_FILE")]
+        file: Option<PathBuf>,
 
-        /// Path to configuration file
-        #[arg(short, long)]
+        /// Path to configuration file (default: mq-task.toml next to the task file)
+        #[arg(short, long, env = "MQ_TASK_CONFIG")]
         config: Option<PathBuf>,
 
         /// Filter code blocks by language (e.g., bash, python, go)
@@ -232,12 +233,12 @@ enum Commands {
 
     /// Interactively select and run a task using TUI
     Tui {
-        /// Path to the markdown file
-        #[arg(short, long, default_value = DEFAULT_TASKS_FILE)]
-        file: PathBuf,
+        /// Markdown task file (default: the nearest tasks.md, else README.md)
+        #[arg(short, long, env = "MQ_TASK_FILE")]
+        file: Option<PathBuf>,
 
-        /// Path to configuration file
-        #[arg(short, long)]
+        /// Path to configuration file (default: mq-task.toml next to the task file)
+        #[arg(short, long, env = "MQ_TASK_CONFIG")]
         config: Option<PathBuf>,
 
         /// Filter code blocks by language (e.g., bash, python, go)
@@ -267,14 +268,15 @@ enum Commands {
     /// Print the dependency graph of a task (or of all tasks)
     Graph {
         /// Task to show the dependencies of; all public tasks when omitted
+        #[arg(add = ArgValueCompleter::new(complete_task))]
         task: Option<String>,
 
-        /// Path to the markdown file
-        #[arg(short, long, default_value = DEFAULT_TASKS_FILE)]
-        file: PathBuf,
+        /// Markdown task file (default: the nearest tasks.md, else README.md)
+        #[arg(short, long, env = "MQ_TASK_FILE")]
+        file: Option<PathBuf>,
 
-        /// Path to configuration file
-        #[arg(short, long)]
+        /// Path to configuration file (default: mq-task.toml next to the task file)
+        #[arg(short, long, env = "MQ_TASK_CONFIG")]
         config: Option<PathBuf>,
 
         /// Output format: text or mermaid
@@ -282,7 +284,7 @@ enum Commands {
         format: GraphFormat,
     },
 
-    /// Generate shell completions
+    /// Print the shell completion script (completes options and task names)
     Completions {
         /// Shell to generate completions for
         shell: clap_complete::Shell,
@@ -291,7 +293,7 @@ enum Commands {
     /// Generate a sample configuration file
     Init {
         /// Output path for configuration file
-        #[arg(short, long, default_value = "mq_task.toml")]
+        #[arg(short, long, default_value = mq_task::config::CONFIG_FILE)]
         output: PathBuf,
     },
 }
@@ -302,19 +304,16 @@ fn main() -> ExitCode {
     // The flag lets long-running loops such as `--watch` shut down.
     let _ = ctrlc::set_handler(|| INTERRUPTED.store(true, Ordering::SeqCst));
 
+    // Answers shell completion requests (`COMPLETE=<shell> mq-task ...`).
+    CompleteEnv::with_factory(Cli::command).complete();
+
     let cli = Cli::parse();
 
     match dispatch(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            let code = match &err {
-                Error::ExecutionFailed(code) => *code,
-                // Same as coreutils `timeout`
-                Error::Timeout(_) => 124,
-                _ => 1,
-            };
             eprintln!("{} {}", "Error:".red().bold(), err);
-            ExitCode::from(code.clamp(0, 255) as u8)
+            ExitCode::from(err.exit_code().clamp(0, 255) as u8)
         }
     }
 }
@@ -324,87 +323,97 @@ fn dispatch(cli: Cli) -> Result<()> {
         Some(Commands::Run {
             file,
             task,
-            config,
+            mut config,
             runtime,
             execution_mode,
             lang,
             dry_run,
             env,
-            dir,
+            mut dir,
             watch,
             interval,
             summary,
             flags,
             args,
-        }) => run_task(RunRequest {
-            file,
-            task,
-            config,
-            runtime,
-            execution_mode,
-            lang,
-            dry_run,
-            env,
-            dir,
-            args,
-            flags,
-            watch,
-            interval,
-            summary,
-        })?,
+        }) => {
+            let file = locate_task_file(file, &mut [&mut config, &mut dir])?;
+            run_task(RunRequest {
+                file,
+                task,
+                config,
+                runtime,
+                execution_mode,
+                lang,
+                dry_run,
+                env,
+                dir,
+                args,
+                flags,
+                watch,
+                interval,
+                summary,
+            })?
+        }
         Some(Commands::List {
             file,
-            config,
+            mut config,
             lang,
             all,
             json,
-        }) => list_tasks(file, config, lang, all, json)?,
+        }) => {
+            let file = locate_task_file(file, &mut [&mut config])?;
+            list_tasks(file, config, lang, all, json)?
+        }
         Some(Commands::Tui {
             file,
-            config,
+            mut config,
             lang,
             dry_run,
             env,
-            dir,
+            mut dir,
             all,
             flags,
-        }) => run_tui(file, config, lang, dry_run, env, dir, all, flags)?,
+        }) => {
+            let file = locate_task_file(file, &mut [&mut config, &mut dir])?;
+            run_tui(file, config, lang, dry_run, env, dir, all, flags)?
+        }
         Some(Commands::Graph {
             task,
             file,
-            config,
+            mut config,
             format,
-        }) => show_graph(file, config, task, format)?,
-        Some(Commands::Completions { shell }) => {
-            let mut cmd = Cli::command();
-            clap_complete::generate(shell, &mut cmd, "mq-task", &mut std::io::stdout());
+        }) => {
+            let file = locate_task_file(file, &mut [&mut config])?;
+            show_graph(file, config, task, format)?
         }
+        Some(Commands::Completions { shell }) => print_completion_script(shell)?,
         Some(Commands::Init { output }) => init_config(output)?,
         None => {
-            // If no subcommand, check if task is provided
+            let (mut config, mut dir) = (cli.config, cli.dir);
+            let file = locate_task_file(cli.file, &mut [&mut config, &mut dir])?;
+            // No task given: fall back to the configured default task, if any.
             let task = match cli.task {
                 Some(task) => Some(task),
-                // No task given: fall back to the configured default task, if any
-                None => load_config(cli.config.clone())?.default_task,
+                None => load_config(config.clone(), &file)?.default_task,
             };
             match task {
                 Some(task) => run_task(RunRequest {
-                    file: cli.file,
+                    file,
                     task,
-                    config: cli.config,
+                    config,
                     runtime: cli.runtime,
                     execution_mode: cli.execution_mode,
                     lang: cli.lang,
                     dry_run: cli.dry_run,
                     env: cli.env,
-                    dir: cli.dir,
+                    dir,
                     args: cli.args,
                     flags: cli.flags,
                     watch: cli.watch,
                     interval: cli.interval,
                     summary: cli.summary,
                 })?,
-                None => list_tasks(cli.file, cli.config, cli.lang, cli.all, false)?,
+                None => list_tasks(file, config, cli.lang, cli.all, false)?,
             }
         }
     }
@@ -413,8 +422,10 @@ fn dispatch(cli: Cli) -> Result<()> {
 }
 
 /// Build a runner from the CLI settings shared by `run` and `tui`.
+#[allow(clippy::too_many_arguments)]
 fn build_runner(
     config_path: Option<PathBuf>,
+    task_file: &Path,
     runtime_overrides: &[String],
     execution_mode: Option<&str>,
     dry_run: bool,
@@ -422,7 +433,7 @@ fn build_runner(
     dir: Option<PathBuf>,
     flags: &ExecFlags,
 ) -> Result<Runner> {
-    let mut config = load_config(config_path)?;
+    let mut config = load_config(config_path, task_file)?;
 
     let exec_mode = execution_mode.map(ExecutionMode::try_from).transpose()?;
     if !runtime_overrides.is_empty() {
@@ -438,10 +449,94 @@ fn build_runner(
     Ok(runner)
 }
 
+/// Task and alias names of the task file, for shell completion. The file is
+/// found the same way as for a run: `MQ_TASK_FILE`, else a search from the
+/// current directory. Anything that goes wrong simply yields no candidates.
+fn complete_task(current: &std::ffi::OsStr) -> Vec<CompletionCandidate> {
+    let Some(prefix) = current.to_str() else {
+        return Vec::new();
+    };
+    let Some(file) = std::env::var_os("MQ_TASK_FILE")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .and_then(|dir| mq_task::discover::find_task_file(&dir))
+        })
+    else {
+        return Vec::new();
+    };
+    let Ok(sections) = Runner::with_default_config().list_task_sections(&file) else {
+        return Vec::new();
+    };
+    sections
+        .iter()
+        .filter(|s| !s.private)
+        .flat_map(|s| {
+            let help = s
+                .description
+                .as_deref()
+                .and_then(|d| d.lines().next())
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty());
+            std::iter::once(s.title.as_str())
+                .chain(s.aliases.iter().map(String::as_str))
+                .map(move |name| CompletionCandidate::new(name).help(help.clone().map(Into::into)))
+                .collect::<Vec<_>>()
+        })
+        .filter(|c| c.get_value().to_string_lossy().starts_with(prefix))
+        .collect()
+}
+
+/// Print the registration script that makes the shell ask mq-task for
+/// completions (see [`complete_task`]).
+fn print_completion_script(shell: clap_complete::Shell) -> Result<()> {
+    let name = shell.to_string();
+    let shells = clap_complete::env::Shells::builtins();
+    let completer = shells
+        .completer(&name)
+        .ok_or_else(|| Error::Config(format!("no completions for shell '{}'", name)))?;
+    completer.write_registration(
+        "COMPLETE",
+        "mq-task",
+        "mq-task",
+        "mq-task",
+        &mut std::io::stdout(),
+    )?;
+    Ok(())
+}
+
+/// Add a "did you mean" hint to an unknown-task error, using the task and
+/// alias names of `file`.
+fn with_task_hint(err: Error, runner: &mut Runner, file: &Path) -> Error {
+    let Error::SectionNotFound(name) = &err else {
+        return err;
+    };
+    let Ok(sections) = runner.list_task_sections(file) else {
+        return err;
+    };
+    let names = || {
+        sections.iter().flat_map(|s| {
+            std::iter::once(s.title.as_str()).chain(s.aliases.iter().map(String::as_str))
+        })
+    };
+    // A dependency call such as `deploi env=prod` is looked up by its first word.
+    let first_word = name.split_whitespace().next().unwrap_or(name);
+    match mq_task::util::closest(name, names())
+        .or_else(|| mq_task::util::closest(first_word, names()))
+    {
+        Some(suggestion) => {
+            Error::SectionNotFound(format!("{} (did you mean `{}`?)", name, suggestion))
+        }
+        None => err,
+    }
+}
+
 /// Run a specific task, once or (with `--watch`) whenever its inputs change
 fn run_task(req: RunRequest) -> Result<()> {
     let mut runner = build_runner(
         req.config,
+        &req.file,
         &req.runtime,
         req.execution_mode.as_deref(),
         req.dry_run,
@@ -451,7 +546,10 @@ fn run_task(req: RunRequest) -> Result<()> {
     )?;
 
     if req.summary {
-        print!("{}", runner.task_summary(&req.file, &req.task)?);
+        let text = runner
+            .task_summary(&req.file, &req.task)
+            .map_err(|e| with_task_hint(e, &mut runner, &req.file))?;
+        print!("{}", text);
         return Ok(());
     }
 
@@ -467,12 +565,15 @@ fn run_task(req: RunRequest) -> Result<()> {
     };
 
     if !req.watch {
-        return runner.run_task_with_options(&req.file, &req.task, options());
+        return runner
+            .run_task_with_options(&req.file, &req.task, options())
+            .map_err(|e| with_task_hint(e, &mut runner, &req.file));
     }
     let interval = watch_interval(&req.interval)?;
 
     loop {
         if let Err(err) = runner.run_task_with_options(&req.file, &req.task, options()) {
+            let err = with_task_hint(err, &mut runner, &req.file);
             eprintln!("{} {}", "Error:".red().bold(), err);
         }
         if INTERRUPTED.load(Ordering::SeqCst) {
@@ -519,7 +620,7 @@ fn run_tui(
     show_all: bool,
     flags: ExecFlags,
 ) -> Result<()> {
-    let config = load_config(config_path)?;
+    let config = load_config(config_path, &markdown_path)?;
     mq_task::tui::run_tui(
         markdown_path,
         config,
@@ -546,7 +647,7 @@ fn show_graph(
     task: Option<String>,
     format: GraphFormat,
 ) -> Result<()> {
-    let mut runner = Runner::new(load_config(config_path)?);
+    let mut runner = Runner::new(load_config(config_path, &markdown_path)?);
     print!(
         "{}",
         runner.dependency_graph(&markdown_path, task.as_deref(), format)?
@@ -562,7 +663,7 @@ fn list_tasks(
     show_all: bool,
     json: bool,
 ) -> Result<()> {
-    let config = load_config(config_path)?;
+    let config = load_config(config_path, &markdown_path)?;
     let mut runner = Runner::new(config);
 
     let sections = runner.list_task_sections(&markdown_path)?;
@@ -694,13 +795,43 @@ fn init_config(output_path: PathBuf) -> Result<()> {
     Ok(())
 }
 
-/// Load configuration from file or use default
-fn load_config(config_path: Option<PathBuf>) -> Result<Config> {
-    let config = if let Some(path) = config_path {
-        Config::from_file(&path)?
-    } else {
-        Config::default()
-    };
+/// Load the configuration: `-c`, else `mq-task.toml` next to the task file,
+/// else the defaults.
+fn load_config(config_path: Option<PathBuf>, task_file: &Path) -> Result<Config> {
+    match config_path {
+        Some(path) => Config::from_file(path),
+        None => Config::discover(task_file),
+    }
+}
 
-    Ok(config)
+/// Find the task file. Without `-f` it is searched for (see
+/// [`mq_task::discover`]); one found in a parent directory makes mq-task
+/// switch to that directory first, like `just`. The paths in `relative` are
+/// made absolute beforehand so they keep pointing where the user meant.
+fn locate_task_file(
+    file: Option<PathBuf>,
+    relative: &mut [&mut Option<PathBuf>],
+) -> Result<PathBuf> {
+    if let Some(file) = file {
+        return Ok(file);
+    }
+    let cwd = std::env::current_dir()?;
+    let found = mq_task::discover::find_task_file(&cwd)
+        .ok_or_else(|| Error::NoTaskFile(cwd.display().to_string()))?;
+    let (dir, name) = match (found.parent(), found.file_name()) {
+        (Some(dir), Some(name)) => (dir.to_path_buf(), PathBuf::from(name)),
+        _ => return Ok(found),
+    };
+    if dir != cwd {
+        for path in relative.iter_mut() {
+            if let Some(p) = path.as_mut()
+                && p.is_relative()
+            {
+                *p = cwd.join(&*p);
+            }
+        }
+        std::env::set_current_dir(&dir)?;
+        eprintln!("{}", format!("using {}", found.display()).dimmed());
+    }
+    Ok(name)
 }

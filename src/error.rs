@@ -32,6 +32,12 @@ pub enum Error {
     #[error("TOML parse error: {0}")]
     TomlParse(#[from] toml::de::Error),
 
+    /// No task file was given and none could be found
+    #[error(
+        "No task file found: looked for tasks.md and README.md in {0} and its parent directories up to the repository root. Use -f/--file or set MQ_TASK_FILE"
+    )]
+    NoTaskFile(String),
+
     /// Section not found
     #[error("Section not found: {0}")]
     SectionNotFound(String),
@@ -83,4 +89,46 @@ pub enum Error {
     /// Invalid task file contents (imports, durations, ...)
     #[error("Invalid task file: {0}")]
     Invalid(String),
+
+    /// A failure inside a task that does not name the task itself
+    #[error("{source} (in task '{task}')")]
+    TaskFailed {
+        task: String,
+        #[source]
+        source: Box<Error>,
+    },
+}
+
+impl Error {
+    /// The error without any task context.
+    pub fn root(&self) -> &Error {
+        match self {
+            Error::TaskFailed { source, .. } => source.root(),
+            other => other,
+        }
+    }
+
+    /// Process exit code for this error: the task's own code, 124 for a
+    /// timeout (like coreutils `timeout`), else 1.
+    pub fn exit_code(&self) -> i32 {
+        match self.root() {
+            Error::ExecutionFailed(code) => *code,
+            Error::Timeout(_) => 124,
+            _ => 1,
+        }
+    }
+
+    /// Attach the name of the failing task to errors that lack it.
+    pub fn in_task(self, task: &str) -> Error {
+        match self {
+            Error::ExecutionFailed(_)
+            | Error::Execution(_)
+            | Error::RuntimeNotFound(_)
+            | Error::Io(_) => Error::TaskFailed {
+                task: task.to_string(),
+                source: Box::new(self),
+            },
+            other => other,
+        }
+    }
 }

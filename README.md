@@ -32,6 +32,7 @@ It is implemented using [mq](https://github.com/harehare/mq), a jq-like command-
 - [Importing tasks](https://task.mqlang.org/book/guide/imports.html) from other Markdown files
 - Skip [up-to-date tasks](https://task.mqlang.org/book/guide/cache-watch.html) (`sources`/`outputs` or custom `status` commands) and `--watch` mode
 - [Dependency graph](https://task.mqlang.org/book/guide/graph.html) output (`graph`) and [shell completions](https://task.mqlang.org/book/guide/completions.html)
+- Finds `tasks.md` (or `README.md`) from any subdirectory, [completes task names](https://task.mqlang.org/book/guide/completions.html) in your shell, and catches typos in `meta` and task names with a suggestion
 - [CLI options](https://task.mqlang.org/book/reference/cli.html) for scripts and CI: `--summary`, `list --json`, `--output group`, `--yes`
 - [Interactive TUI](https://task.mqlang.org/book/guide/tui.html) with search, details, argument prompts, per-task progress and a log pane
 - [Named task parameters](https://task.mqlang.org/book/guide/params-env.html) with defaults, plus positional args
@@ -68,7 +69,7 @@ $ cargo install --git https://github.com/harehare/mq-task.git
 ### Run a task (shorthand)
 
 ```bash
-# Run from README.md (default)
+# Run from tasks.md, else README.md (searched up to the repository root)
 mq-task "Task Name"
 
 # Run from a specific file
@@ -444,7 +445,7 @@ While a task runs, the top pane draws the dependency graph as a left-to-right wo
 
 ```bash
 mq-task completions zsh > ~/.zfunc/_mq-task
-mq-task completions bash > /etc/bash_completion.d/mq-task
+mq-task completions bash > /etc/bash_completion.d/mq-task   # also completes task names
 ```
 
 ### Named parameters
@@ -508,7 +509,7 @@ rm -rf tmp/
 ### List available tasks
 
 ```bash
-# List tasks from README.md (default)
+# List tasks from tasks.md, else README.md
 mq-task
 
 # List tasks from a specific file
@@ -525,7 +526,7 @@ mq-task list --all
 mq-task init
 ```
 
-This creates an `mq-task.toml` file with default runtime settings.
+This creates an `mq-task.toml` file with default runtime settings. It is loaded automatically from the directory of the task file.
 
 ## Configuration
 

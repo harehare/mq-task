@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 use crate::error::{Error, Result};
-use crate::events::{ConsoleObserver, OutputMode, RunObserver};
+use crate::events::{ConsoleObserver, FailureTracker, OutputMode, RunObserver};
 use crate::exec::Executor;
 use crate::graph::{self, GraphFormat};
 use crate::schedule::{self, PlanContext, ScheduleOptions, build_plan_in, split_words};
@@ -132,6 +132,7 @@ impl LoopSpec {
 /// before the first heading in the file. Applies to every task; a task's
 /// own `meta` block overrides same-named keys, and CLI flags override both.
 #[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 struct GlobalMeta {
     /// Default environment variables applied to every task
     #[serde(default)]
@@ -149,6 +150,7 @@ struct GlobalMeta {
 
 /// Task metadata parsed from a `meta` code block within a section
 #[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 struct TaskMeta {
     #[serde(default)]
     depends: Vec<String>,
@@ -563,7 +565,7 @@ impl Runner {
 
         let meta = match codes.iter().find(|c| c.lang == "meta") {
             Some(block) => toml::from_str::<GlobalMeta>(&block.code)
-                .map_err(|e| Error::Invalid(format!("document `meta` block: {}", e)))?,
+                .map_err(|e| meta_error("document `meta` block", &block.code, &e, true))?,
             None => GlobalMeta::default(),
         };
 
@@ -606,8 +608,14 @@ impl Runner {
             .unwrap_or_else(|| Ok(Vec::new()))?;
 
         let meta = match all_codes.iter().find(|c| c.lang == "meta") {
-            Some(block) => toml::from_str::<TaskMeta>(&block.code)
-                .map_err(|e| Error::Invalid(format!("task '{}': `meta` block: {}", title, e)))?,
+            Some(block) => toml::from_str::<TaskMeta>(&block.code).map_err(|e| {
+                meta_error(
+                    &format!("task '{}': `meta` block", title),
+                    &block.code,
+                    &e,
+                    false,
+                )
+            })?,
             None => TaskMeta::default(),
         };
 
@@ -834,6 +842,7 @@ impl Runner {
         let no_cancel = AtomicBool::new(false);
         let cancel = opts.cancel.as_deref().unwrap_or(&no_cancel);
 
+        let tracker = FailureTracker::new(observer.as_ref());
         schedule::run_plan(
             &self.exec,
             &plan,
@@ -844,9 +853,13 @@ impl Runner {
                 keep_going: opts.keep_going,
                 piped: custom_observer,
                 cancel,
-                observer: observer.as_ref(),
+                observer: &tracker,
             },
         )
+        .map_err(|err| match tracker.first_failure() {
+            Some(task) => err.in_task(&task),
+            None => err,
+        })
     }
 
     /// Files whose changes should re-run `task_name` in watch mode: every
@@ -990,6 +1003,44 @@ fn namespace_sections(sections: &mut [Section], namespace: &str) {
             *dep = qualify_call(dep);
         }
     }
+}
+
+/// The key and the valid keys from a serde "unknown field" message such as
+/// ``unknown field `retires`, expected one of `retries`, `timeout` ``.
+fn unknown_field(message: &str) -> Option<(String, Vec<String>)> {
+    let rest = message.strip_prefix("unknown field ")?;
+    let mut quoted = rest.split('`').skip(1).step_by(2).map(str::to_string);
+    let key = quoted.next()?;
+    Some((key, quoted.collect()))
+}
+
+/// Turn a `meta` block parse error into one a user can act on: unknown keys
+/// get a "did you mean" hint and the line they are on.
+fn meta_error(context: &str, code: &str, err: &toml::de::Error, document: bool) -> Error {
+    let Some((key, valid)) = unknown_field(err.message()) else {
+        return Error::Invalid(format!("{}: {}", context, err));
+    };
+    let line = err
+        .span()
+        .map(|s| {
+            format!(
+                " on line {}",
+                code[..s.start.min(code.len())].matches('\n').count() + 1
+            )
+        })
+        .unwrap_or_default();
+    let hint = if !document && key == "imports" {
+        "`imports` only works in the document-wide `meta` block before the first heading"
+            .to_string()
+    } else if let Some(close) = crate::util::closest(&key, valid.iter().map(String::as_str)) {
+        format!("did you mean `{}`?", close)
+    } else {
+        "see the Meta keys reference for the valid keys".to_string()
+    };
+    Error::Invalid(format!(
+        "{}: unknown key `{}`{} ({})",
+        context, key, line, hint
+    ))
 }
 
 /// Quote a word for [`split_words`] when it would not survive unquoted.
@@ -2056,5 +2107,75 @@ true
         );
         let bad = "## t\n\n```meta\nfor = { glob = 3 }\n```\n\n```bash\ntrue\n```\n";
         assert!(matches!(parse(bad), Err(Error::Invalid(_))));
+    }
+
+    #[test]
+    fn unknown_meta_keys_get_a_suggestion_and_a_line() {
+        let md = "## flaky\n\n```meta\nretries = 1\nretires = 3\n```\n\n```bash\ntrue\n```\n";
+        let Err(Error::Invalid(msg)) = parse(md) else {
+            panic!("expected an error");
+        };
+        assert!(msg.contains("task 'flaky'"), "{}", msg);
+        assert!(msg.contains("unknown key `retires` on line 2"), "{}", msg);
+        assert!(msg.contains("did you mean `retries`?"), "{}", msg);
+    }
+
+    #[test]
+    fn unknown_meta_keys_without_a_close_match_point_to_the_reference() {
+        let md = "## t\n\n```meta\nfrobnicate = true\n```\n\n```bash\ntrue\n```\n";
+        let Err(Error::Invalid(msg)) = parse(md) else {
+            panic!("expected an error");
+        };
+        assert!(msg.contains("unknown key `frobnicate`"), "{}", msg);
+        assert!(msg.contains("Meta keys reference"), "{}", msg);
+    }
+
+    #[test]
+    fn imports_in_a_task_meta_explains_where_it_belongs() {
+        let md = "## t\n\n```meta\nimports = [\"a.md\"]\n```\n\n```bash\ntrue\n```\n";
+        let Err(Error::Invalid(msg)) = parse(md) else {
+            panic!("expected an error");
+        };
+        assert!(msg.contains("before the first heading"), "{}", msg);
+    }
+
+    #[test]
+    fn the_document_meta_block_is_checked_too() {
+        let md = "```meta\ndotenv = [\".env\"]\ndri = \"x\"\n```\n\n## t\n\n```bash\ntrue\n```\n";
+        let Err(Error::Invalid(msg)) = parse(md) else {
+            panic!("expected an error");
+        };
+        assert!(msg.starts_with("document `meta` block"), "{}", msg);
+        assert!(msg.contains("did you mean `dir`?"), "{}", msg);
+    }
+
+    #[test]
+    fn type_errors_keep_the_original_message() {
+        let md = "## t\n\n```meta\nretries = \"many\"\n```\n\n```bash\ntrue\n```\n";
+        let Err(Error::Invalid(msg)) = parse(md) else {
+            panic!("expected an error");
+        };
+        assert!(
+            msg.contains("task 't'") && msg.contains("invalid type"),
+            "{}",
+            msg
+        );
+    }
+
+    #[test]
+    fn unknown_field_messages_are_taken_apart() {
+        assert_eq!(
+            unknown_field("unknown field `a`, expected one of `b`, `c`, `d`"),
+            Some(("a".into(), vec!["b".into(), "c".into(), "d".into()]))
+        );
+        assert_eq!(
+            unknown_field("unknown field `a`, expected `b` or `c`"),
+            Some(("a".into(), vec!["b".into(), "c".into()]))
+        );
+        assert_eq!(
+            unknown_field("unknown field `a`, expected `b`").unwrap().1,
+            vec!["b"]
+        );
+        assert_eq!(unknown_field("invalid type: string"), None);
     }
 }

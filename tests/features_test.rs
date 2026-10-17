@@ -680,9 +680,121 @@ fn invalid_meta_is_reported() {
 #[test]
 fn completions_are_generated() {
     let dir = workdir("completions");
-    let out = mq_task(&dir, &["completions", "zsh"]);
-    assert!(out.status.success());
-    assert!(stdout(&out).contains("mq-task"));
+    for shell in ["bash", "zsh", "fish", "elvish", "powershell"] {
+        let out = mq_task(&dir, &["completions", shell]);
+        assert!(out.status.success(), "{shell}: {}", stderr(&out));
+        let script = stdout(&out);
+        assert!(script.contains("mq-task"), "{shell}");
+        // The script asks mq-task itself, so task names can be completed.
+        assert!(script.contains("COMPLETE"), "{shell}: {script}");
+    }
+}
+
+/// What fish would be offered after typing `mq-task <words>`.
+fn fish_candidates(dir: &Path, words: &[&str], file_env: Option<&str>) -> Vec<String> {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_mq-task"));
+    cmd.env("COMPLETE", "fish")
+        .arg("--")
+        .arg("mq-task")
+        .args(words)
+        .current_dir(dir);
+    if let Some(file) = file_env {
+        cmd.env("MQ_TASK_FILE", file);
+    }
+    let out = cmd.output().unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    stdout(&out).lines().map(str::to_string).collect()
+}
+
+const COMPLETION_TASKS: &str = r#"
+## deploy
+
+Ship it to production.
+More detail that is not shown.
+
+```meta
+alias = ["ship"]
+```
+
+```bash
+true
+```
+
+## build
+
+```bash
+true
+```
+
+## _hidden
+
+```bash
+true
+```
+"#;
+
+#[test]
+fn task_names_are_completed_from_the_task_file() {
+    let dir = workdir("complete-tasks");
+    write(&dir, "tasks.md", COMPLETION_TASKS);
+
+    let all = fish_candidates(&dir, &[""], None);
+    assert!(
+        all.contains(&"deploy\tShip it to production.".to_string()),
+        "{all:?}"
+    );
+    assert!(
+        all.contains(&"ship\tShip it to production.".to_string()),
+        "{all:?}"
+    );
+    assert!(all.contains(&"build".to_string()), "{all:?}");
+    assert!(
+        all.iter().any(|c| c.starts_with("run\t")),
+        "subcommands too: {all:?}"
+    );
+    assert!(!all.iter().any(|c| c.contains("_hidden")), "{all:?}");
+
+    assert_eq!(
+        fish_candidates(&dir, &["b"], None),
+        vec!["build".to_string()]
+    );
+    assert_eq!(
+        fish_candidates(&dir, &["d"], None),
+        vec!["deploy\tShip it to production.".to_string()]
+    );
+    assert!(fish_candidates(&dir, &["zzz"], None).is_empty());
+}
+
+#[test]
+fn task_names_are_completed_after_a_subcommand_too() {
+    let dir = workdir("complete-sub");
+    write(&dir, "tasks.md", COMPLETION_TASKS);
+    for sub in ["run", "graph"] {
+        assert_eq!(
+            fish_candidates(&dir, &[sub, "bu"], None),
+            vec!["build".to_string()],
+            "{sub}"
+        );
+    }
+}
+
+#[test]
+fn completion_follows_mq_task_file_and_survives_a_missing_file() {
+    let dir = workdir("complete-env");
+    write(&dir, "other.md", "## from-other\n\n```bash\ntrue\n```\n");
+    assert_eq!(
+        fish_candidates(&dir, &["f"], Some("other.md")),
+        vec!["from-other".to_string()]
+    );
+    // No task file at all: no candidates, and no error.
+    assert!(fish_candidates(&dir, &["f"], None).is_empty());
+
+    write(
+        &dir,
+        "broken.md",
+        "```meta\nnot = [valid\n```\n## zeta\n\n```bash\ntrue\n```\n",
+    );
+    assert!(fish_candidates(&dir, &["z"], Some("broken.md")).is_empty());
 }
 
 #[test]
@@ -2357,4 +2469,362 @@ echo "item $MX_FILE"
         "{}",
         text
     );
+}
+
+fn git_root(dir: &Path) {
+    fs::create_dir_all(dir.join(".git")).unwrap();
+}
+
+#[test]
+fn tasks_md_is_preferred_over_readme() {
+    let dir = workdir("discover-prefer");
+    write(
+        &dir,
+        "README.md",
+        "## from-readme\n\n```bash\necho readme\n```\n",
+    );
+    write(
+        &dir,
+        "tasks.md",
+        "## from-tasks\n\n```bash\necho tasks\n```\n",
+    );
+
+    let list = mq_task(&dir, &[]);
+    assert!(list.status.success(), "{}", stderr(&list));
+    assert!(stdout(&list).contains("from-tasks"), "{}", stdout(&list));
+    assert!(!stdout(&list).contains("from-readme"));
+
+    let run = mq_task(&dir, &["from-tasks"]);
+    assert!(stdout(&run).contains("tasks"), "{}", stdout(&run));
+}
+
+#[test]
+fn the_readme_is_the_fallback_task_file() {
+    let dir = workdir("discover-readme");
+    write(
+        &dir,
+        "README.md",
+        "## hello\n\n```bash\necho from-readme\n```\n",
+    );
+    let out = mq_task(&dir, &["hello"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("from-readme"));
+}
+
+#[test]
+fn tasks_are_found_from_a_subdirectory_and_run_in_the_project_root() {
+    let dir = workdir("discover-up");
+    git_root(&dir);
+    write(&dir, "tasks.md", "## where\n\n```bash\npwd\n```\n");
+    let sub = dir.join("a/b");
+    fs::create_dir_all(&sub).unwrap();
+
+    let out = mq_task(&sub, &["where"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let root = dir.canonicalize().unwrap();
+    assert!(
+        stdout(&out).lines().any(|l| Path::new(l.trim()) == root),
+        "{}",
+        stdout(&out)
+    );
+    assert!(stderr(&out).contains("using"), "{}", stderr(&out));
+}
+
+#[test]
+fn relative_options_keep_pointing_at_the_invocation_directory() {
+    let dir = workdir("discover-relative");
+    git_root(&dir);
+    write(&dir, "tasks.md", "## where\n\n```bash\npwd\n```\n");
+    let sub = dir.join("sub");
+    fs::create_dir_all(sub.join("work")).unwrap();
+
+    let out = mq_task(&sub, &["where", "--dir", "work"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let expected = sub.join("work").canonicalize().unwrap();
+    assert!(
+        stdout(&out)
+            .lines()
+            .any(|l| Path::new(l.trim()) == expected),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn an_explicit_file_is_not_searched_for_and_keeps_the_directory() {
+    let dir = workdir("discover-explicit");
+    git_root(&dir);
+    write(&dir, "tasks.md", "## from-tasks\n\n```bash\necho t\n```\n");
+    write(&dir, "other.md", "## from-other\n\n```bash\npwd\n```\n");
+    let sub = dir.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    write(&sub, "mine.md", "## mine\n\n```bash\npwd\n```\n");
+
+    let out = mq_task(&sub, &["-f", "mine.md", "mine"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let expected = sub.canonicalize().unwrap();
+    assert!(
+        stdout(&out)
+            .lines()
+            .any(|l| Path::new(l.trim()) == expected)
+    );
+    assert!(!stderr(&out).contains("using"));
+}
+
+#[test]
+fn mq_task_file_selects_the_task_file() {
+    let dir = workdir("discover-env");
+    write(&dir, "tasks.md", "## from-tasks\n\n```bash\necho t\n```\n");
+    write(&dir, "ci.md", "## from-ci\n\n```bash\necho ci\n```\n");
+    let out = Command::new(env!("CARGO_BIN_EXE_mq-task"))
+        .arg("from-ci")
+        .env("MQ_TASK_FILE", "ci.md")
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("ci"));
+}
+
+#[test]
+fn a_missing_task_file_names_what_was_searched() {
+    let dir = workdir("discover-none");
+    let out = mq_task(&dir, &["anything"]);
+    assert!(!out.status.success());
+    let err = stderr(&out);
+    assert!(
+        err.contains("No task file found") && err.contains("tasks.md"),
+        "{}",
+        err
+    );
+    assert!(err.contains("README.md") && err.contains("-f"), "{}", err);
+}
+
+#[test]
+fn mq_task_toml_is_loaded_automatically() {
+    let dir = workdir("config-auto");
+    write(
+        &dir,
+        "tasks.md",
+        "## build\n\n```bash\necho building\n```\n",
+    );
+    write(&dir, "mq-task.toml", "default_task = \"build\"\n");
+    let out = mq_task(&dir, &[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stdout(&out).contains("building"), "{}", stdout(&out));
+}
+
+#[test]
+fn the_config_beside_the_task_file_is_used_for_an_explicit_file() {
+    let dir = workdir("config-beside");
+    fs::create_dir_all(dir.join("docs")).unwrap();
+    write(
+        &dir.join("docs"),
+        "dev.md",
+        "## build\n\n```bash\necho building\n```\n",
+    );
+    write(
+        &dir.join("docs"),
+        "mq-task.toml",
+        "default_task = \"build\"\n",
+    );
+    let out = mq_task(&dir, &["-f", "docs/dev.md"]);
+    assert!(stdout(&out).contains("building"), "{}", stdout(&out));
+}
+
+#[test]
+fn init_writes_the_file_that_is_loaded_automatically() {
+    let dir = workdir("config-init");
+    write(&dir, "tasks.md", "## hi\n\n```bash\necho hi\n```\n");
+    let init = mq_task(&dir, &["init"]);
+    assert!(init.status.success(), "{}", stderr(&init));
+    assert!(dir.join("mq-task.toml").is_file());
+    assert!(!dir.join("mq_task.toml").exists());
+    let run = mq_task(&dir, &["hi"]);
+    assert!(run.status.success(), "{}", stderr(&run));
+}
+
+#[test]
+fn a_config_with_unknown_keys_is_rejected() {
+    let dir = workdir("config-typo");
+    write(&dir, "tasks.md", "## hi\n\n```bash\necho hi\n```\n");
+    write(&dir, "mq-task.toml", "defualt_task = \"hi\"\n");
+    let out = mq_task(&dir, &["hi"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("defualt_task"), "{}", stderr(&out));
+}
+
+#[test]
+fn a_typo_in_meta_is_an_error_with_a_suggestion() {
+    let dir = workdir("meta-typo");
+    write(
+        &dir,
+        "tasks.md",
+        "## flaky\n\n```meta\nretires = 3\n```\n\n```bash\necho ran\n```\n",
+    );
+    let out = mq_task(&dir, &["flaky"]);
+    assert!(!out.status.success());
+    assert!(!stdout(&out).contains("ran"), "the task must not run");
+    let err = stderr(&out);
+    assert!(err.contains("unknown key `retires`"), "{}", err);
+    assert!(err.contains("did you mean `retries`?"), "{}", err);
+}
+
+#[test]
+fn an_unknown_task_suggests_a_similar_one() {
+    let dir = workdir("task-hint");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## deploy
+
+```meta
+alias = ["ship"]
+```
+
+```bash
+echo deploying
+```
+
+## ci
+
+```meta
+depends = ["deploi staging"]
+```
+
+```bash
+echo ci
+```
+"#,
+    );
+    let out = mq_task(&dir, &["deploi"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("did you mean `deploy`?"),
+        "{}",
+        stderr(&out)
+    );
+
+    // Aliases are candidates too.
+    let out = mq_task(&dir, &["shi"]);
+    assert!(
+        stderr(&out).contains("did you mean `ship`?"),
+        "{}",
+        stderr(&out)
+    );
+
+    // A mistyped dependency in `depends` is reported with the same hint.
+    let out = mq_task(&dir, &["ci"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("did you mean `deploy`?"),
+        "{}",
+        stderr(&out)
+    );
+
+    // Nothing close: no hint.
+    let out = mq_task(&dir, &["zzzzzz"]);
+    assert!(stderr(&out).contains("Section not found: zzzzzz"));
+    assert!(!stderr(&out).contains("did you mean"));
+
+    let out = mq_task(&dir, &["deploi", "--summary"]);
+    assert!(
+        stderr(&out).contains("did you mean `deploy`?"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn a_failure_names_the_task_that_failed_and_keeps_its_exit_code() {
+    let dir = workdir("fail-context");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## build
+
+```bash
+exit 4
+```
+
+## ci
+
+```meta
+depends = ["build"]
+```
+
+```bash
+echo ci
+```
+
+## each
+
+```meta
+for = ["a", "b"]
+```
+
+```bash
+[ "$MX_ITEM" != b ] || exit 5
+```
+"#,
+    );
+    let out = mq_task(&dir, &["ci"]);
+    assert_eq!(out.status.code(), Some(4));
+    assert!(
+        stderr(&out).contains("status code 4 (in task 'build')"),
+        "{}",
+        stderr(&out)
+    );
+
+    let out = mq_task(&dir, &["each"]);
+    assert_eq!(out.status.code(), Some(5));
+    assert!(
+        stderr(&out).contains("(in task 'each[b]')"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn a_missing_runtime_names_the_task_and_a_timeout_is_not_doubled() {
+    let dir = workdir("fail-context-kinds");
+    write(
+        &dir,
+        "tasks.md",
+        r#"
+## cobol-task
+
+```cobol
+DISPLAY 'hi'.
+```
+
+## slow
+
+```meta
+timeout = "100ms"
+```
+
+```bash
+sleep 5
+```
+"#,
+    );
+    let out = mq_task(&dir, &["cobol-task"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("Runtime not found for language: cobol (in task 'cobol-task')"),
+        "{}",
+        stderr(&out)
+    );
+
+    let out = mq_task(&dir, &["slow"]);
+    assert_eq!(out.status.code(), Some(124));
+    assert!(
+        stderr(&out).contains("Task 'slow' timed out"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(!stderr(&out).contains("(in task"), "{}", stderr(&out));
 }

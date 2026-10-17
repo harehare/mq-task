@@ -1,6 +1,6 @@
 # Configuration
 
-`mq-task init` creates an `mq-task.toml` with default runtime settings. Use `-c/--config` to point at another file.
+`mq-task init` creates an `mq-task.toml` with default runtime settings. It is picked up automatically when it sits next to the task file. Use `-c/--config` (or `MQ_TASK_CONFIG`) to point at another file. Unknown keys are an error.
 
 ```toml
 default_task = "build"

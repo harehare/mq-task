@@ -36,4 +36,6 @@ echo "all checks passed"
 mq-task ci --output group
 ```
 
+On GitHub Actions (`GITHUB_ACTIONS=true`) `group` wraps each task's block in `::group::name` / `::endgroup::`, so the log folds per task. A failed run also prints an `::error::` annotation with the error, in any output mode.
+
 `prefixed` and `group` pipe task output, so stdin is closed for tasks (as in parallel runs) and programs may stop colouring their output. The TUI draws its own log pane and ignores `--output`.

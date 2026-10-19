@@ -34,7 +34,8 @@ It is implemented using [mq](https://github.com/harehare/mq), a jq-like command-
 - [Dependency graph](https://task.mqlang.org/book/guide/graph.html) output (`graph`) and [shell completions](https://task.mqlang.org/book/guide/completions.html)
 - Finds `tasks.md` (or `README.md`) from any subdirectory, [completes task names](https://task.mqlang.org/book/guide/completions.html) in your shell, and catches typos in `meta` and task names with a suggestion
 - [`mq-task check`](https://task.mqlang.org/book/guide/check.html) finds unknown keys, missing dependencies, cycles and missing runtimes without running anything
-- [CLI options](https://task.mqlang.org/book/reference/cli.html) for scripts and CI: `--summary`, `list --json`, `--output group`, `--yes`
+- [CLI options](https://task.mqlang.org/book/reference/cli.html) for scripts and CI: several tasks at once (`mq-task lint test`), `--no-deps`, `--quiet`, `--timings`, `--status`, `--summary`, `list --json`, `--output group` (folds per task on GitHub Actions), `--yes`
+- README-friendly: `no-run` code blocks and data-language blocks (`json`, `text`, ...) are not commands, and `!pattern` excludes files from `sources`
 - [Interactive TUI](https://task.mqlang.org/book/guide/tui.html) with search, details, argument prompts, per-task progress and a log pane
 - [Named task parameters](https://task.mqlang.org/book/guide/params-env.html) with defaults, plus positional args
 - Per-run `--env`/`--dir` overrides, plus `meta`-declared defaults for environment variables, `.env` files and working directory ([details](https://task.mqlang.org/book/guide/params-env.html))
@@ -472,7 +473,7 @@ mq-task deploy -- prod eu             # positional, filled in declaration order
 mq-task deploy -- env=prod region=eu  # named
 ```
 
-Parameters are exposed as `MX_PARAM_<NAME>` environment variables. A required parameter with no value bound is an error.
+Parameters are exposed as `MX_PARAM_<NAME>` environment variables. A required parameter with no value bound is an error, and so is a `name=value` argument whose name the task does not declare (`regoin=eu` is reported with a `did you mean` hint instead of becoming a value).
 
 ### Aliases and the default task
 

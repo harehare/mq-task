@@ -17,6 +17,29 @@ cargo build --release
 
 Fingerprints live in `.mq-task/cache.json` in the invocation directory. Consider git-ignoring `.mq-task/`. `--no-cache` ignores them.
 
+## Excluding files
+
+A pattern starting with `!` removes the files it matches from `sources`, wherever it stands in the list:
+
+```toml
+sources = ["src/**/*.rs", "!src/generated/**"]
+```
+
+Like any pattern it is relative to the task's directory, and a single `*` does not cross directories (`!*.rs` excludes only top-level files). Exclusions also apply to `--watch`.
+
+## Checking without running
+
+`--status` reports whether each task would run, without running it, and exits with `1` when any would. Use it in scripts and hooks:
+
+```text
+$ mq-task build --status
+✘ build out of date (sources changed, outputs are missing or it has not run yet)
+$ mq-task build && mq-task build --status
+✔ build (up to date)
+```
+
+A task is up to date when its `status` commands pass or its `sources` and `outputs` are unchanged (or its `if` is false). A task with neither always runs. Tasks that depend on one that is out of date are reported as not checked. `-q` prints only the out-of-date ones.
+
 ## Custom up-to-date checks with `status`
 
 When "unchanged inputs" is not the right question, `status` lists shell commands that decide it. If **all** of them exit `0` the task is up to date and skipped:

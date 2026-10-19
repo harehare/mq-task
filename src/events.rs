@@ -86,6 +86,8 @@ pub trait RunObserver: Send + Sync {
     /// One line of output from a task (without the trailing newline).
     fn output(&self, task: &str, stream: Stream, line: &str);
     fn status(&self, task: &str, status: &TaskStatus);
+    /// The run is over (it succeeded or failed); `elapsed` is its duration.
+    fn finished(&self, _elapsed: Duration) {}
 }
 
 /// Prints progress to the terminal.
@@ -100,6 +102,27 @@ pub struct ConsoleObserver {
     held: Mutex<HashMap<String, Held>>,
     /// Bytes a task may hold before its output is streamed instead.
     group_limit: u64,
+    /// Print only the output of tasks and what went wrong (`--quiet`).
+    quiet: bool,
+    /// Wrap grouped output in GitHub Actions `::group::` lines.
+    github: bool,
+    /// Announce each requested task, except `root`, which stands for them
+    /// all (running several tasks at once).
+    announce: Option<String>,
+    /// Collect per-task results for [`RunObserver::finished`] (`--timings`).
+    records: Option<Mutex<Vec<Record>>>,
+}
+
+/// How one task ended, for the `--timings` report.
+struct Record {
+    task: String,
+    result: RecordResult,
+}
+
+enum RecordResult {
+    Ran(Duration),
+    Skipped,
+    Failed,
 }
 
 /// Most memory a task holds back for `--output group` (64 MiB) before it
@@ -150,7 +173,30 @@ impl ConsoleObserver {
             group: false,
             held: Mutex::default(),
             group_limit: GROUP_LIMIT,
+            quiet: false,
+            github: false,
+            announce: None,
+            records: None,
         }
+    }
+
+    /// Show only task output and failures, not the progress lines around it.
+    pub fn quiet(mut self, quiet: bool) -> Self {
+        self.quiet = quiet;
+        self
+    }
+
+    /// Print a timing report on stderr when the run ends.
+    pub fn timings(mut self, timings: bool) -> Self {
+        self.records = timings.then(Mutex::default);
+        self
+    }
+
+    /// Mark where each requested task starts. `root` is the task standing
+    /// for the whole request, which is not announced itself.
+    pub fn announcing_requested(mut self, root: &str) -> Self {
+        self.announce = Some(root.to_string());
+        self
     }
 
     pub fn prefixed() -> Self {
@@ -164,6 +210,7 @@ impl ConsoleObserver {
     pub fn grouped() -> Self {
         Self {
             group: true,
+            github: std::env::var("GITHUB_ACTIONS").is_ok_and(|v| v == "true"),
             ..Self::new()
         }
     }
@@ -176,10 +223,39 @@ impl ConsoleObserver {
             Some(Held::Lines(lines)) => Some(lines),
             None => None,
         };
-        println!("{} {}", "▶".cyan().bold(), task.bold());
+        if self.github {
+            println!("::group::{}", task);
+        } else if !self.quiet {
+            println!("{} {}", "▶".cyan().bold(), task.bold());
+        }
         if let Some(lines) = lines {
             lines.replay();
         }
+        if self.github {
+            println!("::endgroup::");
+        }
+    }
+
+    fn record(&self, task: &str, status: &TaskStatus) {
+        let Some(records) = &self.records else {
+            return;
+        };
+        if self.announce.as_deref() == Some(task) {
+            return;
+        }
+        let result = match status {
+            TaskStatus::Succeeded { elapsed } => RecordResult::Ran(*elapsed),
+            TaskStatus::Skipped { .. } => RecordResult::Skipped,
+            TaskStatus::Failed { .. } => RecordResult::Failed,
+            _ => return,
+        };
+        records
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(Record {
+                task: task.to_string(),
+                result,
+            });
     }
 
     /// One line of output under `--output group`.
@@ -259,18 +335,27 @@ impl RunObserver for ConsoleObserver {
         }
     }
 
+    fn finished(&self, elapsed: Duration) {
+        self.print_timings(elapsed);
+    }
+
     fn status(&self, task: &str, status: &TaskStatus) {
+        self.record(task, status);
         if self.group {
             self.status_grouped(task, status);
             return;
         }
         match status {
+            TaskStatus::Started { .. } if self.quiet => {}
+            TaskStatus::Skipped { .. } | TaskStatus::Succeeded { .. } if self.quiet => {}
             TaskStatus::Started { dependency } => {
                 if self.prefixed {
                     println!("{} {}", "▶".cyan().bold(), task.bold());
                 } else if *dependency {
                     // The requested task's header is printed before the run.
                     println!("{}", format!("↳ {} (dependency)", task).dimmed());
+                } else if self.announce.as_deref().is_some_and(|root| root != task) {
+                    println!("{}", format!("↳ {}", task).dimmed());
                 } else if is_iteration(task) {
                     // Loop items share the task's header; mark each start.
                     println!("{}", format!("↳ {}", task).dimmed());
@@ -319,6 +404,49 @@ impl RunObserver for ConsoleObserver {
 }
 
 impl ConsoleObserver {
+    /// The `--timings` report: one line per task, then the totals.
+    fn print_timings(&self, elapsed: Duration) {
+        let Some(records) = &self.records else {
+            return;
+        };
+        let records = records.lock().unwrap_or_else(|e| e.into_inner());
+        if records.is_empty() {
+            return;
+        }
+        let width = records.iter().map(|r| r.task.width()).max().unwrap_or(0);
+        eprintln!("{}", "Timings".bold());
+        let (mut ran, mut skipped, mut failed) = (0, 0, 0);
+        for record in records.iter() {
+            let pad = " ".repeat(width.saturating_sub(record.task.width()));
+            let detail = match record.result {
+                RecordResult::Ran(d) => {
+                    ran += 1;
+                    format!("{} {:>7.1}s", "✔".green(), d.as_secs_f64())
+                }
+                RecordResult::Skipped => {
+                    skipped += 1;
+                    format!("{} {}", "⊘".dimmed(), "skipped".dimmed())
+                }
+                RecordResult::Failed => {
+                    failed += 1;
+                    format!("{} {}", "✘".red(), "failed".red())
+                }
+            };
+            eprintln!("  {}{}  {}", record.task, pad, detail);
+        }
+        eprintln!(
+            "{}",
+            format!(
+                "Total {:.1}s · {} ran · {} skipped · {} failed",
+                elapsed.as_secs_f64(),
+                ran,
+                skipped,
+                failed
+            )
+            .dimmed()
+        );
+    }
+
     /// Status reporting for `--output group`.
     fn status_grouped(&self, task: &str, status: &TaskStatus) {
         // Holding the lock while printing keeps blocks from interleaving.
@@ -344,12 +472,14 @@ impl ConsoleObserver {
             }
             TaskStatus::Succeeded { elapsed } => {
                 self.flush(task, &mut held);
-                println!(
-                    "{} {} {}",
-                    "✔".green().bold(),
-                    task.bold(),
-                    format!("({:.1}s)", elapsed.as_secs_f64()).dimmed()
-                );
+                if !self.quiet {
+                    println!(
+                        "{} {} {}",
+                        "✔".green().bold(),
+                        task.bold(),
+                        format!("({:.1}s)", elapsed.as_secs_f64()).dimmed()
+                    );
+                }
             }
             TaskStatus::Failed { error } => {
                 self.flush(task, &mut held);
@@ -357,7 +487,9 @@ impl ConsoleObserver {
             }
             TaskStatus::Skipped { reason } => {
                 held.remove(task);
-                println!("{}", format!("⊘ {} skipped ({})", task, reason).dimmed());
+                if !self.quiet {
+                    println!("{}", format!("⊘ {} skipped ({})", task, reason).dimmed());
+                }
             }
             TaskStatus::Cancelled { reason } => {
                 held.remove(task);
@@ -409,6 +541,10 @@ impl RunObserver for FailureTracker<'_> {
                 .get_or_insert_with(|| task.to_string());
         }
         self.inner.status(task, status);
+    }
+
+    fn finished(&self, elapsed: Duration) {
+        self.inner.finished(elapsed);
     }
 }
 

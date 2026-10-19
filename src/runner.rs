@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use colored::Colorize;
 use mq_lang::{DictMap, Engine, Ident, RuntimeValue, parse_markdown_input};
@@ -398,6 +398,52 @@ pub struct RunOptions {
     /// Set to abort the run: running processes are killed and no further
     /// tasks start.
     pub cancel: Option<Arc<AtomicBool>>,
+    /// Print only task output and failures
+    pub quiet: bool,
+    /// Print how long each task took when the run ends
+    pub timings: bool,
+    /// Run only the requested tasks, not their `depends`
+    pub no_deps: bool,
+}
+
+/// Whether one task would run, as reported by [`Runner::task_states`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct TaskState {
+    pub task: String,
+    /// True when the task would be skipped (up to date, or its `if` is false).
+    pub up_to_date: bool,
+    pub detail: String,
+}
+
+/// Collects the verdict on each task of a `--status` check.
+#[derive(Default)]
+struct StateRecorder {
+    states: std::sync::Mutex<Vec<TaskState>>,
+}
+
+impl RunObserver for StateRecorder {
+    fn output(&self, _task: &str, _stream: crate::events::Stream, _line: &str) {}
+
+    fn status(&self, task: &str, status: &crate::events::TaskStatus) {
+        use crate::events::TaskStatus;
+        let (up_to_date, detail) = match status {
+            TaskStatus::Skipped { reason } => (true, reason.clone()),
+            TaskStatus::Failed { error } => (false, error.clone()),
+            TaskStatus::Cancelled { .. } => (
+                false,
+                "not checked: a dependency is out of date".to_string(),
+            ),
+            _ => return,
+        };
+        self.states
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(TaskState {
+                task: task.to_string(),
+                up_to_date,
+                detail,
+            });
+    }
 }
 
 /// A set of files whose changes should re-run a task in watch mode.
@@ -948,11 +994,37 @@ impl Runner {
         task_name: &str,
         opts: RunOptions,
     ) -> Result<()> {
-        let sections = self.load_sections(markdown_path)?;
+        self.run_tasks_with_options(markdown_path, &[task_name.to_string()], opts)
+    }
+
+    /// Run several tasks one after another as a single run, so a dependency
+    /// they share runs once. With one task this is [`Self::run_task_with_options`].
+    /// `opts.args` belong to a single task and are rejected for several.
+    pub fn run_tasks_with_options<P: AsRef<Path>>(
+        &mut self,
+        markdown_path: P,
+        tasks: &[String],
+        opts: RunOptions,
+    ) -> Result<()> {
+        if tasks.len() > 1 && !opts.args.is_empty() {
+            return Err(Error::Invalid(
+                "arguments after `--` can only be given to a single task".to_string(),
+            ));
+        }
+        let (sections, task_name) = self.sections_for(markdown_path, tasks, opts.no_deps)?;
+        let task_name = task_name.as_str();
         self.exec.clear_var_cache();
 
         let explicit_parallel = opts.parallel || opts.jobs.is_some_and(|j| j > 1);
-        let plan = self.plan_for(&sections, task_name, explicit_parallel)?;
+        let mut plan = self.plan_for(&sections, task_name, explicit_parallel)?;
+        let aggregate = tasks.len() > 1;
+        if aggregate {
+            // The tasks asked for are what the user sees as the run.
+            let root = plan.root();
+            for id in plan.nodes[root].deps.clone() {
+                plan.nodes[id].requested = true;
+            }
+        }
 
         let wants_parallel = explicit_parallel || plan.nodes.iter().any(|n| n.section.parallel);
         // Dry-run output goes straight to stdout; keep it ordered.
@@ -975,17 +1047,31 @@ impl Runner {
             opts.observer.is_some() || matches!(mode, OutputMode::Prefixed | OutputMode::Group);
         let observer: Arc<dyn RunObserver> = match opts.observer {
             Some(o) => o,
-            None if mode == OutputMode::Group => Arc::new(ConsoleObserver::grouped()),
+            None if mode == OutputMode::Group => Arc::new(
+                ConsoleObserver::grouped()
+                    .quiet(opts.quiet)
+                    .timings(opts.timings),
+            ),
             None if mode == OutputMode::Prefixed || (mode == OutputMode::Auto && jobs > 1) => {
-                Arc::new(ConsoleObserver::prefixed_for(&names))
+                Arc::new(
+                    ConsoleObserver::prefixed_for(&names)
+                        .quiet(opts.quiet)
+                        .timings(opts.timings),
+                )
             }
             None => {
-                println!(
-                    "{} {}",
-                    "▶".cyan().bold(),
-                    plan.nodes[plan.root()].section.title.bold()
-                );
-                Arc::new(ConsoleObserver::new())
+                let root = plan.nodes[plan.root()].section.title.as_str();
+                if !opts.quiet {
+                    println!("{} {}", "▶".cyan().bold(), root.bold());
+                }
+                let console = ConsoleObserver::new()
+                    .quiet(opts.quiet)
+                    .timings(opts.timings);
+                Arc::new(if aggregate {
+                    console.announcing_requested(root)
+                } else {
+                    console
+                })
             }
         };
         observer.plan(&names);
@@ -994,7 +1080,8 @@ impl Runner {
         let cancel = opts.cancel.as_deref().unwrap_or(&no_cancel);
 
         let tracker = FailureTracker::new(observer.as_ref());
-        schedule::run_plan(
+        let started = Instant::now();
+        let result = schedule::run_plan(
             &self.exec,
             &plan,
             &ScheduleOptions {
@@ -1006,14 +1093,94 @@ impl Runner {
                 cancel,
                 observer: &tracker,
             },
-        )
-        .map_err(|err| match tracker.first_failure() {
+        );
+        observer.finished(started.elapsed());
+        result.map_err(|err| match tracker.first_failure() {
             Some(task) => err.in_task(&task),
             None => err,
         })
     }
 
-    /// Files whose changes should re-run `task_name` in watch mode: every
+    /// The file's sections and the task to plan for running `tasks`. For
+    /// several tasks that is a section added here which depends on them in
+    /// order, so they share one plan.
+    fn sections_for<P: AsRef<Path>>(
+        &mut self,
+        markdown_path: P,
+        tasks: &[String],
+        no_deps: bool,
+    ) -> Result<(Vec<Section>, String)> {
+        let mut sections = self.load_sections(markdown_path)?;
+        if no_deps {
+            for task in tasks {
+                let found = self.find_section(&sections, task).map(|s| s.title.clone());
+                for section in sections
+                    .iter_mut()
+                    .filter(|s| Some(&s.title) == found.as_ref())
+                {
+                    section.depends.clear();
+                }
+            }
+        }
+        let [only] = tasks else {
+            for task in tasks {
+                if self.find_section(&sections, task).is_none() {
+                    return Err(Error::SectionNotFound(task.clone()));
+                }
+            }
+            let title = tasks.join(", ");
+            sections.push(Section {
+                title: title.clone(),
+                depends: tasks.to_vec(),
+                ..Default::default()
+            });
+            return Ok((sections, title));
+        };
+        Ok((sections, only.clone()))
+    }
+
+    /// Say, without running anything, whether each task of the run for
+    /// `tasks` would run (`--status`). A task is up to date when its
+    /// `status` commands or its `sources` and `outputs` say so, or when its
+    /// `if` is false; a task with none of these always runs. The tasks that
+    /// depend on one that is out of date are not checked.
+    pub fn task_states<P: AsRef<Path>>(
+        &mut self,
+        markdown_path: P,
+        tasks: &[String],
+        opts: &RunOptions,
+    ) -> Result<Vec<TaskState>> {
+        let (sections, task_name) = self.sections_for(markdown_path, tasks, opts.no_deps)?;
+        self.exec.clear_var_cache();
+        let plan = self.plan_for(&sections, &task_name, false)?;
+
+        let recorder = StateRecorder::default();
+        let no_cancel = AtomicBool::new(false);
+        let mut exec = self.exec.clone();
+        exec.check_only = true;
+        let _ = schedule::run_plan(
+            &exec,
+            &plan,
+            &ScheduleOptions {
+                args: &opts.args,
+                lang_filter: opts.lang_filter.as_deref(),
+                jobs: 1,
+                keep_going: true,
+                piped: true,
+                cancel: &no_cancel,
+                observer: &recorder,
+            },
+        );
+
+        let mut states = recorder.states.into_inner().unwrap_or_default();
+        if tasks.len() > 1 {
+            // The task added to run them together is not one of theirs.
+            states.retain(|s| s.task != task_name);
+        }
+        Ok(states)
+    }
+
+    /// Files whose changes should re-run the tasks in watch mode: every
     /// `sources` glob and `dotenv` file of the task and its dependencies,
     /// plus the task file.
     pub fn watch_targets<P: AsRef<Path>>(
@@ -1021,8 +1188,19 @@ impl Runner {
         markdown_path: P,
         task_name: &str,
     ) -> Result<Vec<WatchTarget>> {
-        let sections = self.load_sections(markdown_path.as_ref())?;
-        let plan = self.plan_for(&sections, task_name, false)?;
+        self.watch_targets_for(markdown_path, &[task_name.to_string()], false)
+    }
+
+    /// [`Self::watch_targets`] for several tasks run together, optionally
+    /// without their dependencies (`--no-deps`).
+    pub fn watch_targets_for<P: AsRef<Path>>(
+        &mut self,
+        markdown_path: P,
+        tasks: &[String],
+        no_deps: bool,
+    ) -> Result<Vec<WatchTarget>> {
+        let (sections, task_name) = self.sections_for(markdown_path.as_ref(), tasks, no_deps)?;
+        let plan = self.plan_for(&sections, &task_name, false)?;
 
         let mut targets = vec![WatchTarget {
             patterns: vec![markdown_path.as_ref().to_string_lossy().into_owned()],

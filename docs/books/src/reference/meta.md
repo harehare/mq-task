@@ -23,7 +23,7 @@ Error: Invalid task file: task 'flaky': `meta` block: unknown key `retires` on l
 | `prompt` | string | Ask for confirmation before running ([Prompts](../guide/prompts.md)) |
 | `ignore_error` | bool | Treat a failed run as success ([Retries and Timeouts](../guide/retries-timeouts.md#ignoring-failures)) |
 | `capture` | bool | Expose stdout as `MX_OUTPUT_<TASK>` to dependents |
-| `sources` | array of globs | Input files for up-to-date checks and `--watch` |
+| `sources` | array of globs | Input files for up-to-date checks and `--watch`; a `!pattern` excludes files ([details](../guide/cache-watch.md#excluding-files)) |
 | `status` | array of strings | Shell commands; task skipped when all exit `0` ([guide](../guide/cache-watch.md#custom-up-to-date-checks-with-status)) |
 | `outputs` | array of paths | Files that must exist for the task to be considered up to date |
 | `params` | array of strings | Named parameters (`name` required, `name=value` default) |

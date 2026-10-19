@@ -24,13 +24,40 @@ fn resolve(base: Option<&Path>, pattern: &str) -> String {
     }
 }
 
+/// Drop a leading `./` so `./target/x` and `target/x` compare equal.
+fn normalized(path: &Path) -> PathBuf {
+    path.components()
+        .filter(|c| !matches!(c, std::path::Component::CurDir))
+        .collect()
+}
+
 /// Expand glob patterns (relative to `dir`) into a sorted list of files.
+/// A pattern starting with `!` removes the files it matches from the result,
+/// whatever its position (`["src/**/*.rs", "!src/generated/**"]`).
 pub fn expand(patterns: &[String], dir: Option<&Path>) -> Vec<PathBuf> {
+    let options = glob::MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: true,
+        require_literal_leading_dot: false,
+    };
     let mut files = Vec::new();
+    let mut excluded = Vec::new();
     for pattern in patterns {
-        if let Ok(paths) = glob::glob(&resolve(dir, pattern)) {
+        if let Some(negated) = pattern.strip_prefix('!') {
+            let resolved = resolve(dir, negated.trim_start());
+            let resolved = resolved.strip_prefix("./").unwrap_or(&resolved);
+            if let Ok(pattern) = glob::Pattern::new(resolved) {
+                excluded.push(pattern);
+            }
+        } else if let Ok(paths) = glob::glob(&resolve(dir, pattern)) {
             files.extend(paths.flatten().filter(|p| p.is_file()));
         }
+    }
+    if !excluded.is_empty() {
+        files.retain(|file| {
+            let file = normalized(file);
+            !excluded.iter().any(|p| p.matches_path_with(&file, options))
+        });
     }
     files.sort();
     files.dedup();

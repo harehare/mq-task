@@ -62,6 +62,10 @@ pub enum Error {
     #[error("Missing required parameter '{0}' for task '{1}'")]
     MissingParameter(String, String),
 
+    /// A `name=value` argument names a parameter the task does not declare
+    #[error("Unknown parameter '{0}' for task '{1}'{2}")]
+    UnknownParameter(String, String, String),
+
     /// A `--env` value was not in `KEY=VALUE` format
     #[error("Invalid environment variable '{0}'. Expected format: 'KEY=VALUE'")]
     InvalidEnv(String),

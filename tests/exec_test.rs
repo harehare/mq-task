@@ -90,10 +90,10 @@ proptest! {
     vec!["prod"],
     vec![("MX_PARAM_ENV", "prod"), ("MX_PARAM_TAG", "latest")]
 )]
-#[case::unknown_key_is_positional(
+#[case::non_identifier_key_is_positional(
     vec![param("env", None)],
-    vec!["other=1"],
-    vec![("MX_PARAM_ENV", "other=1")]
+    vec!["https://x.test/?a=1"],
+    vec![("MX_PARAM_ENV", "https://x.test/?a=1")]
 )]
 #[case::value_may_contain_equals(
     vec![param("q", None)],
@@ -122,6 +122,33 @@ fn binds_params(
 ) {
     let got = Executor::bind_params(&params, &strings(&args), "task").unwrap();
     assert_eq!(got, pairs(&expected));
+}
+
+#[test]
+fn an_undeclared_name_value_argument_is_an_error() {
+    let params = vec![param("env", Some("staging")), param("region", None)];
+    match Executor::bind_params(&params, &strings(&["regoin=eu"]), "deploy") {
+        Err(Error::UnknownParameter(name, task, hint)) => {
+            assert_eq!((name.as_str(), task.as_str()), ("regoin", "deploy"));
+            assert!(hint.contains("did you mean `region`?"), "{hint}");
+        }
+        other => panic!("{other:?}"),
+    }
+    match Executor::bind_params(&params, &strings(&["--zone=eu"]), "deploy") {
+        Err(Error::UnknownParameter(_, _, hint)) => {
+            assert!(hint.contains("declared: env, region"), "{hint}")
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_task_without_params_still_takes_any_argument() {
+    assert!(
+        Executor::bind_params(&[], &strings(&["a=b"]), "t")
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

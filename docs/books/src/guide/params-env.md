@@ -24,6 +24,15 @@ mq-task deploy -- env=prod region=eu  # named
 
 Parameters are exposed as `MX_PARAM_<NAME>`. A required parameter without a value is an error.
 
+A word of the form `name=value` is a named argument, so a name the task does not declare is an error (with a suggestion for a near miss) instead of becoming a value:
+
+```text
+$ mq-task deploy -- regoin=eu
+Error: Unknown parameter 'regoin' for task 'deploy' (did you mean `region`?)
+```
+
+This applies to tasks that declare `params`; a task without them takes any arguments. A value that merely contains `=` (`https://x.test/?a=1`) is still a plain value, because it is not of the form `name=value`.
+
 ## Environment and directory
 
 ```sh

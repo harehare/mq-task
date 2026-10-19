@@ -1,7 +1,8 @@
 //! `mq-task check`: validate a task file without running anything.
 //!
 //! Everything wrong is reported at once: broken `meta` blocks, unknown
-//! dependencies, cycles, missing runtimes, bad globs and conditions.
+//! dependencies, cycles, missing runtimes, bad globs and conditions, and
+//! scripts that read a parameter or a captured output that is not there.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -119,6 +120,8 @@ pub fn check_sections(
     check_runtimes(sections, config, &mut out);
     check_patterns(sections, &mut out);
     check_conditions(sections, &mut out);
+    check_script_references(sections, &mut out);
+    check_sources_exist(sections, &mut out);
     out
 }
 
@@ -396,6 +399,138 @@ fn check_patterns(sections: &[Section], out: &mut Vec<Diagnostic>) {
     }
 }
 
+/// The names that follow `prefix` (`MX_PARAM_`) in `code`, such as `REGION`
+/// for `$MX_PARAM_REGION`. A prefix with nothing after it (`MX_PARAM_${x}`)
+/// names nothing and is skipped.
+fn names_after<'a>(code: &'a str, prefix: &str) -> Vec<&'a str> {
+    let mut found = Vec::new();
+    for (at, _) in code.match_indices(prefix) {
+        let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+        if code[..at].chars().next_back().is_some_and(word) {
+            continue;
+        }
+        let rest = &code[at + prefix.len()..];
+        let end = rest.find(|c: char| !word(c)).unwrap_or(rest.len());
+        if end > 0 && !found.contains(&&rest[..end]) {
+            found.push(&rest[..end]);
+        }
+    }
+    found
+}
+
+/// Scripts that read `MX_PARAM_*` for a parameter the task does not declare,
+/// or `MX_OUTPUT_*` for a task that is not a dependency capturing its output.
+/// Both are silently empty at run time, so a typo goes unnoticed.
+fn check_script_references(sections: &[Section], out: &mut Vec<Diagnostic>) {
+    for section in sections.iter().filter(|s| runnable(s)) {
+        let code: String = section
+            .codes
+            .iter()
+            .map(|b| b.code.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let task = Some(section.title.as_str());
+
+        let declared: Vec<String> = section
+            .params
+            .iter()
+            .map(|p| p.name.to_uppercase())
+            .collect();
+        for name in names_after(&code, "MX_PARAM_") {
+            if declared.iter().any(|d| d == name) {
+                continue;
+            }
+            let hint = match closest(name, declared.iter().map(String::as_str)) {
+                Some(near) => format!(" (did you mean `MX_PARAM_{}`?)", near),
+                None if declared.is_empty() => " (the task declares no params)".to_string(),
+                None => format!(
+                    " (declared: {})",
+                    section
+                        .params
+                        .iter()
+                        .map(|p| p.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            };
+            out.push(Diagnostic::warning(
+                task,
+                format!(
+                    "the script reads MX_PARAM_{} but no such parameter is declared{}",
+                    name, hint
+                ),
+            ));
+        }
+
+        let outputs = names_after(&code, "MX_OUTPUT_");
+        if outputs.is_empty() {
+            continue;
+        }
+        let mut available: Vec<(String, &Section)> = Vec::new();
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut stack: Vec<&Section> = vec![section];
+        while let Some(current) = stack.pop() {
+            for spec in &current.depends {
+                if let Some((target, _)) = resolve_call(sections, spec)
+                    && seen.insert(target.title.as_str())
+                {
+                    if target.capture {
+                        available.push((crate::exec::output_var(&target.title), target));
+                    }
+                    stack.push(target);
+                }
+            }
+        }
+        for name in outputs {
+            let var = format!("MX_OUTPUT_{}", name);
+            if available.iter().any(|(v, _)| *v == var) {
+                continue;
+            }
+            let reason = match sections
+                .iter()
+                .find(|s| crate::exec::output_var(&s.title) == var)
+            {
+                Some(owner) if !owner.capture => {
+                    format!("task '{}' does not set `capture = true`", owner.title)
+                }
+                Some(owner) => format!("task '{}' is not one of its dependencies", owner.title),
+                None => match closest(&var, available.iter().map(|(v, _)| v.as_str())) {
+                    Some(near) => format!("no task has that name (did you mean `{}`?)", near),
+                    None => "no task has that name".to_string(),
+                },
+            };
+            out.push(Diagnostic::warning(
+                task,
+                format!(
+                    "the script reads {} but no dependency provides it: {}",
+                    var, reason
+                ),
+            ));
+        }
+    }
+}
+
+/// A `sources` pattern that matches no file never changes, so the task would
+/// be skipped as up to date forever. Patterns are looked up the way a run
+/// does, from the current directory (or the task's `dir`).
+fn check_sources_exist(sections: &[Section], out: &mut Vec<Diagnostic>) {
+    for section in sections.iter().filter(|s| runnable(s)) {
+        for pattern in section.sources.iter().filter(|p| !p.starts_with('!')) {
+            // Invalid patterns are reported by `check_patterns`.
+            if glob::Pattern::new(pattern).is_err() {
+                continue;
+            }
+            let found = crate::cache::expand(std::slice::from_ref(pattern), section.dir.as_deref());
+            if found.is_empty() {
+                out.push(Diagnostic::warning(
+                    Some(section.title.as_str()),
+                    format!("`sources` pattern '{}' matches no files", pattern),
+                ));
+            }
+        }
+    }
+}
+
 /// `if` expressions that do not parse or evaluate.
 fn check_conditions(sections: &[Section], out: &mut Vec<Diagnostic>) {
     let env = HashMap::new();
@@ -438,6 +573,106 @@ mod tests {
 
     fn messages(diagnostics: &[Diagnostic]) -> Vec<String> {
         diagnostics.iter().map(|d| d.message.clone()).collect()
+    }
+
+    fn with_code(mut section: Section, code: &str) -> Section {
+        section.codes[0].code = code.into();
+        section
+    }
+
+    fn reference_warnings(sections: &[Section]) -> Vec<String> {
+        messages(&check(sections))
+            .into_iter()
+            .filter(|m| m.contains("script reads"))
+            .collect()
+    }
+
+    #[test]
+    fn a_script_reading_an_undeclared_param_is_warned_about() {
+        let mut deploy = with_code(task("deploy", &[]), "echo $MX_PARAM_REGOIN ${MX_PARAM_ENV}");
+        deploy.params = vec![
+            crate::runner::ParamDef {
+                name: "region".into(),
+                ..Default::default()
+            },
+            crate::runner::ParamDef {
+                name: "env".into(),
+                ..Default::default()
+            },
+        ];
+        let found = reference_warnings(&[deploy]);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found[0].contains("MX_PARAM_REGOIN")
+                && found[0].contains("did you mean `MX_PARAM_REGION`?"),
+            "{found:?}"
+        );
+
+        let bare = with_code(task("x", &[]), "echo $MX_PARAM_A MX_PARAM_${n} XMX_PARAM_B");
+        let found = reference_warnings(&[bare]);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found[0].contains("the task declares no params"),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn a_script_reading_an_output_needs_a_capturing_dependency() {
+        let mut version = task("version", &[]);
+        version.capture = true;
+        let uses = |depends: &[&str]| {
+            with_code(
+                task("release", depends),
+                "echo $MX_OUTPUT_VERSION $MX_OUTPUT_VERSON",
+            )
+        };
+
+        // Direct and transitive dependencies count; the typo does not.
+        let mut mid = task("mid", &["version"]);
+        mid.capture = false;
+        let found = reference_warnings(&[version.clone(), mid, uses(&["mid"])]);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(
+            found[0].contains("MX_OUTPUT_VERSON")
+                && found[0].contains("did you mean `MX_OUTPUT_VERSION`?"),
+            "{found:?}"
+        );
+
+        // Not a dependency at all.
+        let found = reference_warnings(&[version.clone(), uses(&[])]);
+        assert!(
+            found
+                .iter()
+                .any(|m| m.contains("'version' is not one of its dependencies")),
+            "{found:?}"
+        );
+
+        // A dependency that does not capture.
+        let mut quiet = version;
+        quiet.capture = false;
+        let found = reference_warnings(&[quiet, uses(&["version"])]);
+        assert!(
+            found
+                .iter()
+                .any(|m| m.contains("'version' does not set `capture = true`")),
+            "{found:?}"
+        );
+    }
+
+    #[test]
+    fn a_sources_pattern_that_matches_nothing_is_warned_about() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "").unwrap();
+        let mut build = task("build", &[]);
+        build.dir = Some(dir.path().to_path_buf());
+        build.sources = vec!["*.rs".into(), "*.zig".into(), "!a.rs".into(), "[".into()];
+        let found: Vec<_> = messages(&check(&[build]))
+            .into_iter()
+            .filter(|m| m.contains("matches no files"))
+            .collect();
+        // `*.rs` exists, `!` patterns are exclusions, `[` is reported as invalid instead.
+        assert_eq!(found, ["`sources` pattern '*.zig' matches no files"]);
     }
 
     #[test]

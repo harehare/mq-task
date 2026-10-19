@@ -60,6 +60,10 @@ fn tree() -> TempDir {
 #[case::no_match(&["*.zig"], &[])]
 #[case::no_patterns(&[], &[])]
 #[case::invalid_glob_is_ignored(&["[", "c.txt"], &["c.txt"])]
+#[case::negation_removes_matches(&["**/*.rs", "!src/**"], &["a.rs", "b.rs"])]
+#[case::negation_may_come_first(&["!src/deep/**", "src/**/*.rs"], &["src/lib.rs"])]
+#[case::negation_single_star_stays_in_the_directory(&["**/*.rs", "!*.rs"], &["src/deep/mod.rs", "src/lib.rs"])]
+#[case::negation_alone_matches_nothing(&["!*.rs"], &[])]
 fn expands_patterns_relative_to_dir(
     tree: TempDir,
     #[case] patterns: &[&str],

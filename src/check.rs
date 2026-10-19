@@ -378,7 +378,12 @@ fn check_patterns(sections: &[Section], out: &mut Vec<Diagnostic>) {
             .chain(section.outputs.iter().map(|p| ("outputs", p)))
             .chain(looped.iter().map(|p| ("for", p)))
         {
-            if let Err(e) = glob::Pattern::new(pattern) {
+            // `sources` and `outputs` take `!pattern` to exclude files.
+            let glob = match what {
+                "for" => pattern.as_str(),
+                _ => pattern.strip_prefix('!').unwrap_or(pattern),
+            };
+            if let Err(e) = glob::Pattern::new(glob) {
                 out.push(Diagnostic::error(
                     Some(section.title.as_str()),
                     format!(

@@ -34,6 +34,6 @@ Error: Invalid task file: task 'flaky': `meta` block: unknown key `retires` on l
 | `dotenv` | array of paths | `.env` files to load ([guide](../guide/params-env.md#env-files)) |
 | `alias` | array of strings | Alternate names |
 | `private` | bool | Hide from listings |
-| `imports` | array of paths | Document-wide only: files to import |
+| `imports` | array of paths, globs or tables | Document-wide only: files to import; a table takes `path`, `as`, `optional` and `flatten` ([Importing Tasks](../guide/imports.md#options)) |
 
 Environment variables set for tasks: `MX_ARGS`, `MX_ARG_<N>`, `MX_PARAM_<NAME>`, `MX_OUTPUT_<TASK>`, `vars` entries as variables of their own name, and in loops `MX_ITEM`, `MX_INDEX`, `MX_<AS>` and `MX_<AXIS>`.

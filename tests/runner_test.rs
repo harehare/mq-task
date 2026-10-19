@@ -865,3 +865,99 @@ fn computed_vars_are_evaluated_again_on_every_run() {
     r.run_task(&file, "t").unwrap();
     assert_eq!(std::fs::read_to_string(&out).unwrap(), "first\nsecond\n");
 }
+
+fn imported_names(main: &str, files: &[(&str, &str)]) -> Result<Vec<String>, Error> {
+    let dir = tempfile::tempdir().unwrap();
+    for (name, content) in files {
+        write(dir.path(), name, content);
+    }
+    let file = write(dir.path(), "main.md", main);
+    runner()
+        .list_task_sections(&file)
+        .map(|sections| sections.into_iter().map(|s| s.title).collect())
+}
+
+const LIB: &str = "## helper\n\n```bash\ntrue\n```\n";
+
+#[test]
+fn an_import_can_choose_its_namespace() {
+    let names = imported_names(
+        "```meta\nimports = [{ path = \"lib.md\", as = \"tools\" }]\n```\n\n## all\n\n```bash\ntrue\n```\n",
+        &[("lib.md", LIB)],
+    )
+    .unwrap();
+    assert_eq!(names, ["all", "tools:helper"]);
+}
+
+#[test]
+fn a_flattened_import_keeps_the_task_names() {
+    let names = imported_names(
+        "```meta\nimports = [{ path = \"lib.md\", flatten = true }]\n```\n\n## all\n\n```bash\ntrue\n```\n",
+        &[("lib.md", LIB)],
+    )
+    .unwrap();
+    assert_eq!(names, ["all", "helper"]);
+}
+
+#[test]
+fn an_optional_import_may_be_missing_but_a_plain_one_may_not() {
+    let optional = "```meta\nimports = [{ path = \"none.md\", optional = true }, \"lib.md\"]\n```\n\n## all\n\n```bash\ntrue\n```\n";
+    assert_eq!(
+        imported_names(optional, &[("lib.md", LIB)]).unwrap(),
+        ["all", "lib:helper"]
+    );
+    let missing = "```meta\nimports = [\"none.md\"]\n```\n\n## all\n\n```bash\ntrue\n```\n";
+    assert!(imported_names(missing, &[]).is_err());
+}
+
+#[test]
+fn a_glob_imports_every_match_in_order_and_skips_the_importing_file() {
+    let names = imported_names(
+        "```meta\nimports = [\"*.md\", \"tasks/*.md\"]\n```\n\n## all\n\n```bash\ntrue\n```\n",
+        &[
+            ("b.md", "## two\n\n```bash\ntrue\n```\n"),
+            ("a.md", "## one\n\n```bash\ntrue\n```\n"),
+            ("tasks/c.md", "## three\n\n```bash\ntrue\n```\n"),
+        ],
+    )
+    .unwrap();
+    assert_eq!(names, ["all", "a:one", "b:two", "c:three"]);
+}
+
+#[test]
+fn a_glob_without_matches_imports_nothing() {
+    let names = imported_names(
+        "```meta\nimports = [\"none/*.md\"]\n```\n\n## all\n\n```bash\ntrue\n```\n",
+        &[],
+    )
+    .unwrap();
+    assert_eq!(names, ["all"]);
+}
+
+#[rstest]
+#[case::unknown_key(
+    "{ path = \"x.md\", optinal = true }",
+    "unknown key `optinal` (did you mean `optional`?)"
+)]
+#[case::no_path("{ as = \"x\" }", "needs a `path`")]
+#[case::alias_with_glob(
+    "{ path = \"*.md\", as = \"x\" }",
+    "`as` cannot be used with the glob '*.md'"
+)]
+#[case::alias_with_flatten(
+    "{ path = \"x.md\", as = \"y\", flatten = true }",
+    "`as` has no effect with `flatten`"
+)]
+#[case::wrong_type(
+    "{ path = \"x.md\", optional = \"yes\" }",
+    "`optional` must be true or false"
+)]
+#[case::not_a_path("3", "expected a path or a table")]
+fn invalid_import_entries_are_explained(#[case] entry: &str, #[case] expected: &str) {
+    let main = format!(
+        "```meta\nimports = [{}]\n```\n\n## all\n\n```bash\ntrue\n```\n",
+        entry
+    );
+    let err = imported_names(&main, &[]).unwrap_err().to_string();
+    assert!(err.contains(expected), "{err}");
+}

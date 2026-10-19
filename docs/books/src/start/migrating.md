@@ -66,6 +66,7 @@ Not available: recipe groups (`[group]`), `{{ }}` interpolation of arguments or 
 | `internal` | a leading `_` or `private = true` |
 | `aliases` | `alias` |
 | `includes` | `imports`, namespaced as `file:task` |
+| `includes` with `taskfile`, `flatten`, `optional` | `imports = [{ path = "x.md", as = "ns", flatten = true, optional = true }]` |
 | `requires: vars` | `requires` |
 | `requires: vars` with `enum` | `params` table with `choices` |
 | `--watch`, `interval` | `--watch`, `--interval` |
@@ -79,7 +80,7 @@ Not available: recipe groups (`[group]`), `{{ }}` interpolation of arguments or 
 | `sources` with `exclude:` | `sources = ["src/**", "!src/gen/**"]` |
 | `--output group` with `group.begin`/`end` | `--output group` (on GitHub Actions it emits `::group::` automatically) |
 
-Not available: Go-template functions and conditionals, `includes` options (`flatten`, `optional`, per-include `vars`), `method: timestamp`, `label`, calling another task from the middle of a script (use `depends`, `defer`, or run `mq-task other` from the script), and `set`/`shopt` options.
+Not available: Go-template functions and conditionals, per-include `vars`, `method: timestamp`, `label`, calling another task from the middle of a script (use `depends`, `defer`, or run `mq-task other` from the script), and `set`/`shopt` options.
 
 ## A small example
 

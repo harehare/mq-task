@@ -28,6 +28,18 @@ pub enum VarValue {
     Literal(String),
     /// The output of a shell command, with trailing newlines removed.
     Shell(String),
+    /// The result of an mq query over a file, one line per result.
+    Mq { query: String, from: String },
+}
+
+impl VarValue {
+    /// The text that may refer to other vars with `${NAME}`.
+    fn text(&self) -> String {
+        match self {
+            VarValue::Literal(s) | VarValue::Shell(s) => s.clone(),
+            VarValue::Mq { query, from } => format!("{}\n{}", query, from),
+        }
+    }
 }
 
 /// A variable declared in a `vars` table.
@@ -80,15 +92,24 @@ pub fn parse_table(context: &str, table: &toml::Table) -> Result<Vec<VarDef>> {
                 toml::Value::Integer(i) => VarValue::Literal(i.to_string()),
                 toml::Value::Float(f) => VarValue::Literal(f.to_string()),
                 toml::Value::Boolean(b) => VarValue::Literal(b.to_string()),
-                toml::Value::Table(t) => match (t.len(), t.get("sh")) {
-                    (1, Some(toml::Value::String(cmd))) if !cmd.trim().is_empty() => {
-                        VarValue::Shell(cmd.clone())
+                toml::Value::Table(t) => {
+                    let text = |key: &str| match t.get(key) {
+                        Some(toml::Value::String(s)) if !s.trim().is_empty() => Some(s.clone()),
+                        _ => None,
+                    };
+                    match (t.len(), text("sh"), text("mq"), text("from")) {
+                        (1, Some(cmd), _, _) => VarValue::Shell(cmd),
+                        (2, _, Some(query), Some(from)) => VarValue::Mq { query, from },
+                        _ => {
+                            return Err(invalid(
+                                "must be `{ sh = \"command\" }` or `{ mq = \"query\", from = \"file\" }` when it is a table",
+                            ));
+                        }
                     }
-                    _ => return Err(invalid("must be `{ sh = \"command\" }` when it is a table")),
-                },
+                }
                 _ => {
                     return Err(invalid(
-                        "must be a string, number, boolean or `{ sh = \"command\" }`",
+                        "must be a string, number, boolean, `{ sh = \"command\" }` or `{ mq = \"query\", from = \"file\" }`",
                     ));
                 }
             };
@@ -272,10 +293,8 @@ pub fn depending_on(defs: &[VarDef], roots: &[String]) -> Vec<String> {
             if found.contains(&def.name) {
                 continue;
             }
-            let text = match &def.value {
-                VarValue::Literal(s) | VarValue::Shell(s) => s,
-            };
-            if references(text)
+            let text = def.value.text();
+            if references(&text)
                 .iter()
                 .any(|r| *r != def.name && (roots.contains(r) || found.contains(r)))
             {
@@ -286,6 +305,45 @@ pub fn depending_on(defs: &[VarDef], roots: &[String]) -> Vec<String> {
             return found;
         }
     }
+}
+
+/// Run an mq `query` over the file `from` (relative to `dir`) and join the
+/// results, one per line. The kind of input follows the extension:
+/// Markdown (also the fallback), MDX, HTML or plain text.
+fn run_mq(name: &str, query: &str, from: &str, dir: Option<&Path>) -> Result<String> {
+    let fail = |why: String| Error::Variable(name.to_string(), why);
+    let path = match dir {
+        Some(dir) if !Path::new(from).is_absolute() => dir.join(from),
+        _ => PathBuf::from(from),
+    };
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| fail(format!("cannot read '{}': {}", path.display(), e)))?;
+    let extension = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    let input = match extension.as_str() {
+        "mdx" => mq_lang::parse_mdx_input(&content),
+        "html" | "htm" => mq_lang::parse_html_input(&content),
+        "txt" | "text" => mq_lang::parse_text_input(&content),
+        _ => mq_lang::parse_markdown_input(&content),
+    }
+    .map_err(|e| fail(format!("cannot read '{}': {}", path.display(), e)))?;
+
+    let mut engine: mq_lang::Engine = mq_lang::Engine::default();
+    engine.load_builtin_module();
+    let results = engine
+        .eval(query, input.into_iter())
+        .map_err(|e| fail(format!("mq query `{}` failed: {}", query, e)))?;
+    let lines: Vec<String> = results
+        .into_iter()
+        .filter(|v| !v.is_none())
+        .map(|v| v.to_string())
+        // The nodes a selector does not match come back empty; the mq
+        // command line leaves them out too.
+        .filter(|line| !line.is_empty())
+        .collect();
+    Ok(lines.join("\n").trim_end_matches(['\n', '\r']).to_string())
 }
 
 /// Wait for the entry of a command another task is running, giving up when
@@ -332,9 +390,7 @@ pub fn resolve(defs: &[VarDef], ctx: &ResolveContext) -> Result<Vec<(String, Str
         .collect();
 
     // Order so that a var comes after the vars it refers to.
-    let text = |d: &VarDef| match &d.value {
-        VarValue::Literal(s) | VarValue::Shell(s) => s.clone(),
-    };
+    let text = |d: &VarDef| d.value.text();
     let mut order: Vec<usize> = Vec::new();
     let mut state = vec![0u8; by_name.len()]; // 0 new, 1 visiting, 2 done
     fn visit(
@@ -428,6 +484,39 @@ pub fn resolve(defs: &[VarDef], ctx: &ResolveContext) -> Result<Vec<(String, Str
                         Some(hit) => hit.clone(),
                         None => {
                             let out = run_shell(&def.name, &cmd, &env, ctx.dir, ctx.io)?;
+                            *slot = Some(out.clone());
+                            out
+                        }
+                    }
+                }
+            }
+            VarValue::Mq { query, from } => {
+                // As in a command, a name that is not a var stays: mq has its
+                // own `${...}` in interpolated strings.
+                let query = interpolate(query, &lookup, false).unwrap_or_else(|_| query.clone());
+                let from = interpolate(from, &lookup, true).map_err(|unknown| {
+                    Error::Variable(
+                        def.name.clone(),
+                        format!("unknown variable `${{{}}}`", unknown),
+                    )
+                })?;
+                if ctx.dry_run {
+                    format!("<mq: {} {}>", from, query)
+                } else {
+                    let key = (
+                        ctx.dir.map(Path::to_path_buf),
+                        format!("mq {}\n{}", from, query),
+                        Vec::new(),
+                    );
+                    let entry = {
+                        let mut cache = ctx.cache.lock().unwrap_or_else(|e| e.into_inner());
+                        cache.entry(key).or_default().clone()
+                    };
+                    let mut slot = lock_entry(&entry, ctx.io)?;
+                    match &*slot {
+                        Some(hit) => hit.clone(),
+                        None => {
+                            let out = run_mq(&def.name, &query, &from, ctx.dir)?;
                             *slot = Some(out.clone());
                             out
                         }
@@ -776,6 +865,109 @@ mod tests {
             Path::new(&value(&vars, "WHERE")).canonicalize().unwrap(),
             expected
         );
+    }
+
+    fn mq(name: &str, query: &str, from: &str) -> VarDef {
+        VarDef {
+            name: name.into(),
+            value: VarValue::Mq {
+                query: query.into(),
+                from: from.into(),
+            },
+        }
+    }
+
+    fn resolve_in(
+        defs: &[VarDef],
+        dir: Option<&Path>,
+        dry_run: bool,
+    ) -> Result<Vec<(String, String)>> {
+        let cache = ShellCache::default();
+        resolve(
+            defs,
+            &ResolveContext {
+                base: &[],
+                fixed: &[],
+                dir,
+                dry_run,
+                cache: &cache,
+                select: Select::All,
+                io: &io(&AtomicBool::new(false), None),
+            },
+        )
+    }
+
+    #[test]
+    fn parses_mq_values() {
+        let table: toml::Table =
+            toml::from_str("V = { mq = \".h2\", from = \"CHANGELOG.md\" }\n").unwrap();
+        let vars = parse_table("ctx", &table).unwrap();
+        assert_eq!(
+            vars[0].value,
+            VarValue::Mq {
+                query: ".h2".into(),
+                from: "CHANGELOG.md".into()
+            }
+        );
+        for src in [
+            "A = { mq = \".h2\" }",
+            "A = { from = \"x.md\" }",
+            "A = { mq = \"\", from = \"x.md\" }",
+            "A = { mq = \".h2\", from = \"x.md\", sh = \"x\" }",
+            "A = { mq = 1, from = \"x.md\" }",
+        ] {
+            let table: toml::Table = toml::from_str(src).unwrap();
+            let err = parse_table("ctx", &table).unwrap_err().to_string();
+            assert!(
+                err.contains("`{ mq = \"query\", from = \"file\" }`"),
+                "{src}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_mq_query_reads_a_file_relative_to_the_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("CHANGELOG.md"),
+            "# Changelog\n\n## 1.4.0\n\n- a\n\n## 1.3.2\n",
+        )
+        .unwrap();
+        let defs = [
+            lit("FILE", "CHANGELOG"),
+            mq(
+                "LATEST",
+                "nodes | filter(is_h2) | first() | to_text()",
+                "${FILE}.md",
+            ),
+            mq("ALL", ".h2 | to_text()", "CHANGELOG.md"),
+            lit("TAG", "v${LATEST}"),
+        ];
+        let vars = resolve_in(&defs, Some(dir.path()), false).unwrap();
+        assert_eq!(value(&vars, "LATEST"), "1.4.0");
+        // Nodes the selector skips do not leave blank lines.
+        assert_eq!(value(&vars, "ALL"), "1.4.0\n1.3.2");
+        assert_eq!(value(&vars, "TAG"), "v1.4.0");
+    }
+
+    #[test]
+    fn a_missing_file_or_a_bad_query_names_the_variable() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.md"), "## x\n").unwrap();
+        let err = resolve_in(&[mq("V", ".h2", "nope.md")], Some(dir.path()), false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.starts_with("Variable 'V': cannot read"), "{err}");
+        let err = resolve_in(&[mq("V", ".h9", "a.md")], Some(dir.path()), false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Variable 'V': mq query `.h9` failed"), "{err}");
+    }
+
+    #[test]
+    fn a_dry_run_shows_the_query_instead_of_running_it() {
+        let vars = resolve_in(&[mq("V", ".h2", "nope.md")], None, true).unwrap();
+        assert_eq!(value(&vars, "V"), "<mq: nope.md .h2>");
     }
 
     #[test]

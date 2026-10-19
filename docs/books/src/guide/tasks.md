@@ -17,6 +17,16 @@ cargo build
 - The language of the fence selects the runtime from [configuration](../start/configuration.md).
 - A `meta` block configures the task; it is not executed.
 
+## Code blocks that are not commands
+
+When the task file is a `README.md`, sections often hold examples next to the commands. Blocks that are not commands are skipped:
+
+- A block whose info string contains `no-run` is never run: ```` ```bash no-run ````.
+- A block in a data or output language (`text`, `console`, `output`, `log`, `json`, `yaml`, `toml`, `xml`, `html`, `css`, `csv`, `diff`, `ini`, `markdown`, `mermaid`, `dockerfile`, ...) is skipped, unless the language has a runtime under `[runtimes]` (then it runs, e.g. a `json` block for a `jq` runtime). Other languages without a runtime are still an error, so a typo such as `pyhton` is caught.
+- A block without a language is skipped.
+
+A section whose blocks are all skipped is not a task: it is not listed and `check` ignores it.
+
 ## Document-wide meta
 
 A `meta` block **before the first heading** applies to every task:

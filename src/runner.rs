@@ -20,6 +20,38 @@ use crate::vars::{self, VarDef};
 
 const SECTIONS_QUERY: &str = include_str!("../sections.mq");
 
+/// Info-string word that keeps a code block from running:
+/// ` ```bash no-run `.
+const NO_RUN: &str = "no-run";
+
+/// Languages that name data or output rather than something to run. A block
+/// in one of them is skipped, unless the configuration gives the language a
+/// runtime, so README examples (` ```json `, ` ```text `) do not break a task.
+const DATA_LANGUAGES: [&str; 22] = [
+    "text",
+    "txt",
+    "plain",
+    "plaintext",
+    "console",
+    "output",
+    "log",
+    "json",
+    "jsonc",
+    "yaml",
+    "yml",
+    "toml",
+    "xml",
+    "html",
+    "css",
+    "csv",
+    "diff",
+    "ini",
+    "markdown",
+    "md",
+    "mermaid",
+    "dockerfile",
+];
+
 /// Represents a code block in a section
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CodeBlock {
@@ -743,7 +775,13 @@ impl Runner {
             )));
         }
 
-        let codes: Vec<CodeBlock> = all_codes.into_iter().filter(|c| c.lang != "meta").collect();
+        let codes: Vec<CodeBlock> = all_codes
+            .into_iter()
+            .filter(|c| c.lang != "meta")
+            .filter(|c| {
+                self.exec.config.has_runtime(&c.lang) || !DATA_LANGUAGES.contains(&c.lang.as_str())
+            })
+            .collect();
 
         let description = dict.get(&Ident::from("description")).and_then(|v| match v {
             RuntimeValue::String(s) => Some(s.to_string()),
@@ -801,6 +839,14 @@ impl Runner {
                         _ => None,
                     })
                     .unwrap_or_default();
+
+                let no_run = dict.get(&Ident::from("info")).is_some_and(|v| match v {
+                    RuntimeValue::String(s) => s.split_whitespace().any(|w| w == NO_RUN),
+                    _ => false,
+                });
+                if no_run {
+                    continue;
+                }
 
                 blocks.push(CodeBlock { lang, code });
             }
@@ -2078,6 +2124,29 @@ true
         let found = schedule::resolve_call(&sections, &sections[2].depends[1]).unwrap();
         assert_eq!(found.0.title, "ns:Build App");
         assert_eq!(found.1, vec!["x=1"]);
+    }
+
+    #[test]
+    fn no_run_blocks_and_data_languages_are_not_commands() {
+        let md = "## build\n\n```bash no-run\necho skipped\n```\n\n```bash\necho run\n```\n\n```json\n{}\n```\n\n```text\nout\n```\n";
+        let sections = parse(md).unwrap();
+        let langs: Vec<_> = sections[0].codes.iter().map(|c| c.lang.as_str()).collect();
+        assert_eq!(langs, ["bash"]);
+        assert_eq!(sections[0].codes[0].code, "echo run");
+    }
+
+    #[test]
+    fn a_data_language_with_a_runtime_still_runs() {
+        let mut config = Config::default();
+        config.runtimes.insert(
+            "json".to_string(),
+            crate::config::RuntimeConfig::Simple("jq .".to_string()),
+        );
+        let mut runner = Runner::new(config);
+        let sections = runner
+            .extract_sections("## q\n\n```json\n{}\n```\n")
+            .unwrap();
+        assert_eq!(sections[0].codes.len(), 1);
     }
 
     #[test]

@@ -97,16 +97,36 @@ impl Config {
     /// The configuration beside `task_file` (`mq-task.toml`), or the
     /// defaults when there is none.
     pub fn discover<P: AsRef<Path>>(task_file: P) -> Result<Self> {
-        let dir = task_file
-            .as_ref()
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
-        let path = dir.join(CONFIG_FILE);
+        let path = Self::path_beside(task_file.as_ref());
         if path.is_file() {
             Self::from_file(path)
         } else {
             Ok(Self::default())
+        }
+    }
+
+    /// Where `discover` looks: `mq-task.toml` in the directory of `task_file`.
+    pub fn path_beside(task_file: &Path) -> std::path::PathBuf {
+        task_file
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."))
+            .join(CONFIG_FILE)
+    }
+
+    /// The languages the configuration file at `path` sets a runtime for.
+    /// A file without a `[runtimes]` table sets none (the defaults apply),
+    /// and a missing or unreadable file sets none either.
+    pub fn explicit_languages<P: AsRef<Path>>(path: P) -> Vec<String> {
+        let Ok(content) = fs::read_to_string(path) else {
+            return Vec::new();
+        };
+        match toml::from_str::<toml::Table>(&content) {
+            Ok(table) => match table.get("runtimes") {
+                Some(toml::Value::Table(runtimes)) => runtimes.keys().cloned().collect(),
+                _ => Vec::new(),
+            },
+            Err(_) => Vec::new(),
         }
     }
 

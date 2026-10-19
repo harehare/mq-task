@@ -79,20 +79,32 @@ impl Report {
     }
 }
 
-/// Check the task file at `path` (with its imports) against `config`.
+/// Check the task file at `path` (with its imports) against the runner's
+/// configuration.
 /// `reserved` are names of commands that a task name would collide with.
-pub fn check_file(
-    runner: &mut Runner,
-    config: &Config,
-    path: &Path,
-    reserved: &[String],
-) -> Report {
+pub fn check_file(runner: &mut Runner, path: &Path, reserved: &[String]) -> Report {
     let (sections, errors, failed) = runner.load_sections_lenient(path);
     let mut diagnostics: Vec<Diagnostic> = errors
         .iter()
         .map(|e| Diagnostic::error(None, plain_message(e)))
         .collect();
-    diagnostics.extend(check_sections(&sections, &failed, config, reserved));
+    // After loading, so that runtimes declared in the file count.
+    let config = runner.config().clone();
+    diagnostics.extend(check_sections(&sections, &failed, &config, reserved));
+    if let Some(task) = runner.document_default_task() {
+        let known = sections
+            .iter()
+            .any(|s| s.title == task || s.aliases.iter().any(|a| a == task));
+        if !known && !failed.iter().any(|f| f == task) {
+            let hint = closest(task, sections.iter().map(|s| s.title.as_str()))
+                .map(|c| format!(" (did you mean `{}`?)", c))
+                .unwrap_or_default();
+            diagnostics.push(Diagnostic::error(
+                None,
+                format!("`default_task` names unknown task '{}'{}", task, hint),
+            ));
+        }
+    }
     // Errors first, each group in the order found.
     diagnostics.sort_by_key(|d| d.severity != Severity::Error);
     Report {

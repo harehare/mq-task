@@ -469,10 +469,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             let file = locate_task_file(cli.file, &mut [&mut config, &mut dir], cli.run.quiet)?;
             // No task given: fall back to the configured default task, if any.
             let tasks = if cli.task.is_empty() {
-                load_config(config.clone(), &file)?
-                    .default_task
-                    .into_iter()
-                    .collect()
+                default_task(config.clone(), &file)?.into_iter().collect()
             } else {
                 cli.task
             };
@@ -514,14 +511,21 @@ fn build_runner(
     dir: Option<PathBuf>,
     flags: &ExecFlags,
 ) -> Result<Runner> {
-    let mut config = load_config(config_path, task_file)?;
+    let mut config = load_config(config_path.clone(), task_file)?;
+    let mut pinned = explicit_languages(config_path.as_deref(), task_file);
 
     let exec_mode = execution_mode.map(ExecutionMode::try_from).transpose()?;
     if !runtime_overrides.is_empty() {
         config.apply_runtime_overrides(runtime_overrides, exec_mode)?;
     }
 
+    pinned.extend(
+        runtime_overrides
+            .iter()
+            .filter_map(|o| o.split_once(':').map(|(lang, _)| lang.to_string())),
+    );
     let mut runner = Runner::new(config);
+    runner.pin_runtimes(pinned);
     runner.set_dry_run(dry_run);
     runner.set_env_overrides(Runner::parse_env_overrides(env)?);
     runner.set_working_dir(dir);
@@ -779,8 +783,7 @@ fn run_tui(
 
 /// Check the task file and print what is wrong with it.
 fn check_tasks(file: &Path, config: Option<PathBuf>, strict: bool, json: bool) -> Result<()> {
-    let config = load_config(config, file)?;
-    let mut runner = Runner::new(config.clone());
+    let mut runner = runner_for(config, file)?;
     let command = Cli::command();
     let reserved: Vec<String> = command
         .get_subcommands()
@@ -789,7 +792,7 @@ fn check_tasks(file: &Path, config: Option<PathBuf>, strict: bool, json: bool) -
         })
         .chain(std::iter::once("help".to_string()))
         .collect();
-    let report = mq_task::check::check_file(&mut runner, &config, file, &reserved);
+    let report = mq_task::check::check_file(&mut runner, file, &reserved);
 
     if json {
         let value = serde_json::json!({
@@ -853,7 +856,7 @@ fn show_graph(
     task: Option<String>,
     format: GraphFormat,
 ) -> Result<()> {
-    let mut runner = Runner::new(load_config(config_path, &markdown_path)?);
+    let mut runner = runner_for(config_path, &markdown_path)?;
     print!(
         "{}",
         runner.dependency_graph(&markdown_path, task.as_deref(), format)?
@@ -869,8 +872,7 @@ fn list_tasks(
     show_all: bool,
     json: bool,
 ) -> Result<()> {
-    let config = load_config(config_path, &markdown_path)?;
-    let mut runner = Runner::new(config);
+    let mut runner = runner_for(config_path, &markdown_path)?;
 
     let sections = runner.list_task_sections(&markdown_path)?;
 
@@ -1023,6 +1025,35 @@ fn init(output: Option<PathBuf>, config: bool) -> Result<()> {
 
 /// Load the configuration: `-c`, else `mq-task.toml` next to the task file,
 /// else the defaults.
+/// The task to run when none is named: `default_task` of the configuration
+/// file, else of the task file's own `meta` block.
+fn default_task(config_path: Option<PathBuf>, task_file: &Path) -> Result<Option<String>> {
+    if let Some(task) = load_config(config_path.clone(), task_file)?.default_task {
+        return Ok(Some(task));
+    }
+    let mut runner = runner_for(config_path, task_file)?;
+    runner.load_sections(task_file)?;
+    Ok(runner.document_default_task().map(str::to_string))
+}
+
+/// The languages the configuration file (given, or beside the task file)
+/// sets a runtime for; the task file's own `runtimes` do not replace them.
+fn explicit_languages(config_path: Option<&Path>, task_file: &Path) -> Vec<String> {
+    match config_path {
+        Some(path) => Config::explicit_languages(path),
+        None => Config::explicit_languages(Config::path_beside(task_file)),
+    }
+}
+
+/// A runner for reading the task file, with the configuration pinned like
+/// `build_runner` does.
+fn runner_for(config_path: Option<PathBuf>, task_file: &Path) -> Result<Runner> {
+    let config = load_config(config_path.clone(), task_file)?;
+    let mut runner = Runner::new(config);
+    runner.pin_runtimes(explicit_languages(config_path.as_deref(), task_file));
+    Ok(runner)
+}
+
 fn load_config(config_path: Option<PathBuf>, task_file: &Path) -> Result<Config> {
     match config_path {
         Some(path) => Config::from_file(path),

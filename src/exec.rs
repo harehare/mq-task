@@ -20,6 +20,7 @@ use crate::error::{Error, Result};
 use crate::events::{NullObserver, RunObserver, Stream, TaskStatus};
 use crate::runner::{ParamDef, Section};
 use crate::schedule::{Deferred, loop_item_vars};
+use crate::util::closest;
 use crate::vars::{self, ShellCache, VarDef};
 
 /// Maps a signal-killed process to the shell convention `128 + signal`.
@@ -363,6 +364,26 @@ impl Executor {
             match stripped.split_once('=') {
                 Some((key, value)) if params.iter().any(|p| p.name == key) => {
                     named.push((key, value));
+                }
+                // A word that looks like `name=value` is a named argument, so
+                // a misspelt parameter name is an error and not a value.
+                Some((key, _)) if is_param_name(key) => {
+                    let hint = match closest(key, params.iter().map(|p| p.name.as_str())) {
+                        Some(name) => format!(" (did you mean `{}`?)", name),
+                        None => format!(
+                            " (declared: {})",
+                            params
+                                .iter()
+                                .map(|p| p.name.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    };
+                    return Err(Error::UnknownParameter(
+                        key.to_string(),
+                        task_name.to_string(),
+                        hint,
+                    ));
                 }
                 _ => positional.push(arg),
             }
@@ -1130,6 +1151,15 @@ fn sleep_unless_cancelled(delay: Duration, cancel: &AtomicBool) -> bool {
         std::thread::sleep(Duration::from_millis(20).min(end - Instant::now()));
     }
     !cancel.load(Ordering::SeqCst)
+}
+
+/// Whether `name` could be a parameter name (`region`, `build-type`).
+fn is_param_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 /// Only runtime failures are worth retrying; configuration mistakes

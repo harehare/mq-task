@@ -575,7 +575,13 @@ impl Runner {
         self.exec.global_dir = globals.dir;
         self.exec.global_dotenv = globals.dotenv;
         self.exec.global_vars = globals.vars;
-        self.exec.cache_scope = path.as_ref().to_string_lossy().into_owned();
+        // Spelling the path differently (`tasks.md`, `./tasks.md`) must not
+        // give the same file a second set of fingerprints.
+        let scope = path
+            .as_ref()
+            .canonicalize()
+            .unwrap_or_else(|_| path.as_ref().to_path_buf());
+        self.exec.cache_scope = scope.to_string_lossy().into_owned();
         Ok(sections)
     }
 

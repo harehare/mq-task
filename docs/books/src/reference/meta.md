@@ -26,7 +26,7 @@ Error: Invalid task file: task 'flaky': `meta` block: unknown key `retires` on l
 | `sources` | array of globs | Input files for up-to-date checks and `--watch`; a `!pattern` excludes files ([details](../guide/cache-watch.md#excluding-files)) |
 | `status` | array of strings | Shell commands; task skipped when all exit `0` ([guide](../guide/cache-watch.md#custom-up-to-date-checks-with-status)) |
 | `outputs` | array of paths | Files that must exist for the task to be considered up to date |
-| `params` | array of strings | Named parameters (`name` required, `name=value` default) |
+| `params` | array of strings or tables | Named parameters: `"name"` (required), `"name=value"` (default) or `{ name, default, choices, desc }` ([guide](../guide/params-env.md#choices-and-descriptions)) |
 | `requires` | array of strings | Variables that must be set and not empty ([guide](../guide/params-env.md#required-variables)) |
 | `vars` | table | Named values, fixed or `{ sh = "command" }`; `${NAME}` refers to another ([Variables](../guide/vars.md)) |
 | `env` | array of `KEY=VALUE` | Default environment variables |

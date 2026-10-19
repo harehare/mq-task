@@ -407,6 +407,23 @@ impl Executor {
                     Error::MissingParameter(param.name.clone(), task_name.to_string())
                 })?;
 
+            if !param.choices.is_empty() && !param.choices.contains(&value) {
+                let hint = match closest(&value, param.choices.iter().map(String::as_str)) {
+                    Some(choice) => format!(
+                        "one of: {}; did you mean `{}`?",
+                        param.choices.join(", "),
+                        choice
+                    ),
+                    None => format!("one of: {}", param.choices.join(", ")),
+                };
+                return Err(Error::InvalidParameter(
+                    param.name.clone(),
+                    value,
+                    task_name.to_string(),
+                    hint,
+                ));
+            }
+
             env_vars.push((format!("MX_PARAM_{}", param.name.to_uppercase()), value));
         }
 

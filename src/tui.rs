@@ -846,15 +846,7 @@ fn section_details(s: &Section) -> Vec<Line<'static>> {
         ]));
     }
     if !s.params.is_empty() {
-        let params = s
-            .params
-            .iter()
-            .map(|p| match &p.default {
-                Some(d) => format!("{}={}", p.name, d),
-                None => format!("{} (required)", p.name),
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
+        let params = crate::runner::ParamDef::describe_all(&s.params);
         lines.push(Line::from(vec![label("params"), Span::raw(params)]));
     }
     let mut flags = Vec::new();
@@ -1557,6 +1549,7 @@ mod tests {
         s.params = vec![ParamDef {
             name: "env".into(),
             default: None,
+            ..Default::default()
         }];
         let mut a = app(vec![s]);
         assert!(a.handle_key(KeyCode::Enter, KeyModifiers::NONE).is_none());
@@ -2068,10 +2061,12 @@ mod tests {
             ParamDef {
                 name: "env".into(),
                 default: None,
+                ..Default::default()
             },
             ParamDef {
                 name: "tag".into(),
                 default: Some("latest".into()),
+                ..Default::default()
             },
         ];
         s.parallel = true;
@@ -2200,6 +2195,7 @@ mod tests {
             s.params = vec![ParamDef {
                 name: "x".into(),
                 default: Some("1".into()),
+                ..Default::default()
             }];
             s
         };
@@ -2208,6 +2204,7 @@ mod tests {
             s.params = vec![ParamDef {
                 name: "x".into(),
                 default: None,
+                ..Default::default()
             }];
             s
         };

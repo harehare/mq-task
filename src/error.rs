@@ -66,6 +66,10 @@ pub enum Error {
     #[error("Unknown parameter '{0}' for task '{1}'{2}")]
     UnknownParameter(String, String, String),
 
+    /// A parameter was given a value outside its `choices`
+    #[error("Invalid value '{1}' for parameter '{0}' of task '{2}' ({3})")]
+    InvalidParameter(String, String, String, String),
+
     /// A `--env` value was not in `KEY=VALUE` format
     #[error("Invalid environment variable '{0}'. Expected format: 'KEY=VALUE'")]
     InvalidEnv(String),

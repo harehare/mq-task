@@ -24,6 +24,38 @@ mq-task deploy -- env=prod region=eu  # named
 
 Parameters are exposed as `MX_PARAM_<NAME>`. A required parameter without a value is an error.
 
+## Choices and descriptions
+
+An entry of `params` can also be a table, to restrict the values and explain the parameter:
+
+````markdown
+## deploy
+
+```meta
+params = [
+  { name = "env", default = "staging", choices = ["staging", "prod"], desc = "target environment" },
+  "tag=latest",
+]
+```
+````
+
+| Key | Meaning |
+|---|---|
+| `name` | The parameter name (required) |
+| `default` | The value used when none is given; without it the parameter is required |
+| `choices` | The accepted values; anything else is an error that names the choices and suggests the closest one |
+| `desc` | A line of help shown by `--summary`, the TUI and `list --json` (`description`) |
+| | Tables and the short `"name=default"` strings can be mixed in one list |
+
+```text
+$ mq-task deploy --summary
+  params   env=staging [staging|prod] - target environment; tag=latest
+$ mq-task deploy -- prd
+Error: Invalid value 'prd' for parameter 'env' of task 'deploy' (one of: staging, prod; did you mean `prod`?)
+```
+
+The default must be one of the choices, and an empty `choices` list is rejected when the file is loaded. Values given through `depends = ["deploy env=prod"]` are checked too.
+
 A word of the form `name=value` is a named argument, so a name the task does not declare is an error (with a suggestion for a near miss) instead of becoming a value:
 
 ```text

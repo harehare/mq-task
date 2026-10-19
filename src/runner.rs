@@ -191,7 +191,7 @@ struct TaskMeta {
     #[serde(default)]
     depends: Vec<String>,
     #[serde(default)]
-    params: Vec<String>,
+    params: Vec<toml::Value>,
     #[serde(default)]
     alias: Vec<String>,
     #[serde(default)]
@@ -264,20 +264,123 @@ struct TaskMeta {
 pub struct ParamDef {
     pub name: String,
     pub default: Option<String>,
+    /// The values the parameter accepts; any value when empty.
+    #[serde(default)]
+    pub choices: Vec<String>,
+    /// What the parameter is for, shown by `--summary` and the TUI.
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 impl ParamDef {
+    /// The short form: `"name"` (required) or `"name=default"`.
     fn parse(raw: &str) -> Self {
         match raw.split_once('=') {
             Some((name, default)) => ParamDef {
                 name: name.trim().to_string(),
                 default: Some(default.trim().to_string()),
+                ..Default::default()
             },
             None => ParamDef {
                 name: raw.trim().to_string(),
-                default: None,
+                ..Default::default()
             },
         }
+    }
+
+    /// The table form: `{ name = "env", default = "dev", choices = [...], desc = "..." }`.
+    fn from_toml(task: &str, value: &toml::Value) -> Result<Self> {
+        let invalid = |msg: &str| Error::Invalid(format!("task '{}': `params`: {}", task, msg));
+        match value {
+            toml::Value::String(raw) => Ok(Self::parse(raw)),
+            toml::Value::Table(table) => {
+                const KEYS: [&str; 4] = ["name", "default", "choices", "desc"];
+                let text = |key: &str| -> Result<Option<String>> {
+                    match table.get(key) {
+                        None => Ok(None),
+                        Some(toml::Value::String(s)) => Ok(Some(s.clone())),
+                        Some(_) => Err(invalid(&format!("`{}` must be a string", key))),
+                    }
+                };
+                for key in table.keys() {
+                    if !KEYS.contains(&key.as_str()) {
+                        let hint = crate::util::closest(key, KEYS)
+                            .map(|c| format!(" (did you mean `{}`?)", c))
+                            .unwrap_or_else(|| {
+                                " (expected `name`, `default`, `choices` or `desc`)".into()
+                            });
+                        return Err(invalid(&format!("unknown key `{}`{}", key, hint)));
+                    }
+                }
+                let name = text("name")?
+                    .map(|n| n.trim().to_string())
+                    .filter(|n| !n.is_empty())
+                    .ok_or_else(|| invalid("a table needs a `name`"))?;
+                let choices = match table.get("choices") {
+                    None => Vec::new(),
+                    Some(toml::Value::Array(items)) => items
+                        .iter()
+                        .map(|v| match v {
+                            toml::Value::String(s) => Ok(s.clone()),
+                            other => Ok(other.to_string()),
+                        })
+                        .collect::<Result<Vec<_>>>()?,
+                    Some(_) => return Err(invalid("`choices` must be an array")),
+                };
+                if table.contains_key("choices") && choices.is_empty() {
+                    return Err(invalid(&format!("`choices` of '{}' is empty", name)));
+                }
+                let default = text("default")?;
+                if let Some(d) = &default
+                    && !choices.is_empty()
+                    && !choices.contains(d)
+                {
+                    return Err(invalid(&format!(
+                        "the default '{}' of '{}' is not one of its choices ({})",
+                        d,
+                        name,
+                        choices.join(", ")
+                    )));
+                }
+                Ok(ParamDef {
+                    name,
+                    default,
+                    choices,
+                    description: text("desc")?,
+                })
+            }
+            _ => Err(invalid("expected a string or a table")),
+        }
+    }
+
+    /// All of `params` on one line. The entries are separated by commas, or
+    /// by semicolons when some carry choices or a description (which can
+    /// contain commas).
+    pub fn describe_all(params: &[ParamDef]) -> String {
+        let rich = params
+            .iter()
+            .any(|p| !p.choices.is_empty() || p.description.is_some());
+        let separator = if rich { "; " } else { ", " };
+        params
+            .iter()
+            .map(ParamDef::describe)
+            .collect::<Vec<_>>()
+            .join(separator)
+    }
+
+    /// One line for `--summary` and the TUI: `env=dev [dev|prod] - target`.
+    pub fn describe(&self) -> String {
+        let mut text = match &self.default {
+            Some(default) => format!("{}={}", self.name, default),
+            None => format!("{} (required)", self.name),
+        };
+        if !self.choices.is_empty() {
+            text.push_str(&format!(" [{}]", self.choices.join("|")));
+        }
+        if let Some(description) = self.description.as_deref().filter(|d| !d.is_empty()) {
+            text.push_str(&format!(" - {}", description));
+        }
+        text
     }
 }
 
@@ -805,7 +908,11 @@ impl Runner {
         let retry_delay = duration(&meta.retry_delay)?;
         let timeout = duration(&meta.timeout)?;
 
-        let params = meta.params.iter().map(|p| ParamDef::parse(p)).collect();
+        let params = meta
+            .params
+            .iter()
+            .map(|p| ParamDef::from_toml(&title, p))
+            .collect::<Result<Vec<_>>>()?;
         let private = meta.private || title.starts_with('_');
         let env = Self::parse_env_overrides(&meta.env)?;
         let dir = meta.dir.map(PathBuf::from);
@@ -1856,10 +1963,12 @@ echo "deploying"
             ParamDef {
                 name: "env".to_string(),
                 default: Some("staging".to_string()),
+                ..Default::default()
             },
             ParamDef {
                 name: "region".to_string(),
                 default: None,
+                ..Default::default()
             },
         ];
 
@@ -2331,6 +2440,43 @@ true
             .extract_sections("## q\n\n```json\n{}\n```\n")
             .unwrap();
         assert_eq!(sections[0].codes.len(), 1);
+    }
+
+    #[test]
+    fn params_may_be_tables_with_choices_and_a_description() {
+        let md = "## deploy\n\n```meta\nparams = [\n  \"tag=latest\",\n  { name = \"env\", default = \"dev\", choices = [\"dev\", \"prod\"], desc = \"where to deploy\" },\n  { name = \"region\" },\n]\n```\n\n```bash\ntrue\n```\n";
+        let params = parse(md).unwrap().remove(0).params;
+        assert_eq!(params.len(), 3);
+        assert_eq!(
+            (params[0].name.as_str(), params[0].default.as_deref()),
+            ("tag", Some("latest"))
+        );
+        assert_eq!(params[1].choices, ["dev", "prod"]);
+        assert_eq!(params[1].description.as_deref(), Some("where to deploy"));
+        assert_eq!(params[2].default, None);
+        assert_eq!(params[1].describe(), "env=dev [dev|prod] - where to deploy");
+        assert_eq!(params[2].describe(), "region (required)");
+    }
+
+    #[rstest::rstest]
+    #[case::unknown_key(
+        "{ name = \"a\", chocies = [\"x\"] }",
+        "unknown key `chocies` (did you mean `choices`?)"
+    )]
+    #[case::no_name("{ default = \"a\" }", "needs a `name`")]
+    #[case::empty_choices("{ name = \"a\", choices = [] }", "`choices` of 'a' is empty")]
+    #[case::default_outside(
+        "{ name = \"a\", default = \"z\", choices = [\"x\"] }",
+        "the default 'z' of 'a' is not one of its choices (x)"
+    )]
+    #[case::bad_type("42", "expected a string or a table")]
+    fn invalid_param_tables_are_explained(#[case] param: &str, #[case] expected: &str) {
+        let md = format!(
+            "## t\n\n```meta\nparams = [{}]\n```\n\n```bash\ntrue\n```\n",
+            param
+        );
+        let err = parse(&md).unwrap_err().to_string();
+        assert!(err.contains("task 't'") && err.contains(expected), "{err}");
     }
 
     #[test]

@@ -3,12 +3,12 @@ authors = ["Takahiro Sato <harehare1110@gmail.com>"]
 categories = ["command-line-utilities", "text-processing"]
 description = "A task runner using Markdown"
 edition = "2024"
-homepage = "https://mqlang.org/"
+homepage = "https://task.mqlang.org/"
 keywords = ["markdown", "jq", "taskrunner"]
 license = "MIT"
 name = "mq-task"
 readme = "README.md"
-repository = "https://github.com/harehare/mq"
+repository = "https://github.com/harehare/mq-task"
 version = "0.2.2"
 
 [[bin]]

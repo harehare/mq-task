@@ -536,10 +536,12 @@ mod tests {
             ParamDef {
                 name: "env".into(),
                 default: None,
+                ..Default::default()
             },
             ParamDef {
                 name: "env".into(),
                 default: None,
+                ..Default::default()
             },
         ];
         let mut two = task("test", &[]);

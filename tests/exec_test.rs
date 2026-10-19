@@ -21,6 +21,7 @@ fn param(name: &str, default: Option<&str>) -> ParamDef {
     ParamDef {
         name: name.into(),
         default: default.map(String::from),
+        ..Default::default()
     }
 }
 
@@ -122,6 +123,37 @@ fn binds_params(
 ) {
     let got = Executor::bind_params(&params, &strings(&args), "task").unwrap();
     assert_eq!(got, pairs(&expected));
+}
+
+fn choice_param() -> Vec<ParamDef> {
+    vec![ParamDef {
+        choices: vec!["dev".into(), "prod".into()],
+        ..param("env", Some("dev"))
+    }]
+}
+
+#[test]
+fn a_value_outside_the_choices_is_an_error_with_a_hint() {
+    match Executor::bind_params(&choice_param(), &strings(&["prd"]), "deploy") {
+        Err(Error::InvalidParameter(name, value, task, hint)) => {
+            assert_eq!(
+                (name.as_str(), value.as_str(), task.as_str()),
+                ("env", "prd", "deploy")
+            );
+            assert_eq!(hint, "one of: dev, prod; did you mean `prod`?");
+        }
+        other => panic!("{other:?}"),
+    }
+    // Named or positional, the same rule.
+    assert!(Executor::bind_params(&choice_param(), &strings(&["env=staging"]), "deploy").is_err());
+}
+
+#[test]
+fn values_inside_the_choices_and_the_default_are_accepted() {
+    let got = Executor::bind_params(&choice_param(), &strings(&["env=prod"]), "t").unwrap();
+    assert_eq!(got, pairs(&[("MX_PARAM_ENV", "prod")]));
+    let got = Executor::bind_params(&choice_param(), &[], "t").unwrap();
+    assert_eq!(got, pairs(&[("MX_PARAM_ENV", "dev")]));
 }
 
 #[test]

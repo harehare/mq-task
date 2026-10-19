@@ -67,6 +67,7 @@ Not available: recipe groups (`[group]`), `{{ }}` interpolation of arguments or 
 | `aliases` | `alias` |
 | `includes` | `imports`, namespaced as `file:task` |
 | `requires: vars` | `requires` |
+| `requires: vars` with `enum` | `params` table with `choices` |
 | `--watch`, `interval` | `--watch`, `--interval` |
 | `--parallel`, `--concurrency` | `--parallel`, `-j` |
 | `--force` | `--no-cache` |

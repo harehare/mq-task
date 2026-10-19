@@ -3,7 +3,7 @@
 use std::fmt::Write;
 
 use crate::graph::badge_list;
-use crate::runner::Section;
+use crate::runner::{ParamDef, Section};
 use crate::vars::VarValue;
 
 /// Describe `section`: title, description and its notable settings.
@@ -26,15 +26,7 @@ pub fn render(section: &Section) -> String {
         rows.push(("depends", section.depends.join(", ")));
     }
     if !section.params.is_empty() {
-        let params: Vec<String> = section
-            .params
-            .iter()
-            .map(|p| match &p.default {
-                Some(default) => format!("{}={}", p.name, default),
-                None => format!("{} (required)", p.name),
-            })
-            .collect();
-        rows.push(("params", params.join(", ")));
+        rows.push(("params", ParamDef::describe_all(&section.params)));
     }
     if !section.env.is_empty() {
         let env: Vec<String> = section
@@ -116,6 +108,8 @@ pub fn list_json(sections: &[Section]) -> String {
                     "name": p.name,
                     "default": p.default,
                     "required": p.default.is_none(),
+                    "choices": p.choices,
+                    "description": p.description,
                 })).collect::<Vec<_>>(),
                 "private": s.private,
                 "languages": languages,
@@ -128,7 +122,7 @@ pub fn list_json(sections: &[Section]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runner::{CodeBlock, ParamDef};
+    use crate::runner::CodeBlock;
 
     #[test]
     fn describes_a_task() {
@@ -141,10 +135,12 @@ mod tests {
                 ParamDef {
                     name: "env".into(),
                     default: Some("staging".into()),
+                    ..Default::default()
                 },
                 ParamDef {
                     name: "region".into(),
                     default: None,
+                    ..Default::default()
                 },
             ],
             retries: 2,
@@ -191,6 +187,7 @@ mod tests {
             params: vec![ParamDef {
                 name: "profile".into(),
                 default: Some("dev".into()),
+                ..Default::default()
             }],
             codes: vec![CodeBlock {
                 lang: "bash".into(),
@@ -271,6 +268,7 @@ mod tests {
             params: vec![ParamDef {
                 name: "x".into(),
                 default: None,
+                ..Default::default()
             }],
             ..Default::default()
         }];

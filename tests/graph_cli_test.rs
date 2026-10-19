@@ -63,6 +63,7 @@ fn graph(dir: &Path, args: &[&str]) -> Output {
         .arg("graph")
         .args(args)
         .args(["-f", "tasks.md"])
+        .env_remove("GITHUB_ACTIONS")
         .current_dir(dir)
         .output()
         .unwrap()

@@ -66,10 +66,32 @@ struct ExecFlags {
     output: Option<OutputMode>,
 }
 
-/// Everything needed to run one task from the command line.
+/// Flags that only apply when tasks are run from the command line (not in
+/// the TUI).
+#[derive(Args, Clone, Default)]
+struct RunFlags {
+    /// Print only task output and errors, not progress lines
+    #[arg(short = 'q', long)]
+    quiet: bool,
+
+    /// Print how long each task took when the run ends
+    #[arg(long)]
+    timings: bool,
+
+    /// Run only the named tasks, not their `depends`
+    #[arg(long)]
+    no_deps: bool,
+
+    /// Report whether the tasks are up to date instead of running them
+    /// (exit code 1 when any would run)
+    #[arg(long)]
+    status: bool,
+}
+
+/// Everything needed to run tasks from the command line.
 struct RunRequest {
     file: PathBuf,
-    task: String,
+    tasks: Vec<String>,
     config: Option<PathBuf>,
     runtime: Vec<String>,
     execution_mode: Option<String>,
@@ -82,6 +104,7 @@ struct RunRequest {
     watch: bool,
     interval: String,
     summary: bool,
+    run: RunFlags,
 }
 
 #[derive(Parser)]
@@ -89,9 +112,9 @@ struct RunRequest {
 #[command(about = "Markdown-based task runner", long_about = None)]
 #[command(version)]
 struct Cli {
-    /// Task name to execute (shorthand for 'run' command)
-    #[arg(value_name = "TASK", add = ArgValueCompleter::new(complete_task))]
-    task: Option<String>,
+    /// Names of the tasks to execute, in order (shorthand for 'run' command)
+    #[arg(value_name = "TASK", num_args = 0.., add = ArgValueCompleter::new(complete_task))]
+    task: Vec<String>,
 
     /// Markdown task file (default: the nearest tasks.md, else README.md)
     #[arg(short, long, env = "MQ_TASK_FILE")]
@@ -148,6 +171,9 @@ struct Cli {
     #[command(flatten)]
     flags: ExecFlags,
 
+    #[command(flatten)]
+    run: RunFlags,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -156,9 +182,9 @@ struct Cli {
 enum Commands {
     /// Run a task from a markdown file
     Run {
-        /// Task name (section title) to execute
-        #[arg(add = ArgValueCompleter::new(complete_task))]
-        task: String,
+        /// Names (section titles) of the tasks to execute, in order
+        #[arg(required = true, num_args = 1.., add = ArgValueCompleter::new(complete_task))]
+        task: Vec<String>,
 
         /// Markdown task file (default: the nearest tasks.md, else README.md)
         #[arg(short, long, env = "MQ_TASK_FILE")]
@@ -206,6 +232,9 @@ enum Commands {
 
         #[command(flatten)]
         flags: ExecFlags,
+
+        #[command(flatten)]
+        run: RunFlags,
 
         /// Arguments to pass to the task (use -- to separate: mq_task run task -- arg1 arg2)
         #[arg(last = true)]
@@ -339,9 +368,15 @@ fn main() -> ExitCode {
     match dispatch(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            // `check` has already printed what is wrong.
-            if !matches!(err, Error::CheckFailed) {
+            // `check` and `--status` have already printed what is wrong.
+            if !matches!(err, Error::CheckFailed | Error::OutOfDate(_)) {
                 eprintln!("{} {}", "Error:".red().bold(), err);
+                if std::env::var("GITHUB_ACTIONS").is_ok_and(|v| v == "true") {
+                    println!(
+                        "{}",
+                        mq_task::util::github_error("mq-task", &err.to_string())
+                    );
+                }
             }
             ExitCode::from(err.exit_code().clamp(0, 255) as u8)
         }
@@ -364,12 +399,13 @@ fn dispatch(cli: Cli) -> Result<()> {
             interval,
             summary,
             flags,
+            run,
             args,
         }) => {
-            let file = locate_task_file(file, &mut [&mut config, &mut dir])?;
+            let file = locate_task_file(file, &mut [&mut config, &mut dir], run.quiet)?;
             run_task(RunRequest {
                 file,
-                task,
+                tasks: task,
                 config,
                 runtime,
                 execution_mode,
@@ -382,6 +418,7 @@ fn dispatch(cli: Cli) -> Result<()> {
                 watch,
                 interval,
                 summary,
+                run,
             })?
         }
         Some(Commands::List {
@@ -391,7 +428,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             all,
             json,
         }) => {
-            let file = locate_task_file(file, &mut [&mut config])?;
+            let file = locate_task_file(file, &mut [&mut config], false)?;
             list_tasks(file, config, lang, all, json)?
         }
         Some(Commands::Tui {
@@ -404,7 +441,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             all,
             flags,
         }) => {
-            let file = locate_task_file(file, &mut [&mut config, &mut dir])?;
+            let file = locate_task_file(file, &mut [&mut config, &mut dir], false)?;
             run_tui(file, config, lang, dry_run, env, dir, all, flags)?
         }
         Some(Commands::Check {
@@ -413,7 +450,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             strict,
             json,
         }) => {
-            let file = locate_task_file(file, &mut [&mut config])?;
+            let file = locate_task_file(file, &mut [&mut config], false)?;
             check_tasks(&file, config, strict, json)?
         }
         Some(Commands::Graph {
@@ -422,23 +459,27 @@ fn dispatch(cli: Cli) -> Result<()> {
             mut config,
             format,
         }) => {
-            let file = locate_task_file(file, &mut [&mut config])?;
+            let file = locate_task_file(file, &mut [&mut config], false)?;
             show_graph(file, config, task, format)?
         }
         Some(Commands::Completions { shell }) => print_completion_script(shell)?,
         Some(Commands::Init { output, config }) => init(output, config)?,
         None => {
             let (mut config, mut dir) = (cli.config, cli.dir);
-            let file = locate_task_file(cli.file, &mut [&mut config, &mut dir])?;
+            let file = locate_task_file(cli.file, &mut [&mut config, &mut dir], cli.run.quiet)?;
             // No task given: fall back to the configured default task, if any.
-            let task = match cli.task {
-                Some(task) => Some(task),
-                None => load_config(config.clone(), &file)?.default_task,
+            let tasks = if cli.task.is_empty() {
+                load_config(config.clone(), &file)?
+                    .default_task
+                    .into_iter()
+                    .collect()
+            } else {
+                cli.task
             };
-            match task {
-                Some(task) => run_task(RunRequest {
+            match tasks {
+                tasks if !tasks.is_empty() => run_task(RunRequest {
                     file,
-                    task,
+                    tasks,
                     config,
                     runtime: cli.runtime,
                     execution_mode: cli.execution_mode,
@@ -451,8 +492,9 @@ fn dispatch(cli: Cli) -> Result<()> {
                     watch: cli.watch,
                     interval: cli.interval,
                     summary: cli.summary,
+                    run: cli.run,
                 })?,
-                None => list_tasks(file, config, cli.lang, cli.all, false)?,
+                _ => list_tasks(file, config, cli.lang, cli.all, false)?,
             }
         }
     }
@@ -572,7 +614,7 @@ fn with_task_hint(err: Error, runner: &mut Runner, file: &Path) -> Error {
     }
 }
 
-/// Run a specific task, once or (with `--watch`) whenever its inputs change
+/// Run the requested tasks, once or (with `--watch`) whenever their inputs change
 fn run_task(req: RunRequest) -> Result<()> {
     let mut runner = build_runner(
         req.config,
@@ -586,10 +628,15 @@ fn run_task(req: RunRequest) -> Result<()> {
     )?;
 
     if req.summary {
-        let text = runner
-            .task_summary(&req.file, &req.task)
-            .map_err(|e| with_task_hint(e, &mut runner, &req.file))?;
-        print!("{}", text);
+        for (i, task) in req.tasks.iter().enumerate() {
+            let text = runner
+                .task_summary(&req.file, task)
+                .map_err(|e| with_task_hint(e, &mut runner, &req.file))?;
+            if i > 0 {
+                println!();
+            }
+            print!("{}", text);
+        }
         return Ok(());
     }
 
@@ -602,17 +649,30 @@ fn run_task(req: RunRequest) -> Result<()> {
         output: req.flags.output.unwrap_or_default(),
         observer: None,
         cancel: None,
+        quiet: req.run.quiet,
+        timings: req.run.timings,
+        no_deps: req.run.no_deps,
     };
+
+    if req.run.status {
+        return report_status(
+            &mut runner,
+            &req.file,
+            &req.tasks,
+            &options(),
+            req.run.quiet,
+        );
+    }
 
     if !req.watch {
         return runner
-            .run_task_with_options(&req.file, &req.task, options())
+            .run_tasks_with_options(&req.file, &req.tasks, options())
             .map_err(|e| with_task_hint(e, &mut runner, &req.file));
     }
     let interval = watch_interval(&req.interval)?;
 
     loop {
-        if let Err(err) = runner.run_task_with_options(&req.file, &req.task, options()) {
+        if let Err(err) = runner.run_tasks_with_options(&req.file, &req.tasks, options()) {
             let err = with_task_hint(err, &mut runner, &req.file);
             eprintln!("{} {}", "Error:".red().bold(), err);
         }
@@ -620,7 +680,7 @@ fn run_task(req: RunRequest) -> Result<()> {
             return Ok(());
         }
 
-        let targets = runner.watch_targets(&req.file, &req.task)?;
+        let targets = runner.watch_targets_for(&req.file, &req.tasks, req.run.no_deps)?;
         let snapshot = || {
             let mut all = std::collections::HashMap::new();
             for target in &targets {
@@ -645,6 +705,42 @@ fn run_task(req: RunRequest) -> Result<()> {
                 break;
             }
         }
+    }
+}
+
+/// `--status`: print whether each task would run, and fail if any would.
+fn report_status(
+    runner: &mut Runner,
+    file: &Path,
+    tasks: &[String],
+    options: &RunOptions,
+    quiet: bool,
+) -> Result<()> {
+    let states = runner
+        .task_states(file, tasks, options)
+        .map_err(|e| with_task_hint(e, runner, file))?;
+    for state in &states {
+        if state.up_to_date {
+            if !quiet {
+                println!(
+                    "{} {} {}",
+                    "✔".green().bold(),
+                    state.task.bold(),
+                    format!("({})", state.detail).dimmed()
+                );
+            }
+        } else {
+            println!(
+                "{} {} {}",
+                "✘".red().bold(),
+                state.task.bold(),
+                state.detail
+            );
+        }
+    }
+    match states.iter().find(|s| !s.up_to_date) {
+        Some(state) => Err(Error::OutOfDate(state.task.clone())),
+        None => Ok(()),
     }
 }
 
@@ -941,6 +1037,7 @@ fn load_config(config_path: Option<PathBuf>, task_file: &Path) -> Result<Config>
 fn locate_task_file(
     file: Option<PathBuf>,
     relative: &mut [&mut Option<PathBuf>],
+    quiet: bool,
 ) -> Result<PathBuf> {
     if let Some(file) = file {
         return Ok(file);
@@ -961,7 +1058,9 @@ fn locate_task_file(
             }
         }
         std::env::set_current_dir(&dir)?;
-        eprintln!("{}", format!("using {}", found.display()).dimmed());
+        if !quiet {
+            eprintln!("{}", format!("using {}", found.display()).dimmed());
+        }
     }
     Ok(name)
 }

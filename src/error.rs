@@ -82,6 +82,10 @@ pub enum Error {
     #[error("Variable '{0}': {1}")]
     Variable(String, String),
 
+    /// A task would run (`--status` found it out of date)
+    #[error("out of date ({0})")]
+    OutOfDate(String),
+
     /// `mq-task check` found problems (already printed)
     #[error("check failed")]
     CheckFailed,

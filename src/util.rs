@@ -62,6 +62,30 @@ fn edit_distance(a: &str, b: &str) -> usize {
     rows[a.len()][b.len()]
 }
 
+/// A GitHub Actions workflow command that shows `message` as an error
+/// annotation, with `%`, CR and LF escaped as the runner expects.
+pub fn github_error(title: &str, message: &str) -> String {
+    let escape = |text: &str, property: bool| {
+        let mut out = String::with_capacity(text.len());
+        for c in text.chars() {
+            match c {
+                '%' => out.push_str("%25"),
+                '\r' => out.push_str("%0D"),
+                '\n' => out.push_str("%0A"),
+                ':' if property => out.push_str("%3A"),
+                ',' if property => out.push_str("%2C"),
+                c => out.push(c),
+            }
+        }
+        out
+    };
+    format!(
+        "::error title={}::{}",
+        escape(title, true),
+        escape(message, false)
+    )
+}
+
 /// The candidate most like `word`, when it is close enough to be a typo.
 pub fn closest<'a>(word: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
     let word = word.to_lowercase();
@@ -251,6 +275,15 @@ mod tests {
         assert_eq!(edit_distance("retires", "retries"), 1, "a swap is one edit");
         assert_eq!(edit_distance("dri", "dir"), 1);
         assert_eq!(edit_distance("日本", "日本語"), 1);
+    }
+
+    #[test]
+    fn github_errors_escape_the_message_and_the_title() {
+        assert_eq!(
+            github_error("mq-task", "100% failed\nsee log"),
+            "::error title=mq-task::100%25 failed%0Asee log"
+        );
+        assert_eq!(github_error("a: b, c", "x"), "::error title=a%3A b%2C c::x");
     }
 
     #[test]

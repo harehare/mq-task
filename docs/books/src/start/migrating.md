@@ -34,6 +34,9 @@ mq-task covers what most `justfile`s and `Taskfile.yml`s do, but it is not a dro
 | `just --list`, `--summary` | `mq-task`, `mq-task <task> --summary`, `mq-task list --json` |
 | `just --choose` | `mq-task tui` |
 | `just --dry-run` | `mq-task <task> --dry-run` |
+| `just a b` | `mq-task a b` (arguments after `--` go to a single task only) |
+| `just --no-deps` | `mq-task <task> --no-deps` |
+| `just --quiet` | `mq-task <task> -q` |
 | first recipe is the default | `default_task = "build"` in `mq-task.toml` |
 | `just --fmt`, `--evaluate` | no equivalent (`mq-task check` validates the file) |
 
@@ -69,6 +72,11 @@ Not available: recipe groups (`[group]`), `{{ }}` interpolation of arguments or 
 | `--force` | `--no-cache` |
 | `--list`, `--summary` | `mq-task`, `--summary` |
 | `--dry`, `--yes` | `--dry-run`, `--yes` |
+| `--status` | `--status` (exit `1` when a task would run) |
+| `--silent` | `-q`/`--quiet` |
+| `task a b` | `mq-task a b` |
+| `sources` with `exclude:` | `sources = ["src/**", "!src/gen/**"]` |
+| `--output group` with `group.begin`/`end` | `--output group` (on GitHub Actions it emits `::group::` automatically) |
 
 Not available: Go-template functions and conditionals, `includes` options (`flatten`, `optional`, per-include `vars`), `method: timestamp`, `label`, calling another task from the middle of a script (use `depends`, `defer`, or run `mq-task other` from the script), and `set`/`shopt` options.
 

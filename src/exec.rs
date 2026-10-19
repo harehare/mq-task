@@ -149,6 +149,9 @@ pub struct Executor {
     pub verbose: bool,
     /// Tasks already confirmed in this run, so a loop asks only once.
     confirmed: Arc<Mutex<HashSet<String>>>,
+    /// Report tasks that would run as [`Error::OutOfDate`] instead of
+    /// running them (`--status`).
+    pub check_only: bool,
 }
 
 impl Executor {
@@ -168,6 +171,7 @@ impl Executor {
             assume_yes: false,
             verbose: false,
             confirmed: Arc::default(),
+            check_only: false,
         }
     }
 
@@ -595,6 +599,17 @@ impl Executor {
                 },
             );
             return Ok(NodeOutcome::Skipped);
+        }
+
+        if self.check_only {
+            let reason = if !section.status.is_empty() {
+                "a `status` command failed"
+            } else if !section.sources.is_empty() {
+                "sources changed, outputs are missing or it has not run yet"
+            } else {
+                "no `sources` or `status`, so it always runs"
+            };
+            return Err(fail(Error::OutOfDate(reason.to_string())));
         }
 
         let items: Option<Vec<String>> =

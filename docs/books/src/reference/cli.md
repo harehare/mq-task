@@ -1,8 +1,10 @@
 # CLI
 
 ```text
-mq-task [OPTIONS] [TASK] [-- <ARGS>...] [COMMAND]
+mq-task [OPTIONS] [TASK]... [-- <ARGS>...] [COMMAND]
 ```
+
+Several tasks can be named: `mq-task lint test` runs them in that order as one run, so a dependency they share runs once. Arguments after `--` belong to a single task, so they cannot be combined with several.
 
 ## Commands
 
@@ -30,6 +32,10 @@ mq-task [OPTIONS] [TASK] [-- <ARGS>...] [COMMAND]
 | `--env <KEY=VALUE>` | Set an environment variable (repeatable) |
 | `-d, --dir <PATH>` | Working directory |
 | `--summary` | Describe the task (description, dependencies, parameters, options) instead of running it |
+| `--status` | Say whether each task would run (up to date per `status`, or `sources`/`outputs`) without running anything; exit `1` when any would ([details](../guide/cache-watch.md#checking-without-running)) |
+| `--no-deps` | Run only the named tasks, not their `depends` |
+| `-q, --quiet` | Print only task output and errors: no `▶`, `↳` or `✔` lines |
+| `--timings` | Print how long each task took, and the totals, on stderr when the run ends |
 | `-w, --watch` | Re-run when `sources`, `dotenv` files or the task file change |
 | `--interval <DURATION>` | How often `--watch` checks for changes (default `300ms`, minimum `50ms`) |
 | `--parallel` | Run dependencies concurrently |

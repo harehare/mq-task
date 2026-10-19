@@ -22,6 +22,7 @@ fn workdir(name: &str) -> PathBuf {
 fn mq_task(dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_mq-task"))
         .args(args)
+        .env_remove("GITHUB_ACTIONS")
         .current_dir(dir)
         .output()
         .unwrap()

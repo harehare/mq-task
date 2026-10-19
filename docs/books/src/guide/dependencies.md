@@ -31,6 +31,8 @@ cargo test
 `mq-task test` runs `format → lint → test`.
 
 - Multiple dependencies: `depends = ["format", "lint"]`
+- Several tasks from the command line: `mq-task lint test` runs `lint` then `test` as one run, so a dependency they share runs once
+- `--no-deps` runs only the tasks you name and skips their `depends`: `mq-task test --no-deps`
 - A shared dependency runs only once
 - Circular dependencies are reported as an error
 

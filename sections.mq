@@ -23,8 +23,9 @@ def extract_code_blocks(section_content):
   let code_blocks = filter(section_content, is_code)
   | map(code_blocks, fn(code):
     let lang = attr(code, "lang")
+    | let info = attr(code, "meta")
     | let text = to_text(code)
-    | {"lang": lang, "code": text}
+    | {"lang": lang, "info": info, "code": text}
   end)
 end
 

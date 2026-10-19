@@ -173,9 +173,10 @@ struct GlobalMeta {
     /// Default working directory applied to every task without its own `dir`
     #[serde(default)]
     dir: Option<String>,
-    /// Other task files whose tasks are made available as `<name>:<task>`
+    /// Other task files whose tasks are made available as `<name>:<task>`:
+    /// paths, globs or `{ path, as, optional, flatten }` tables
     #[serde(default)]
-    imports: Vec<String>,
+    imports: Vec<toml::Value>,
     /// `.env` files loaded for every task
     #[serde(default)]
     dotenv: Vec<String>,
@@ -470,12 +471,121 @@ pub struct Section {
     pub vars: Vec<VarDef>,
 }
 
+/// One entry of `imports`: a path (or glob) to a task file, with the options
+/// of the table form.
+#[derive(Debug, Clone, PartialEq)]
+struct ImportSpec {
+    path: String,
+    /// Namespace to use instead of the file name.
+    alias: Option<String>,
+    /// A missing file is not an error.
+    optional: bool,
+    /// Add the tasks under their own names, without a namespace.
+    flatten: bool,
+}
+
+impl ImportSpec {
+    fn is_glob(&self) -> bool {
+        self.path.contains(['*', '?', '['])
+    }
+
+    fn from_toml(value: &toml::Value) -> Result<Self> {
+        let invalid =
+            |msg: &str| Error::Invalid(format!("document `meta` block: `imports`: {}", msg));
+        let spec = match value {
+            toml::Value::String(path) => ImportSpec {
+                path: path.clone(),
+                alias: None,
+                optional: false,
+                flatten: false,
+            },
+            toml::Value::Table(table) => {
+                const KEYS: [&str; 4] = ["path", "as", "optional", "flatten"];
+                for key in table.keys() {
+                    if !KEYS.contains(&key.as_str()) {
+                        let hint = crate::util::closest(key, KEYS)
+                            .map(|c| format!(" (did you mean `{}`?)", c))
+                            .unwrap_or_else(|| {
+                                " (expected `path`, `as`, `optional` or `flatten`)".into()
+                            });
+                        return Err(invalid(&format!("unknown key `{}`{}", key, hint)));
+                    }
+                }
+                let text = |key: &str| match table.get(key) {
+                    None => Ok(None),
+                    Some(toml::Value::String(s)) if !s.trim().is_empty() => Ok(Some(s.clone())),
+                    Some(_) => Err(invalid(&format!("`{}` must be a non-empty string", key))),
+                };
+                let flag = |key: &str| match table.get(key) {
+                    None => Ok(false),
+                    Some(toml::Value::Boolean(b)) => Ok(*b),
+                    Some(_) => Err(invalid(&format!("`{}` must be true or false", key))),
+                };
+                ImportSpec {
+                    path: text("path")?.ok_or_else(|| invalid("a table needs a `path`"))?,
+                    alias: text("as")?,
+                    optional: flag("optional")?,
+                    flatten: flag("flatten")?,
+                }
+            }
+            _ => return Err(invalid("expected a path or a table")),
+        };
+        if spec.is_glob() && spec.alias.is_some() {
+            return Err(invalid(&format!(
+                "`as` cannot be used with the glob '{}': every file is named after itself",
+                spec.path
+            )));
+        }
+        if spec.flatten && spec.alias.is_some() {
+            return Err(invalid(&format!(
+                "`as` has no effect with `flatten` ('{}')",
+                spec.path
+            )));
+        }
+        Ok(spec)
+    }
+
+    /// The files this entry stands for under `base`, each with its
+    /// namespace. `current` (the importing file) is never matched by a glob.
+    fn resolve(&self, base: &Path, current: &Path) -> Result<Vec<(PathBuf, String)>> {
+        let namespace = |path: &Path| {
+            path.file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .ok_or_else(|| Error::Invalid(format!("invalid import path '{}'", self.path)))
+        };
+        if self.is_glob() {
+            let pattern = base.join(&self.path).to_string_lossy().into_owned();
+            let paths = glob::glob(&pattern).map_err(|e| {
+                Error::Invalid(format!("invalid import pattern '{}': {}", self.path, e.msg))
+            })?;
+            let mut found: Vec<PathBuf> = paths
+                .flatten()
+                .filter(|p| p.is_file() && p.canonicalize().ok().as_deref() != Some(current))
+                .collect();
+            found.sort();
+            return found
+                .into_iter()
+                .map(|p| namespace(&p).map(|ns| (p, ns)))
+                .collect();
+        }
+        let path = base.join(&self.path);
+        if self.optional && !path.exists() {
+            return Ok(Vec::new());
+        }
+        let namespace = match &self.alias {
+            Some(alias) => alias.clone(),
+            None => namespace(&path)?,
+        };
+        Ok(vec![(path, namespace)])
+    }
+}
+
 /// Document-wide settings found in the preamble `meta` block.
 #[derive(Debug, Default)]
 struct Globals {
     env: Vec<(String, String)>,
     dir: Option<PathBuf>,
-    imports: Vec<String>,
+    imports: Vec<ImportSpec>,
     dotenv: Vec<String>,
     vars: Vec<VarDef>,
 }
@@ -574,7 +684,7 @@ pub struct Runner {
     engine: Engine,
     exec: Executor,
     /// `imports` of the file most recently passed to `extract_sections`.
-    imports: Vec<String>,
+    imports: Vec<ImportSpec>,
     /// When set, loading records problems here and carries on (`check`).
     collected: Option<Collected>,
 }
@@ -761,42 +871,53 @@ impl Runner {
         };
 
         let base = path.parent().unwrap_or_else(|| Path::new("."));
+        let current = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         let mut namespaces = HashSet::new();
-        for import in &globals.imports {
-            let import_path = base.join(import);
-            let stem = import_path
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .ok_or_else(|| Error::Invalid(format!("invalid import path '{}'", import)))?;
-            if !namespaces.insert(stem.clone()) {
-                let e = Error::Invalid(format!("two imports share the namespace '{}'", stem));
-                match self.collected.as_mut() {
+        for spec in &globals.imports {
+            let import = spec.path.as_str();
+            let targets = match spec.resolve(base, &current) {
+                Ok(targets) => targets,
+                Err(e) => match self.collected.as_mut() {
                     Some(collected) => {
                         collected.errors.push(e);
                         continue;
                     }
                     None => return Err(e),
-                }
-            }
-
-            let (mut imported, child_globals) = match self.load_file(&import_path, stack) {
-                Ok(loaded) => loaded,
-                Err(e) => match self.collected.as_mut() {
-                    Some(collected) => {
-                        collected
-                            .errors
-                            .push(Error::Invalid(format!("import '{}': {}", import, e)));
-                        continue;
-                    }
-                    None => return Err(e),
                 },
             };
-            // Importing a file's own heading (its document title) as a task
-            // is noise; keep only sections that do something.
-            imported.retain(|s| !s.codes.is_empty() || !s.depends.is_empty());
-            apply_globals(&mut imported, &child_globals);
-            namespace_sections(&mut imported, &stem);
-            sections.extend(imported);
+            for (import_path, stem) in targets {
+                if !spec.flatten && !namespaces.insert(stem.clone()) {
+                    let e = Error::Invalid(format!("two imports share the namespace '{}'", stem));
+                    match self.collected.as_mut() {
+                        Some(collected) => {
+                            collected.errors.push(e);
+                            continue;
+                        }
+                        None => return Err(e),
+                    }
+                }
+
+                let (mut imported, child_globals) = match self.load_file(&import_path, stack) {
+                    Ok(loaded) => loaded,
+                    Err(e) => match self.collected.as_mut() {
+                        Some(collected) => {
+                            collected
+                                .errors
+                                .push(Error::Invalid(format!("import '{}': {}", import, e)));
+                            continue;
+                        }
+                        None => return Err(e),
+                    },
+                };
+                // Importing a file's own heading (its document title) as a task
+                // is noise; keep only sections that do something.
+                imported.retain(|s| !s.codes.is_empty() || !s.depends.is_empty());
+                apply_globals(&mut imported, &child_globals);
+                if !spec.flatten {
+                    namespace_sections(&mut imported, &stem);
+                }
+                sections.extend(imported);
+            }
         }
 
         stack.pop();
@@ -835,7 +956,11 @@ impl Runner {
         Ok(Globals {
             env: Self::parse_env_overrides(&meta.env)?,
             dir: meta.dir.map(PathBuf::from),
-            imports: meta.imports,
+            imports: meta
+                .imports
+                .iter()
+                .map(ImportSpec::from_toml)
+                .collect::<Result<_>>()?,
             dotenv: meta.dotenv,
             vars: match &meta.vars {
                 Some(table) => vars::parse_table("document `meta` block", table)?,

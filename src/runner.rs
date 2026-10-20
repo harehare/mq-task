@@ -9,7 +9,7 @@ use colored::Colorize;
 use mq_lang::{DictMap, Engine, Ident, RuntimeValue, parse_markdown_input};
 use serde::{Deserialize, Serialize};
 
-use crate::config::Config;
+use crate::config::{Config, RuntimeConfig};
 use crate::error::{Error, Result};
 use crate::events::{ConsoleObserver, FailureTracker, OutputMode, RunObserver};
 use crate::exec::Executor;
@@ -183,6 +183,13 @@ struct GlobalMeta {
     /// Variables available to every task
     #[serde(default)]
     vars: Option<toml::Table>,
+    /// Runtimes for this file's languages, in the form of `[runtimes]` in
+    /// `mq-task.toml`
+    #[serde(default)]
+    runtimes: Option<toml::Table>,
+    /// Task run when no task is named
+    #[serde(default)]
+    default_task: Option<String>,
 }
 
 /// Task metadata parsed from a `meta` code block within a section
@@ -588,6 +595,8 @@ struct Globals {
     imports: Vec<ImportSpec>,
     dotenv: Vec<String>,
     vars: Vec<VarDef>,
+    runtimes: Vec<(String, RuntimeConfig)>,
+    default_task: Option<String>,
 }
 
 /// Options for [`Runner::run_task_with_options`].
@@ -685,6 +694,16 @@ pub struct Runner {
     exec: Executor,
     /// `imports` of the file most recently passed to `extract_sections`.
     imports: Vec<ImportSpec>,
+    /// `default_task` of the file most recently passed to `extract_sections`.
+    file_default_task: Option<String>,
+    /// `default_task` of the main file of the last load.
+    default_task: Option<String>,
+    /// Languages whose runtime the document's `runtimes` must not replace
+    /// (set by the configuration file or the command line).
+    pinned_runtimes: HashSet<String>,
+    /// Languages already given a runtime by a document in this load, so the
+    /// main file's choice stands over an imported file's.
+    document_runtimes: HashSet<String>,
     /// When set, loading records problems here and carries on (`check`).
     collected: Option<Collected>,
 }
@@ -707,6 +726,10 @@ impl Runner {
             engine,
             exec: Executor::new(config),
             imports: Vec::new(),
+            file_default_task: None,
+            default_task: None,
+            pinned_runtimes: HashSet::new(),
+            document_runtimes: HashSet::new(),
             collected: None,
         }
     }
@@ -724,6 +747,24 @@ impl Runner {
     /// Enable or disable `sources`/`outputs` up-to-date checks (default: on)
     pub fn set_use_cache(&mut self, use_cache: bool) {
         self.exec.use_cache = use_cache;
+    }
+
+    /// Keep the runtimes of `languages` (set by the configuration file or the
+    /// command line) when the document declares its own `runtimes`.
+    pub fn pin_runtimes<I: IntoIterator<Item = String>>(&mut self, languages: I) {
+        self.pinned_runtimes.extend(languages);
+    }
+
+    /// The configuration in effect, including runtimes taken from the
+    /// `meta` block of the files loaded so far.
+    pub fn config(&self) -> &Config {
+        &self.exec.config
+    }
+
+    /// `default_task` from the document-wide `meta` block of the file last
+    /// loaded with [`Self::load_sections`].
+    pub fn document_default_task(&self) -> Option<&str> {
+        self.default_task.as_deref()
     }
 
     /// Show each code block before it runs (`-v`).
@@ -785,6 +826,13 @@ impl Runner {
         self.exec.global_dotenv = globals.dotenv;
         self.exec.global_vars = globals.vars;
         self.imports = globals.imports;
+        self.file_default_task = globals.default_task;
+        for (lang, runtime) in globals.runtimes {
+            if !self.pinned_runtimes.contains(&lang) && self.document_runtimes.insert(lang.clone())
+            {
+                self.exec.config.runtimes.insert(lang, runtime);
+            }
+        }
 
         let query = format!("{}\n | nodes | sections_with_code()", SECTIONS_QUERY);
         let result = self
@@ -805,9 +853,13 @@ impl Runner {
         path: P,
     ) -> (Vec<Section>, Vec<Error>, Vec<String>) {
         self.collected = Some(Collected::default());
+        self.document_runtimes.clear();
         let mut stack = Vec::new();
         let sections = match self.load_file(path.as_ref(), &mut stack) {
-            Ok((sections, _)) => sections,
+            Ok((sections, main)) => {
+                self.default_task = main.default_task;
+                sections
+            }
             Err(e) => {
                 if let Some(collected) = self.collected.as_mut() {
                     collected.errors.push(e);
@@ -823,7 +875,9 @@ impl Runner {
     /// it `imports`. Imported tasks are named `<file stem>:<task>`.
     pub fn load_sections<P: AsRef<Path>>(&mut self, path: P) -> Result<Vec<Section>> {
         let mut stack = Vec::new();
-        let (sections, _) = self.load_file(path.as_ref(), &mut stack)?;
+        self.document_runtimes.clear();
+        let (sections, main) = self.load_file(path.as_ref(), &mut stack)?;
+        self.default_task = main.default_task;
         // Loading imports overwrote the document defaults; the main file's
         // own defaults apply at run time, so restore them.
         let markdown = self.load_markdown(path.as_ref())?;
@@ -868,6 +922,8 @@ impl Runner {
             imports: std::mem::take(&mut self.imports),
             dotenv: self.exec.global_dotenv.clone(),
             vars: self.exec.global_vars.clone(),
+            runtimes: Vec::new(),
+            default_task: self.file_default_task.take(),
         };
 
         let base = path.parent().unwrap_or_else(|| Path::new("."));
@@ -966,6 +1022,25 @@ impl Runner {
                 Some(table) => vars::parse_table("document `meta` block", table)?,
                 None => Vec::new(),
             },
+            runtimes: match meta.runtimes {
+                Some(table) => table
+                    .into_iter()
+                    .map(|(lang, value)| {
+                        value
+                            .try_into::<RuntimeConfig>()
+                            .map(|runtime| (lang.clone(), runtime))
+                            .map_err(|e| {
+                                Error::Invalid(format!(
+                                    "document `meta` block: `runtimes`: '{}' must be a command or {{ command, execution_mode }}: {}",
+                                    lang,
+                                    e.message()
+                                ))
+                            })
+                    })
+                    .collect::<Result<_>>()?,
+                None => Vec::new(),
+            },
+            default_task: meta.default_task,
         })
     }
 
@@ -2403,6 +2478,7 @@ echo "deploying"
             imports: Vec::new(),
             dotenv: vec![".env".into()],
             vars: Vec::new(),
+            ..Default::default()
         };
         let mut with_dir = named("a", &[], &[]);
         with_dir.env = vec![("K".into(), "task".into())];
@@ -2849,6 +2925,7 @@ true
                 name: "FROM_FILE".into(),
                 value: crate::vars::VarValue::Literal("1".into()),
             }],
+            ..Default::default()
         };
         let mut own = named("a", &[], &[]);
         own.vars = vec![crate::vars::VarDef {

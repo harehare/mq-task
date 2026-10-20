@@ -22,7 +22,7 @@ mq-task covers what most `justfile`s and `Taskfile.yml`s do, but it is not a dro
 | `version := "1.0"` | `vars = { version = "1.0" }` (referenced as `$version` or `${version}`) |
 | ``v := `git describe` `` | `vars = { v = { sh = "git describe" } }` |
 | `set dotenv-load` | `dotenv = [".env"]` |
-| `set shell := ["zsh", "-c"]` | runtimes in `mq-task.toml`, e.g. `bash = "zsh"` |
+| `set shell := ["zsh", "-c"]` | runtimes in `mq-task.toml` or in the task file's `meta` block, e.g. `runtimes = { bash = "zsh" }` |
 | shebang recipe `#!/usr/bin/env python3` | a ```python block |
 | `[private]` or a leading `_` | a leading `_` or `private = true` |
 | `[confirm("Sure?")]` | `prompt = "Sure?"` (`--yes` skips it) |
@@ -37,7 +37,7 @@ mq-task covers what most `justfile`s and `Taskfile.yml`s do, but it is not a dro
 | `just a b` | `mq-task a b` (arguments after `--` go to a single task only) |
 | `just --no-deps` | `mq-task <task> --no-deps` |
 | `just --quiet` | `mq-task <task> -q` |
-| first recipe is the default | `default_task = "build"` in `mq-task.toml` |
+| first recipe is the default | `default_task = "build"` in `mq-task.toml` or the task file's `meta` block |
 | `just --fmt`, `--evaluate` | no equivalent (`mq-task check` validates the file) |
 
 Not available: recipe groups (`[group]`), `{{ }}` interpolation of arguments or functions into the script text, `invocation_directory()` (a task always runs in the file's directory unless you set `dir`), and running a single line of a recipe.

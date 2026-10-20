@@ -6,7 +6,7 @@ A fenced block with the language `meta` (TOML) in a task section. Unknown keys a
 Error: Invalid task file: task 'flaky': `meta` block: unknown key `retires` on line 1 (did you mean `retries`?)
 ```
 
-`imports` and the other document-wide keys go in a `meta` block before the first heading.
+`imports` and the other document-wide keys go in a `meta` block before the first heading. That block also accepts `runtimes` and `default_task` ([Configuration](../start/configuration.md#in-the-task-file)).
 
 | Key | Type | Description |
 |---|---|---|

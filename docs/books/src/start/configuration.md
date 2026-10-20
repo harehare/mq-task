@@ -37,6 +37,26 @@ execution_mode = "arg"
 
 Top-level key (outside `[runtimes]`). The task run when `mq-task` is invoked without a task name.
 
+## In the task file
+
+`runtimes` and `default_task` can also be written in the document-wide `meta` block (before the first heading), so that a single Markdown file carries everything it needs and no `mq-task.toml` has to sit next to it:
+
+````markdown
+```meta
+default_task = "build"
+runtimes = { python = "python3.12", go = { command = "go run", execution_mode = "file" } }
+```
+````
+
+`runtimes` takes the same values as `[runtimes]` above. The file adds to the built-in runtimes and replaces those it names. Precedence, highest first:
+
+1. `-r/--runtime` on the command line
+2. the languages set in `mq-task.toml` (and its `default_task`)
+3. the task file's own `meta` block
+4. the built-in defaults
+
+So a machine can still pin its own interpreter with `mq-task.toml`, and a file in the task file is only a default for everyone else. Imported files can add runtimes for languages the importing file leaves alone. `mq-task check` knows about them, and reports a `default_task` that names no task.
+
 ## Overriding from the CLI
 
 ```sh

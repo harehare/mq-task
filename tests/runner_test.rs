@@ -961,3 +961,76 @@ fn invalid_import_entries_are_explained(#[case] entry: &str, #[case] expected: &
     let err = imported_names(&main, &[]).unwrap_err().to_string();
     assert!(err.contains(expected), "{err}");
 }
+
+fn load_with(
+    config: Config,
+    pinned: &[&str],
+    main: &str,
+) -> (Runner, Result<Vec<mq_task::runner::Section>, Error>) {
+    let dir = tempfile::tempdir().unwrap();
+    let file = write(dir.path(), "main.md", main);
+    let mut r = Runner::new(config);
+    r.pin_runtimes(pinned.iter().map(|s| s.to_string()));
+    let sections = r.load_sections(&file);
+    (r, sections)
+}
+
+#[test]
+fn the_document_can_declare_runtimes_and_a_default_task() {
+    let main = "```meta\ndefault_task = \"hi\"\nruntimes = { python = \"python3.12\", jq = { command = \"jq -r\", execution_mode = \"arg\" } }\n```\n\n## hi\n\n```python\nprint(1)\n```\n";
+    let (runner, sections) = load_with(Config::default(), &[], main);
+    sections.unwrap();
+    let config = runner.config();
+    assert_eq!(config.get_runtime("python"), Some("python3.12"));
+    assert_eq!(config.get_runtime("jq"), Some("jq -r"));
+    assert_eq!(config.get_runtime("bash"), Some("bash"));
+    assert_eq!(runner.document_default_task(), Some("hi"));
+}
+
+#[test]
+fn a_pinned_runtime_is_not_replaced_by_the_document() {
+    let main = "```meta\nruntimes = { python = \"python3.12\", node = \"bun\" }\n```\n\n## hi\n\n```python\nprint(1)\n```\n";
+    let (runner, sections) = load_with(Config::default(), &["python"], main);
+    sections.unwrap();
+    assert_eq!(runner.config().get_runtime("python"), Some("python3"));
+    assert_eq!(runner.config().get_runtime("node"), Some("bun"));
+}
+
+#[test]
+fn the_main_file_decides_over_an_imported_one() {
+    let dir = tempfile::tempdir().unwrap();
+    write(
+        dir.path(),
+        "lib.md",
+        "```meta\nruntimes = { python = \"lib-python\", perl = \"lib-perl\" }\n```\n\n## x\n\n```bash\ntrue\n```\n",
+    );
+    let file = write(
+        dir.path(),
+        "main.md",
+        "```meta\nimports = [\"lib.md\"]\nruntimes = { python = \"main-python\" }\n```\n\n## y\n\n```bash\ntrue\n```\n",
+    );
+    let mut r = Runner::new(Config::default());
+    r.load_sections(&file).unwrap();
+    assert_eq!(r.config().get_runtime("python"), Some("main-python"));
+    assert_eq!(r.config().get_runtime("perl"), Some("lib-perl"));
+    // The default task is the main file's own.
+    assert_eq!(r.document_default_task(), None);
+}
+
+#[test]
+fn a_document_runtime_makes_a_data_block_runnable() {
+    let main = "```meta\nruntimes = { json = { command = \"jq .\", execution_mode = \"arg\" } }\n```\n\n## q\n\n```json\n{}\n```\n";
+    let (_, sections) = load_with(Config::default(), &[], main);
+    assert_eq!(sections.unwrap()[0].codes.len(), 1);
+}
+
+#[test]
+fn an_invalid_document_runtime_is_explained() {
+    let main = "```meta\nruntimes = { python = 3 }\n```\n\n## hi\n\n```bash\ntrue\n```\n";
+    let (_, sections) = load_with(Config::default(), &[], main);
+    let err = sections.unwrap_err().to_string();
+    assert!(
+        err.contains("`runtimes`: 'python' must be a command"),
+        "{err}"
+    );
+}

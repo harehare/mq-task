@@ -10,7 +10,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use mq_task::cache::{expand, fingerprint, snapshot, snapshot_files};
-use mq_task::runner::{CodeBlock, Section};
+use mq_task::section::{CodeBlock, Section};
 use proptest::prelude::*;
 use rstest::{fixture, rstest};
 use tempfile::TempDir;

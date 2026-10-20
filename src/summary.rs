@@ -3,7 +3,7 @@
 use std::fmt::Write;
 
 use crate::graph::badge_list;
-use crate::runner::{ParamDef, Section};
+use crate::section::{ParamDef, Section};
 use crate::vars::VarValue;
 
 /// Describe `section`: title, description and its notable settings.
@@ -123,7 +123,7 @@ pub fn list_json(sections: &[Section]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runner::CodeBlock;
+    use crate::section::CodeBlock;
 
     #[test]
     fn describes_a_task() {

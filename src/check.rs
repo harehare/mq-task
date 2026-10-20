@@ -12,8 +12,9 @@ use serde::Serialize;
 use crate::condition::{self, CondContext};
 use crate::config::Config;
 use crate::error::Error;
-use crate::runner::{LoopSpec, Runner, Section};
+use crate::runner::Runner;
 use crate::schedule::{build_plan, resolve_call};
+use crate::section::{LoopSpec, Section};
 use crate::util::closest;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -565,7 +566,7 @@ fn check_conditions(sections: &[Section], out: &mut Vec<Diagnostic>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runner::{CodeBlock, ParamDef};
+    use crate::section::{CodeBlock, ParamDef};
 
     fn task(title: &str, depends: &[&str]) -> Section {
         Section {
@@ -603,11 +604,11 @@ mod tests {
     fn a_script_reading_an_undeclared_param_is_warned_about() {
         let mut deploy = with_code(task("deploy", &[]), "echo $MX_PARAM_REGOIN ${MX_PARAM_ENV}");
         deploy.params = vec![
-            crate::runner::ParamDef {
+            crate::section::ParamDef {
                 name: "region".into(),
                 ..Default::default()
             },
-            crate::runner::ParamDef {
+            crate::section::ParamDef {
                 name: "env".into(),
                 ..Default::default()
             },

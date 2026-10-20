@@ -13,7 +13,7 @@ use mq_task::config::{Config, ExecutionMode, RuntimeConfig};
 use mq_task::error::Error;
 use mq_task::events::TaskStatus;
 use mq_task::exec::{Executor, NodeOutcome, NodeParams, TaskIo, output_var};
-use mq_task::runner::{CodeBlock, ParamDef, Section};
+use mq_task::section::{CodeBlock, ParamDef, Section};
 use proptest::prelude::*;
 use rstest::rstest;
 

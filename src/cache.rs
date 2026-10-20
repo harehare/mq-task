@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use crate::runner::Section;
+use crate::section::Section;
 use crate::util::Fnv;
 
 const CACHE_DIR: &str = ".mq-task";

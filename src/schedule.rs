@@ -8,7 +8,7 @@ use std::sync::mpsc;
 use crate::error::{Error, Result};
 use crate::events::{RunObserver, TaskStatus};
 use crate::exec::{Executor, NodeOutcome, NodeParams, TaskIo, output_var};
-use crate::runner::{LoopSpec, Section};
+use crate::section::{LoopSpec, Section};
 
 /// Look a task up by title or alias.
 pub fn find_section<'a>(sections: &'a [Section], name: &str) -> Option<&'a Section> {
@@ -886,7 +886,7 @@ mod tests {
     }
 
     fn with_code(mut s: Section) -> Section {
-        s.codes = vec![crate::runner::CodeBlock {
+        s.codes = vec![crate::section::CodeBlock {
             lang: "bash".into(),
             code: "true".into(),
         }];

@@ -966,7 +966,7 @@ fn load_with(
     config: Config,
     pinned: &[&str],
     main: &str,
-) -> (Runner, Result<Vec<mq_task::runner::Section>, Error>) {
+) -> (Runner, Result<Vec<mq_task::section::Section>, Error>) {
     let dir = tempfile::tempdir().unwrap();
     let file = write(dir.path(), "main.md", main);
     let mut r = Runner::new(config);

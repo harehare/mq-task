@@ -18,8 +18,8 @@ use crate::condition::{self, CondContext};
 use crate::config::{Config, ExecutionMode};
 use crate::error::{Error, Result};
 use crate::events::{NullObserver, RunObserver, Stream, TaskStatus};
-use crate::runner::{ParamDef, Section};
 use crate::schedule::{Deferred, loop_item_vars};
+use crate::section::{ParamDef, Section};
 use crate::util::closest;
 use crate::vars::{self, ShellCache, VarDef};
 

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use common::sec;
 use mq_task::graph::{GraphFormat, render};
-use mq_task::runner::Section;
+use mq_task::section::Section;
 use proptest::prelude::*;
 use rstest::rstest;
 

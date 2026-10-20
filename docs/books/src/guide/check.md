@@ -30,6 +30,11 @@ The command exits with `1` when there are errors, and with `0` otherwise. `--str
 | A task defined twice, an alias that clashes with another name, a parameter declared twice | error |
 | A task or alias named like a command (`run`, `list`, ...) | warning |
 | An `imports` file that is missing or imported twice under the same name | error |
+| A script that reads `MX_PARAM_<NAME>` for a parameter the task does not declare | warning |
+| A script that reads `MX_OUTPUT_<TASK>` when no dependency (direct or indirect) of the task captures it, with the reason: the task does not set `capture = true`, is not a dependency, or does not exist | warning |
+| A `sources` pattern that matches no files | warning |
+
+The last three are mistakes that do not fail a run: the variable is just empty, and a task whose `sources` match nothing is skipped as up to date forever. Patterns are looked up from the current directory (or the task's `dir`), as a run does. A `!` pattern is an exclusion and is not looked up.
 
 Headings that contain nothing to run (such as a document title) are not tasks and are not checked.
 

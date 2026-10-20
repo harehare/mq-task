@@ -22,9 +22,11 @@
 - [Importing Tasks](https://task.mqlang.org/book/guide/imports.html): imports
 - [Caching and Watch Mode](https://task.mqlang.org/book/guide/cache-watch.html): sources, outputs, --watch
 - [Parameters, Env and Working Directory](https://task.mqlang.org/book/guide/params-env.html): params, env, dir
+- [Aliases, Default and Private Tasks](https://task.mqlang.org/book/guide/aliases-private.html): alias, private, default_task
 - [Interactive TUI](https://task.mqlang.org/book/guide/tui.html): mq-task tui
 - [Checking a Task File](https://task.mqlang.org/book/guide/check.html): check, --strict, --json
 - [Dependency Graph](https://task.mqlang.org/book/guide/graph.html): mq-task graph
+- [Shell Completions](https://task.mqlang.org/book/guide/completions.html): mq-task completions
 - [Meta keys](https://task.mqlang.org/book/reference/meta.html): All meta keys
 - [CLI](https://task.mqlang.org/book/reference/cli.html): Commands and options
 - [Exit codes](https://task.mqlang.org/book/reference/exit-codes.html): Exit code behaviour

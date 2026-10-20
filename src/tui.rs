@@ -28,7 +28,8 @@ use ratatui::{
 
 use crate::error::{Error, Result};
 use crate::events::{RunObserver, Stream, TaskStatus};
-use crate::runner::{RunOptions, Section};
+use crate::runner::RunOptions;
+use crate::section::Section;
 use crate::{Config, Runner};
 
 /// Settings for [`run_tui`].
@@ -846,7 +847,7 @@ fn section_details(s: &Section) -> Vec<Line<'static>> {
         ]));
     }
     if !s.params.is_empty() {
-        let params = crate::runner::ParamDef::describe_all(&s.params);
+        let params = crate::section::ParamDef::describe_all(&s.params);
         lines.push(Line::from(vec![label("params"), Span::raw(params)]));
     }
     let mut flags = Vec::new();
@@ -1501,7 +1502,7 @@ fn log_widget<'a>(run: &'a RunView, area: Rect) -> Paragraph<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runner::ParamDef;
+    use crate::section::ParamDef;
     use ratatui::backend::TestBackend;
 
     fn section(title: &str) -> Section {
@@ -2076,7 +2077,7 @@ mod tests {
         s.capture = true;
         s.sources = vec!["src/**".into()];
         s.status = vec!["true".into()];
-        s.for_each = Some(crate::runner::LoopSpec::List(vec!["a".into(), "b".into()]));
+        s.for_each = Some(crate::section::LoopSpec::List(vec!["a".into(), "b".into()]));
         s.defer = vec!["cleanup".into()];
         s.once = true;
         s.requires = vec!["TOKEN".into()];
@@ -2088,7 +2089,7 @@ mod tests {
         s.ignore_error = true;
         s.dir = Some(PathBuf::from("svc"));
         s.env = vec![("A".into(), "1".into()), ("B".into(), "2".into())];
-        s.codes = vec![crate::runner::CodeBlock {
+        s.codes = vec![crate::section::CodeBlock {
             lang: "bash".into(),
             code: "echo hi".into(),
         }];
@@ -2140,7 +2141,7 @@ mod tests {
             .map(|i| format!("line{i}"))
             .collect::<Vec<_>>()
             .join("\n");
-        s.codes = vec![crate::runner::CodeBlock {
+        s.codes = vec![crate::section::CodeBlock {
             lang: "bash".into(),
             code,
         }];

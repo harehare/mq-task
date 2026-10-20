@@ -11,8 +11,8 @@ use mq_task::config::Config;
 use mq_task::error::Error;
 use mq_task::events::TaskStatus;
 use mq_task::exec::Executor;
-use mq_task::runner::Section;
 use mq_task::schedule::{Plan, ScheduleOptions, build_plan, find_section, run_plan};
+use mq_task::section::Section;
 use proptest::prelude::*;
 use rstest::rstest;
 

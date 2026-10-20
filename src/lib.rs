@@ -14,6 +14,7 @@ pub mod exec;
 pub mod graph;
 pub mod runner;
 pub mod schedule;
+pub mod section;
 pub mod summary;
 pub mod template;
 pub mod tui;

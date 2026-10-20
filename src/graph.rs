@@ -3,8 +3,8 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
-use crate::runner::Section;
 use crate::schedule::{find_section, resolve_call};
+use crate::section::Section;
 
 /// Output format for [`render`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,7 +238,7 @@ mod tests {
 
     #[test]
     fn badges_describe_the_notable_settings() {
-        use crate::runner::LoopSpec;
+        use crate::section::LoopSpec;
         let s = Section {
             title: "t".into(),
             for_each: Some(LoopSpec::List(vec!["a".into(), "b".into()])),

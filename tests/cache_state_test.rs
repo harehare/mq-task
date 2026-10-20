@@ -7,7 +7,7 @@ use std::fs;
 use std::path::Path;
 
 use mq_task::cache::{is_fresh, record};
-use mq_task::runner::Section;
+use mq_task::section::Section;
 
 fn section(title: &str, outputs: &[&str]) -> Section {
     Section {

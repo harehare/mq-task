@@ -4,7 +4,7 @@
 use std::sync::Mutex;
 
 use mq_task::events::{RunObserver, Stream, TaskStatus};
-use mq_task::runner::{CodeBlock, Section};
+use mq_task::section::{CodeBlock, Section};
 
 /// A section with the given title and declared dependencies.
 pub fn sec(title: &str, depends: &[&str]) -> Section {

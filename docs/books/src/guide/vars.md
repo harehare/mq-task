@@ -23,7 +23,31 @@ A `meta` block before the first heading defines variables for every task; a task
 | `NAME = "app"` | the string; numbers and booleans are turned into strings |
 | `VERSION = { sh = "git describe" }` | the output of the command, without trailing newlines |
 
+| `VERSION = { mq = "...", from = "CHANGELOG.md" }` | the result of an [mq](https://mqlang.org) query over a file, one result per line |
+
 Commands run with `sh -c` (`cmd /C` on Windows) in the task's working directory. If one fails, the task does not run and the error shows the command, its exit code and the first line of its error output.
+
+## Values from Markdown, HTML or text files
+
+`{ mq = "query", from = "file" }` runs an mq query over a file and uses the result, so a variable can come from a document that already holds the information, without a `grep` or `sed`:
+
+````markdown
+```meta
+vars = { VERSION = { mq = "nodes | filter(is_h2) | first() | to_text()", from = "CHANGELOG.md" }, TAG = "v${VERSION}" }
+```
+
+## release
+
+```bash
+git tag "$TAG"
+```
+````
+
+- The query is evaluated the way the `mq` command does it, so the same text works with `mq '<query>' CHANGELOG.md`. A selector such as `.h2` runs on every node and yields the headings. To pick one result over the whole document, start from `nodes`: `nodes | filter(is_h2) | first()`.
+- Results are printed one per line, and nodes a selector does not match are left out. A heading is turned into text with `to_text()`; without it you get the Markdown of the node.
+- The kind of input follows the extension of `from`: `.html`/`.htm` as HTML, `.mdx` as MDX, `.txt` as plain text, anything else as Markdown. `from` is relative to the task's working directory.
+- `${NAME}` in `from` refers to other variables, and so does the query (a name that is not a variable stays as it is, since mq has its own `${...}` in interpolated strings).
+- Like `sh`, the query runs once per run, before the task starts, and `--dry-run` shows `<mq: file query>` instead. A missing file or a query that fails is an error that names the variable.
 
 ## Referring to other variables
 

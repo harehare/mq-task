@@ -43,6 +43,7 @@ pub fn render(section: &Section) -> String {
             .map(|v| match v.value {
                 VarValue::Literal(_) => v.name.clone(),
                 VarValue::Shell(_) => format!("{} (sh)", v.name),
+                VarValue::Mq { .. } => format!("{} (mq)", v.name),
             })
             .collect();
         rows.push(("vars", vars.join(", ")));

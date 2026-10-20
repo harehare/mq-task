@@ -28,7 +28,7 @@ Error: Invalid task file: task 'flaky': `meta` block: unknown key `retires` on l
 | `outputs` | array of paths | Files that must exist for the task to be considered up to date |
 | `params` | array of strings or tables | Named parameters: `"name"` (required), `"name=value"` (default) or `{ name, default, choices, desc }` ([guide](../guide/params-env.md#choices-and-descriptions)) |
 | `requires` | array of strings | Variables that must be set and not empty ([guide](../guide/params-env.md#required-variables)) |
-| `vars` | table | Named values, fixed or `{ sh = "command" }`; `${NAME}` refers to another ([Variables](../guide/vars.md)) |
+| `vars` | table | Named values: fixed, `{ sh = "command" }` or `{ mq = "query", from = "file" }`; `${NAME}` refers to another ([Variables](../guide/vars.md)) |
 | `env` | array of `KEY=VALUE` | Default environment variables |
 | `dir` | string | Working directory |
 | `dotenv` | array of paths | `.env` files to load ([guide](../guide/params-env.md#env-files)) |

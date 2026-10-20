@@ -45,13 +45,40 @@ cargo install --git https://github.com/harehare/mq-task.git
 
 ## Usage
 
-A task is a heading followed by code blocks. A `meta` block (TOML) adds options such as dependencies:
+A task is a heading followed by code blocks. A `meta` block (TOML) adds options such as dependencies, parameters or conditions:
 
 ````markdown
 ## build
 
+Compile the project.
+
 ```bash
 cargo build --release
+```
+
+## test
+
+```meta
+depends = ["build"]
+sources = ["src/**/*.rs", "tests/**/*.rs"]  # skipped when unchanged
+retries = 2
+```
+
+```bash
+cargo test
+```
+
+## deploy
+
+```meta
+params = ["env=staging", "region"]   # name=default; a bare name is required
+depends = ["test"]
+prompt = "Deploy?"
+if = 'flag("CI") || which("kubectl")'
+```
+
+```bash
+./deploy.sh "$MX_PARAM_ENV" "$MX_PARAM_REGION"
 ```
 
 ## ci
@@ -64,15 +91,24 @@ parallel = true
 ```bash
 echo "all checks passed"
 ```
+
+## report
+
+Code blocks can use any language with a runtime.
+
+```python
+print("report generated")
+```
 ````
 
 ```bash
-mq-task                  # list tasks from tasks.md, else README.md
-mq-task build            # run a task
-mq-task ci -j 4          # run it with its dependencies in parallel
-mq-task greet -- world   # pass arguments (MX_ARGS, MX_ARG_0, ...)
-mq-task -f docs/dev.md   # use another file
-mq-task init             # write a starter tasks.md
+mq-task                          # list tasks from tasks.md, else README.md
+mq-task build                    # run a task (and its dependencies first)
+mq-task deploy -- region=eu      # named parameters; positional args also work
+mq-task ci -j 4                  # run dependencies in parallel
+mq-task test --watch             # re-run when sources change
+mq-task -f docs/dev.md           # use another file
+mq-task init                     # write a starter tasks.md
 ```
 
 ## Documentation

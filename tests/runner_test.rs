@@ -672,7 +672,13 @@ fn run_propagates_task_failures() {
     let err = runner().run_task(&file, "f").unwrap_err();
     assert!(matches!(err.root(), Error::ExecutionFailed(4)));
     assert_eq!(err.exit_code(), 4);
-    assert!(err.to_string().ends_with("(in task 'f')"), "{err}");
+    // The failing block is the one whose fence is on line 3 of the file.
+    let at = format!("{}:3", file.display());
+    assert_eq!(err.location(), Some(at.as_str()));
+    assert!(
+        err.to_string().ends_with(&format!("(in task 'f', {at})")),
+        "{err}"
+    );
 }
 
 #[test]

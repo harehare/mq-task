@@ -263,8 +263,11 @@ fn github_actions_get_groups_and_an_error_annotation(dir: TempDir) {
 
     let o = cli(dir.path(), &["boom"], &env);
     assert_eq!(o.status.code(), Some(3));
+    // The annotation points at the failing block's line in the task file.
     assert!(
-        out(&o).contains("::error title=mq-task::Task exited with status code 3"),
+        out(&o).contains("::error file=")
+            && out(&o).contains(",line=")
+            && out(&o).contains(",title=mq-task::Task exited with status code 3"),
         "{}",
         out(&o)
     );

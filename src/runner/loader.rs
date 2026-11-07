@@ -167,6 +167,9 @@ impl Runner {
 
         let markdown = self.load_markdown(path)?;
         let mut sections = self.extract_sections(&markdown)?;
+        for section in &mut sections {
+            section.file = Some(path.to_path_buf());
+        }
         let globals = Globals {
             env: self.exec.global_env.clone(),
             dir: self.exec.global_dir.clone(),
@@ -329,13 +332,15 @@ impl Runner {
             })
             .unwrap_or_default();
 
-        let all_codes = dict
+        let all_codes_with_lines = dict
             .get(&Ident::from("codes"))
             .and_then(|v| match v {
-                RuntimeValue::Array(arr) => Some(self.parse_code_blocks(arr)),
+                RuntimeValue::Array(arr) => Some(self.parse_code_blocks_with_lines(arr)),
                 _ => None,
             })
             .unwrap_or_else(|| Ok(Vec::new()))?;
+        let (all_codes, all_lines): (Vec<CodeBlock>, Vec<usize>) =
+            all_codes_with_lines.into_iter().unzip();
 
         let meta = match all_codes.iter().find(|c| c.lang == "meta") {
             Some(block) => toml::from_str::<TaskMeta>(&block.code).map_err(|e| {
@@ -385,13 +390,24 @@ impl Runner {
             )));
         }
 
-        let codes: Vec<CodeBlock> = all_codes
+        let (codes, block_lines): (Vec<CodeBlock>, Vec<usize>) = all_codes
             .into_iter()
-            .filter(|c| c.lang != "meta")
-            .filter(|c| {
+            .zip(all_lines)
+            .filter(|(c, _)| c.lang != "meta")
+            .filter(|(c, _)| {
                 self.exec.config.has_runtime(&c.lang) || !DATA_LANGUAGES.contains(&c.lang.as_str())
             })
-            .collect();
+            .unzip();
+        let line = dict
+            .get(&Ident::from("line"))
+            .and_then(number_as_line)
+            .filter(|l| *l > 0);
+        // Positions are all or nothing: a block without one would shift the rest.
+        let block_lines = if block_lines.iter().all(|l| *l > 0) {
+            block_lines
+        } else {
+            Vec::new()
+        };
 
         let description = dict.get(&Ident::from("description")).and_then(|v| match v {
             RuntimeValue::String(s) => Some(s.to_string()),
@@ -400,6 +416,9 @@ impl Runner {
 
         Ok(Section {
             title,
+            line,
+            block_lines,
+            file: None,
             codes,
             description,
             depends: meta.depends,
@@ -430,6 +449,18 @@ impl Runner {
     }
 
     fn parse_code_blocks(&self, arr: &[RuntimeValue]) -> Result<Vec<CodeBlock>> {
+        Ok(self
+            .parse_code_blocks_with_lines(arr)?
+            .into_iter()
+            .map(|(block, _)| block)
+            .collect())
+    }
+
+    /// The code blocks with the line each starts on (0 when unknown).
+    fn parse_code_blocks_with_lines(
+        &self,
+        arr: &[RuntimeValue],
+    ) -> Result<Vec<(CodeBlock, usize)>> {
         let mut blocks = Vec::new();
 
         for item in arr {
@@ -458,11 +489,23 @@ impl Runner {
                     continue;
                 }
 
-                blocks.push(CodeBlock { lang, code });
+                let line = dict
+                    .get(&Ident::from("line"))
+                    .and_then(number_as_line)
+                    .unwrap_or(0);
+                blocks.push((CodeBlock { lang, code }, line));
             }
         }
 
         Ok(blocks)
+    }
+}
+
+/// A line number from a query result.
+fn number_as_line(value: &RuntimeValue) -> Option<usize> {
+    match value {
+        RuntimeValue::Number(n) => usize::try_from(n.to_int()).ok(),
+        _ => None,
     }
 }
 

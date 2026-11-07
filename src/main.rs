@@ -359,6 +359,9 @@ fn main() -> ExitCode {
     // that as a hard error and trip wrapper tooling like npm/pnpm.
     // The flag lets long-running loops such as `--watch` shut down.
     let _ = ctrlc::set_handler(|| INTERRUPTED.store(true, Ordering::SeqCst));
+    // SIGTERM and SIGHUP stop the running task (and still run `defer`)
+    // instead of killing mq-task and leaving the task behind.
+    mq_task::signal::install();
 
     // Answers shell completion requests (`COMPLETE=<shell> mq-task ...`).
     CompleteEnv::with_factory(Cli::command).complete();
@@ -374,11 +377,15 @@ fn main() -> ExitCode {
                 if std::env::var("GITHUB_ACTIONS").is_ok_and(|v| v == "true") {
                     println!(
                         "{}",
-                        mq_task::util::github_error("mq-task", &err.to_string())
+                        mq_task::util::github_error_at("mq-task", &err.to_string(), err.location())
                     );
                 }
             }
-            ExitCode::from(err.exit_code().clamp(0, 255) as u8)
+            // Ended by SIGTERM/SIGHUP: report it like a shell would.
+            match mq_task::signal::exit_code() {
+                Some(code) => ExitCode::from(code),
+                None => ExitCode::from(err.exit_code().clamp(0, 255) as u8),
+            }
         }
     }
 }

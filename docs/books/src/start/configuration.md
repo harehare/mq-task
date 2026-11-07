@@ -25,6 +25,24 @@ command = "jq"
 execution_mode = "arg"
 ```
 
+## Commands with spaces or quotes
+
+A runtime command is split into words like a shell would, so a program path with spaces can be quoted:
+
+```toml
+[runtimes]
+python = '"/opt/my tools/python3" -u'
+```
+
+On Windows a backslash is an ordinary character (it separates path components), and only double quotes group words:
+
+```toml
+[runtimes]
+python = '"C:\Program Files\Python312\python.exe" -u'
+```
+
+On Unix the usual rules apply: single quotes are literal and a backslash escapes the next character. An unterminated quote is a configuration error.
+
 ## Execution modes
 
 | Mode | Behaviour |

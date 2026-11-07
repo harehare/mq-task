@@ -92,6 +92,7 @@ fn exit_codes_follow_the_root_error() {
     assert_eq!(Error::Invalid("x".into()).exit_code(), 1);
     let nested = Error::TaskFailed {
         task: "outer".into(),
+        at: None,
         source: Box::new(Error::ExecutionFailed(9).in_task("inner")),
     };
     assert_eq!(nested.exit_code(), 9);

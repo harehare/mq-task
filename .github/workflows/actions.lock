@@ -3,6 +3,10 @@
 # Docs: https://gh.io/actions-lockfile
 version: 'v0.0.3'
 workflows:
+    '.github/workflows/cargo-publish.yml':
+        - 'actions-rust-lang/setup-rust-toolchain@v1.15.4'
+        - 'actions/checkout@v7.0.1'
+        - 'rust-lang/crates-io-auth-action@v1.0.6'
     '.github/workflows/ci.yml':
         - 'actions/checkout@v6.0.2'
     '.github/workflows/pages.yml':
@@ -48,6 +52,11 @@ dependencies:
         commit: 'sha1-953926a2e2182532811c01a25e53647d93bf07c0'
         owner_id: 314135
         repo_id: 213471363
+    'rust-lang/crates-io-auth-action@v1.0.6':
+        ref: 'v1.0.6'
+        commit: 'sha1-3268eb413133e2960fa4ae0e963ca76380c54cd9'
+        owner_id: 5430905
+        repo_id: 1008931044
     'softprops/action-gh-release@v2.6.1':
         ref: 'v2.6.1'
         commit: 'sha1-153bb8e04406b158c6c84fc1615b65b24149a1fe'

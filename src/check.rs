@@ -357,7 +357,8 @@ fn check_runtimes(sections: &[Section], config: &Config, out: &mut Vec<Diagnosti
                 ),
             )),
             Some(command) => {
-                let binary = command.split_whitespace().next().unwrap_or(command);
+                let words = crate::util::split_command(command).unwrap_or_default();
+                let binary = words.first().map(String::as_str).unwrap_or(command);
                 if which::which(binary).is_err() {
                     out.push(Diagnostic::warning(
                         tasks.first().copied(),

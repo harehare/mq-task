@@ -434,6 +434,28 @@ pub struct Section {
     /// Named values for the task, fixed or computed by a shell command
     #[serde(default)]
     pub vars: Vec<VarDef>,
+    /// The task file the section was read from
+    #[serde(default)]
+    pub file: Option<PathBuf>,
+    /// Line of the section's heading in `file` (1-based)
+    #[serde(default)]
+    pub line: Option<usize>,
+    /// Line of each of `codes` in `file` (1-based), index for index; empty
+    /// when the positions are unknown
+    #[serde(default)]
+    pub block_lines: Vec<usize>,
+}
+
+impl Section {
+    /// Where block `index` of the task is written, as `file:line`; the
+    /// heading's line when the block's is unknown.
+    pub fn locate_block(&self, index: Option<usize>) -> Option<String> {
+        let file = self.file.as_ref()?;
+        let line = index
+            .and_then(|i| self.block_lines.get(i).copied())
+            .or(self.line)?;
+        Some(format!("{}:{}", file.display(), line))
+    }
 }
 
 /// One entry of `imports`: a path (or glob) to a task file, with the options

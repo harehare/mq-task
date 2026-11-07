@@ -564,6 +564,7 @@ pub fn run_plan(exec: &Executor, plan: &Plan, opts: &ScheduleOptions) -> Result<
             capture: section.capture,
             cancel,
             deadline: None,
+            shielded: false,
         };
         exec.run_node(
             &NodeParams {

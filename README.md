@@ -37,6 +37,12 @@ It is implemented using [mq](https://github.com/harehare/mq), a jq-like command-
 curl -sSL https://task.mqlang.org/install.sh | bash
 ```
 
+On Windows (PowerShell):
+
+```powershell
+irm https://task.mqlang.org/install.ps1 | iex
+```
+
 or with Cargo:
 
 ```sh

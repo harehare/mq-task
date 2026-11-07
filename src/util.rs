@@ -4,6 +4,86 @@ use std::time::Duration;
 
 use crate::error::{Error, Result};
 
+/// Split a runtime command such as `go run` or `"C:\\Program Files\\Python\\python.exe" -u`
+/// into program and arguments, honouring quotes.
+///
+/// On Unix the rules are those of a POSIX shell without expansions: single
+/// quotes are literal, a backslash escapes the next character (inside double
+/// quotes only `\\`, `"`, `$` and `` ` ``). On Windows a backslash is a plain
+/// character, since it separates path components, and only double quotes
+/// group words.
+pub fn split_command(command: &str) -> Result<Vec<String>> {
+    split_command_as(command, cfg!(unix))
+}
+
+pub(crate) fn split_command_as(command: &str, posix: bool) -> Result<Vec<String>> {
+    let unterminated = || {
+        Error::Config(format!(
+            "Invalid runtime command '{}': unterminated quote",
+            command
+        ))
+    };
+    let mut words = Vec::new();
+    let mut word = String::new();
+    // A quoted empty string (`""`) still makes a word.
+    let mut started = false;
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            c if c.is_whitespace() => {
+                if started {
+                    words.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            '\'' if posix => {
+                started = true;
+                loop {
+                    match chars.next() {
+                        Some('\'') => break,
+                        Some(c) => word.push(c),
+                        None => return Err(unterminated()),
+                    }
+                }
+            }
+            '"' => {
+                started = true;
+                loop {
+                    match chars.next() {
+                        Some('"') => break,
+                        Some('\\') if posix => match chars.next() {
+                            Some(e @ ('\\' | '"' | '$' | '`')) => word.push(e),
+                            Some(e) => {
+                                word.push('\\');
+                                word.push(e);
+                            }
+                            None => return Err(unterminated()),
+                        },
+                        Some(c) => word.push(c),
+                        None => return Err(unterminated()),
+                    }
+                }
+            }
+            '\\' if posix => {
+                started = true;
+                if let Some(e) = chars.next() {
+                    word.push(e);
+                } else {
+                    word.push('\\');
+                }
+            }
+            c => {
+                started = true;
+                word.push(c);
+            }
+        }
+    }
+    if started {
+        words.push(word);
+    }
+    Ok(words)
+}
+
 /// Parse a human-friendly duration such as `500ms`, `30s`, `2m` or `1h`.
 /// A bare number is interpreted as seconds.
 pub fn parse_duration(raw: &str) -> Result<Duration> {
@@ -65,6 +145,12 @@ fn edit_distance(a: &str, b: &str) -> usize {
 /// A GitHub Actions workflow command that shows `message` as an error
 /// annotation, with `%`, CR and LF escaped as the runner expects.
 pub fn github_error(title: &str, message: &str) -> String {
+    github_error_at(title, message, None)
+}
+
+/// [`github_error`], pointing at `file:line` when `at` is given so the
+/// annotation shows up on that line of the task file.
+pub fn github_error_at(title: &str, message: &str, at: Option<&str>) -> String {
     let escape = |text: &str, property: bool| {
         let mut out = String::with_capacity(text.len());
         for c in text.chars() {
@@ -79,8 +165,15 @@ pub fn github_error(title: &str, message: &str) -> String {
         }
         out
     };
+    let place = at
+        .and_then(|at| at.rsplit_once(':'))
+        .filter(|(_, line)| line.parse::<usize>().is_ok())
+        .map_or(String::new(), |(file, line)| {
+            format!("file={},line={},", escape(file, true), line)
+        });
     format!(
-        "::error title={}::{}",
+        "::error {}title={}::{}",
+        place,
         escape(title, true),
         escape(message, false)
     )
@@ -278,6 +371,25 @@ mod tests {
     }
 
     #[test]
+    fn github_errors_can_point_at_a_line() {
+        assert_eq!(
+            github_error_at("t", "m", Some("docs/tasks.md:14")),
+            "::error file=docs/tasks.md,line=14,title=t::m"
+        );
+        // Windows drive letters contain a colon of their own.
+        assert_eq!(
+            github_error_at("t", "m", Some(r"C:\p\tasks.md:7")),
+            "::error file=C%3A\\p\\tasks.md,line=7,title=t::m"
+        );
+        // Anything that is not `file:line` is left out.
+        assert_eq!(
+            github_error_at("t", "m", Some("nonsense")),
+            "::error title=t::m"
+        );
+        assert_eq!(github_error_at("t", "m", None), "::error title=t::m");
+    }
+
+    #[test]
     fn github_errors_escape_the_message_and_the_title() {
         assert_eq!(
             github_error("mq-task", "100% failed\nsee log"),
@@ -302,5 +414,65 @@ mod tests {
         assert_eq!(closest("al", keys), None);
         assert_eq!(closest("alia", keys), Some("alias"));
         assert_eq!(closest("x", std::iter::empty()), None);
+    }
+
+    #[test]
+    fn splits_plain_words() {
+        for posix in [true, false] {
+            assert_eq!(split_command_as("go run", posix).unwrap(), ["go", "run"]);
+            assert_eq!(
+                split_command_as("  python3   -u  ", posix).unwrap(),
+                ["python3", "-u"]
+            );
+            assert!(split_command_as("   ", posix).unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn double_quotes_group_words() {
+        for posix in [true, false] {
+            assert_eq!(
+                split_command_as(r#""/opt/my tools/py" -u"#, posix).unwrap(),
+                ["/opt/my tools/py", "-u"]
+            );
+            assert_eq!(
+                split_command_as(r#"a "" b"#, posix).unwrap(),
+                ["a", "", "b"]
+            );
+        }
+    }
+
+    #[test]
+    fn windows_keeps_backslashes() {
+        assert_eq!(
+            split_command_as(r#""C:\Program Files\Python\python.exe" -u"#, false).unwrap(),
+            [r"C:\Program Files\Python\python.exe", "-u"]
+        );
+        assert_eq!(
+            split_command_as(r"C:\tools\go.exe run", false).unwrap(),
+            [r"C:\tools\go.exe", "run"]
+        );
+        // Single quotes are ordinary characters there.
+        assert_eq!(split_command_as("it's", false).unwrap(), ["it's"]);
+    }
+
+    #[test]
+    fn posix_escapes_and_single_quotes() {
+        assert_eq!(
+            split_command_as(r"/opt/my\ tools/py -u", true).unwrap(),
+            ["/opt/my tools/py", "-u"]
+        );
+        assert_eq!(
+            split_command_as("'a b' \"c\\\"d\"", true).unwrap(),
+            ["a b", "c\"d"]
+        );
+    }
+
+    #[test]
+    fn unterminated_quotes_are_errors() {
+        for posix in [true, false] {
+            assert!(split_command_as("\"abc", posix).is_err());
+        }
+        assert!(split_command_as("'abc", true).is_err());
     }
 }

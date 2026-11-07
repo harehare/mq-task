@@ -320,6 +320,7 @@ fn node_with(
         capture,
         cancel,
         deadline: None,
+        shielded: false,
     };
     let outcome = exec.run_node(
         &NodeParams {
@@ -361,6 +362,7 @@ fn the_dependency_flag_is_forwarded() {
         capture: false,
         cancel: &cancel,
         deadline: None,
+        shielded: false,
     };
     exec.run_node(
         &NodeParams {
@@ -876,6 +878,7 @@ fn source_node(section: &Section, output: Option<&str>, capture: bool) -> Node {
         capture,
         cancel: &cancel,
         deadline: None,
+        shielded: false,
     };
     let extra_env = output
         .map(|o| vec![(output_var("list"), o.to_string())])

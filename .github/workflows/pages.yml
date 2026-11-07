@@ -7,6 +7,7 @@ on:
       - "docs/**"
       - "assets/**"
       - "bin/install.sh"
+      - "bin/install.ps1"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -36,8 +37,8 @@ jobs:
         run: |
           mkdir -p docs/assets
           cp assets/logo.svg assets/demo.gif assets/og-image.png assets/dependency-graph.png docs/assets/
-      - name: Copy install script
-        run: cp bin/install.sh docs/install.sh
+      - name: Copy install scripts
+        run: cp bin/install.sh bin/install.ps1 docs/
       - name: Deploy
         uses: cloudflare/wrangler-action@v4.1.3
         with:

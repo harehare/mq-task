@@ -409,7 +409,19 @@ impl Runner {
         );
         observer.finished(started.elapsed());
         result.map_err(|err| match tracker.first_failure() {
-            Some(task) => err.in_task(&task),
+            Some(task) => {
+                let err = err.in_task(&task);
+                // Say where in the task file the failing block is written.
+                let at = plan
+                    .nodes
+                    .iter()
+                    .find(|node| node.label == task)
+                    .and_then(|node| node.section.locate_block(self.exec.failed_block(&task)));
+                match at {
+                    Some(at) => err.at(at),
+                    None => err,
+                }
+            }
             None => err,
         })
     }

@@ -111,12 +111,19 @@ pub enum Error {
     Invalid(String),
 
     /// A failure inside a task that does not name the task itself
-    #[error("{source} (in task '{task}')")]
+    #[error("{source} (in task '{task}'{})", at_suffix(.at))]
     TaskFailed {
         task: String,
+        /// Where the failing code block is written, as `file:line`
+        at: Option<String>,
         #[source]
         source: Box<Error>,
     },
+}
+
+/// `, tasks.md:14` after the task name, or nothing when the place is unknown.
+fn at_suffix(at: &Option<String>) -> String {
+    at.as_ref().map_or(String::new(), |at| format!(", {}", at))
 }
 
 impl Error {
@@ -146,9 +153,31 @@ impl Error {
             | Error::RuntimeNotFound(_)
             | Error::Io(_) => Error::TaskFailed {
                 task: task.to_string(),
+                at: None,
                 source: Box::new(self),
             },
             other => other,
+        }
+    }
+
+    /// Record where in the task file the failure happened (`file:line`).
+    /// Only errors that name a task can carry it; others are returned as they are.
+    pub fn at(self, location: String) -> Error {
+        match self {
+            Error::TaskFailed { task, source, .. } => Error::TaskFailed {
+                task,
+                at: Some(location),
+                source,
+            },
+            other => other,
+        }
+    }
+
+    /// The `file:line` of the failing code block, if known.
+    pub fn location(&self) -> Option<&str> {
+        match self {
+            Error::TaskFailed { at, .. } => at.as_deref(),
+            _ => None,
         }
     }
 }

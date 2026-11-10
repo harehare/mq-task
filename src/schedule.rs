@@ -564,6 +564,7 @@ pub fn run_plan(exec: &Executor, plan: &Plan, opts: &ScheduleOptions) -> Result<
             capture: section.capture,
             cancel,
             deadline: None,
+            shielded: false,
         };
         exec.run_node(
             &NodeParams {
@@ -631,7 +632,7 @@ pub fn run_plan(exec: &Executor, plan: &Plan, opts: &ScheduleOptions) -> Result<
                 }
             }
         }
-        return first_err.map_or(Ok(()), Err);
+        return finish(first_err);
     }
 
     let mut remaining: Vec<usize> = plan.nodes.iter().map(|nd| nd.after.len()).collect();
@@ -724,7 +725,18 @@ pub fn run_plan(exec: &Executor, plan: &Plan, opts: &ScheduleOptions) -> Result<
         }
     }
 
-    first_err.map_or(Ok(()), Err)
+    finish(first_err)
+}
+
+/// The run's result: its first real failure, or `Cancelled` when a
+/// termination signal ended it without one (workers report cancellation
+/// as `Cancelled`, which is not recorded as a failure).
+fn finish(first_err: Option<Error>) -> Result<()> {
+    match first_err {
+        Some(e) => Err(e),
+        None if crate::signal::terminated() => Err(Error::Cancelled),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]

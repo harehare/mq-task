@@ -8,13 +8,19 @@ import "section"
 
 |
 
+# The line a node starts on (1-based), or 0 when it has no position.
+def start_line(node):
+  let loc = get_location(node)
+  | if (is_none(loc)): 0 else: loc["start_line"]
+end
+
 def extract_sections(md_nodes):
   let section_list = section::sections(md_nodes)
   | map(section_list, fn(s):
     let heading = first(s[:header])
     | let title = to_text(heading)
     | let level = heading.level
-    | {"title": title, "level": level, "content": s[:children]}
+    | {"title": title, "level": level, "line": start_line(heading), "content": s[:children]}
   end)
 end
 
@@ -25,7 +31,7 @@ def extract_code_blocks(section_content):
     let lang = attr(code, "lang")
     | let info = attr(code, "meta")
     | let text = to_text(code)
-    | {"lang": lang, "info": info, "code": text}
+    | {"lang": lang, "info": info, "code": text, "line": start_line(code)}
   end)
 end
 
@@ -42,10 +48,11 @@ def sections_with_code(md_nodes):
   | map(section_list, fn(section):
     let title = section["title"]
     | let level = section["level"]
+    | let line = section["line"]
     | let content = section["content"]
     | let codes = extract_code_blocks(content)
     | let description = extract_description(content)
-    | {"title": title, "level": level, "codes": codes, "description": description}
+    | {"title": title, "level": level, "line": line, "codes": codes, "description": description}
   end)
 end
 

@@ -2774,7 +2774,7 @@ for = ["a", "b"]
     let out = mq_task(&dir, &["ci"]);
     assert_eq!(out.status.code(), Some(4));
     assert!(
-        stderr(&out).contains("status code 4 (in task 'build')"),
+        stderr(&out).contains("status code 4 (in task 'build', "),
         "{}",
         stderr(&out)
     );
@@ -2782,7 +2782,7 @@ for = ["a", "b"]
     let out = mq_task(&dir, &["each"]);
     assert_eq!(out.status.code(), Some(5));
     assert!(
-        stderr(&out).contains("(in task 'each[b]')"),
+        stderr(&out).contains("(in task 'each[b]', "),
         "{}",
         stderr(&out)
     );
@@ -2815,7 +2815,7 @@ sleep 5
     let out = mq_task(&dir, &["cobol-task"]);
     assert!(!out.status.success());
     assert!(
-        stderr(&out).contains("Runtime not found for language: cobol (in task 'cobol-task')"),
+        stderr(&out).contains("Runtime not found for language: cobol (in task 'cobol-task', "),
         "{}",
         stderr(&out)
     );

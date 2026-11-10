@@ -50,6 +50,9 @@ pub struct TaskIo<'a> {
     pub cancel: &'a AtomicBool,
     /// Kill the process if it is still running at this instant.
     pub deadline: Option<Instant>,
+    /// Ignore Ctrl+C and termination signals: cleanup (`defer`) must finish
+    /// even when the run was interrupted.
+    pub shielded: bool,
 }
 
 /// Result of running a task through its full lifecycle.
@@ -152,6 +155,9 @@ pub struct Executor {
     /// Report tasks that would run as [`Error::OutOfDate`] instead of
     /// running them (`--status`).
     pub check_only: bool,
+    /// `file:line` of the code block that failed, by task label. The body's
+    /// failure wins; a deferred task's is only kept when the body did not fail.
+    failed_blocks: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl Executor {
@@ -172,6 +178,7 @@ impl Executor {
             verbose: false,
             confirmed: Arc::default(),
             check_only: false,
+            failed_blocks: Arc::default(),
         }
     }
 
@@ -469,6 +476,7 @@ impl Executor {
             capture: false,
             cancel: &cancel,
             deadline: None,
+            shielded: false,
         };
         let env = self.task_env(section, args, &[], &io, false)?;
         self.run_blocks(section, args, lang_filter, &env, &io)?;
@@ -488,7 +496,7 @@ impl Executor {
         let working_dir = self.effective_dir(section);
         let mut captured = String::new();
 
-        for code_block in &section.codes {
+        for (index, code_block) in section.codes.iter().enumerate() {
             if code_block.lang.is_empty() {
                 continue;
             }
@@ -497,17 +505,46 @@ impl Executor {
             {
                 continue;
             }
-            captured.push_str(&self.execute_code_with_params(
+            let output = self.execute_code_with_params(
                 &code_block.lang,
                 &code_block.code,
                 args,
                 task_env,
                 working_dir,
                 io,
-            )?);
+            );
+            match output {
+                Ok(out) => captured.push_str(&out),
+                Err(e) => {
+                    if !matches!(e, Error::Cancelled)
+                        && let Some(at) = section.locate_block(Some(index))
+                    {
+                        let mut map = self.failed_blocks.lock().unwrap_or_else(|p| p.into_inner());
+                        if io.shielded {
+                            // Cleanup (`defer`) runs under the parent's label
+                            // with blocks of its own: it must not overwrite
+                            // the body's failure, only the first of its own.
+                            map.entry(io.name.to_string()).or_insert(at);
+                        } else {
+                            map.insert(io.name.to_string(), at);
+                        }
+                    }
+                    return Err(e);
+                }
+            }
         }
 
         Ok(captured)
+    }
+
+    /// `file:line` of the code block whose failure ended the task run under
+    /// `label` (its body, or else a deferred task), if one is known.
+    pub fn failed_location(&self, label: &str) -> Option<String> {
+        self.failed_blocks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(label)
+            .cloned()
     }
 
     /// Execute one task with its full lifecycle: `if`, up-to-date check,
@@ -516,6 +553,10 @@ impl Executor {
         let section = p.section;
         let name = p.label;
         let observer = io.observer;
+        self.failed_blocks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(name);
 
         observer.status(
             name,
@@ -536,6 +577,11 @@ impl Executor {
             observer.status(name, &status);
             e
         };
+
+        // A termination signal ends the run: nothing new starts.
+        if crate::signal::terminated() && !io.shielded {
+            return Err(fail(Error::Cancelled));
+        }
 
         // Computed vars run before the task proper, under its timeout.
         let var_io = TaskIo {
@@ -594,7 +640,9 @@ impl Executor {
         if self.use_cache
             && !self.dry_run
             && !section.status.is_empty()
-            && self.status_is_up_to_date(section, p.args, &task_env, dir)
+            && self
+                .status_is_up_to_date(section, p.args, &task_env, dir, io)
+                .map_err(fail)?
         {
             observer.status(
                 name,
@@ -664,6 +712,14 @@ impl Executor {
             }
             other => other,
         };
+        // A body that succeeded (after retries) or whose failure was ignored
+        // must not be blamed for a later failure in cleanup.
+        if body.is_ok() {
+            self.failed_blocks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(name);
+        }
         // Deferred tasks run once the body is over, even when it failed.
         let deferred = if p.defers.is_empty() {
             Ok(())
@@ -720,15 +776,19 @@ impl Executor {
             .collect()
     }
 
-    /// True when every `status` command exits 0.
+    /// True when every `status` command exits 0. The commands run under the
+    /// same process control as task commands, so cancellation, the timeout
+    /// and termination signals stop them (`Err`) instead of counting as a
+    /// result.
     fn status_is_up_to_date(
         &self,
         section: &Section,
         args: &[String],
         task_env: &[(String, String)],
         dir: Option<&Path>,
-    ) -> bool {
-        section.status.iter().all(|cmd| {
+        io: &TaskIo,
+    ) -> Result<bool> {
+        for cmd in &section.status {
             #[cfg(unix)]
             let mut command = {
                 let mut c = Command::new("sh");
@@ -749,8 +809,18 @@ impl Executor {
             if let Some(dir) = dir {
                 command.current_dir(dir);
             }
-            command.status().map(|s| s.success()).unwrap_or(false)
-        })
+            let own_group = io.piped || io.deadline.is_some();
+            ProcTree::prepare(&mut command, own_group);
+            // A command that cannot start counts as out of date.
+            let Ok(mut child) = command.spawn() else {
+                return Ok(false);
+            };
+            let tree = ProcTree::attach(&mut child, own_group)?;
+            if !wait_for(&mut child, io, &tree)?.success() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Ask to confirm a task's `prompt`. Piped runs (parallel, TUI) cannot ask.
@@ -847,7 +917,7 @@ impl Executor {
                             delay,
                         },
                     );
-                    if !sleep_unless_cancelled(delay, io.cancel) {
+                    if !sleep_unless_cancelled(delay, io.cancel, !io.shielded) {
                         return Err(Error::Cancelled);
                     }
                     attempt += 1;
@@ -865,6 +935,7 @@ impl Executor {
             cancel: &never,
             deadline: None,
             capture: false,
+            shielded: true,
             ..*io
         };
         let mut first: Option<Error> = None;
@@ -904,6 +975,7 @@ impl Executor {
             capture: false,
             cancel: &cancel,
             deadline: None,
+            shielded: false,
         };
         self.execute_code_with_params(lang, code, args, param_env, working_dir, &io)?;
         Ok(())
@@ -923,7 +995,7 @@ impl Executor {
             .get_runtime(lang)
             .ok_or_else(|| Error::RuntimeNotFound(lang.to_string()))?;
 
-        let parts: Vec<&str> = runtime.split_whitespace().collect();
+        let parts = crate::util::split_command(runtime)?;
         if parts.is_empty() {
             return Err(Error::RuntimeNotFound(lang.to_string()));
         }
@@ -963,7 +1035,7 @@ impl Executor {
             return Ok(String::new());
         }
 
-        let mut command = Command::new(parts[0]);
+        let mut command = Command::new(&parts[0]);
         command.args(&parts[1..]);
         command.envs(self.prepare_env_vars(args, param_env));
         if let Some(dir) = working_dir {
@@ -1018,27 +1090,18 @@ impl Executor {
         // takes down grandchildren (`bash -c 'sleep 60'`) that would
         // otherwise keep our output pipes open. Plain sequential tasks stay
         // in the terminal's group so Ctrl+C and tty input work as usual.
-        #[cfg(unix)]
         let own_group = io.piped || io.deadline.is_some();
-        #[cfg(unix)]
-        if own_group {
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
-        }
+        ProcTree::prepare(&mut command, own_group);
 
         let mut child = command.spawn().map_err(|e| match file_lang {
             Some(lang) => Error::Execution(format!("Failed to execute {}: {}", lang, e)),
             None => Error::Execution(format!("Failed to spawn process: {}", e)),
         })?;
+        let tree = ProcTree::attach(&mut child, own_group)?;
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let stdin = child.stdin.take();
-
-        #[cfg(unix)]
-        let own_group_value = own_group;
-        #[cfg(not(unix))]
-        let own_group_value = false;
 
         let (status, captured) = std::thread::scope(|s| {
             let out_handle =
@@ -1046,7 +1109,6 @@ impl Executor {
             let err_handle = stderr.map(|r| s.spawn(move || pump(r, Stream::Stderr, io, false)));
 
             let mut write_error: Option<Error> = None;
-            let own_group_flag = own_group_value;
 
             if let (Some(mut stdin), Some(code)) = (stdin, stdin_code) {
                 match stdin.write_all(code.as_bytes()) {
@@ -1057,14 +1119,14 @@ impl Executor {
                     Err(e) => {
                         write_error =
                             Some(Error::Execution(format!("Failed to write to stdin: {}", e)));
-                        kill_task(&mut child, own_group_flag);
+                        kill_task(&mut child, &tree);
                     }
                 }
                 drop(stdin);
             }
 
             let result = match write_error {
-                None => wait_for(&mut child, io, own_group_flag),
+                None => wait_for(&mut child, io, &tree),
                 Some(e) => {
                     let _ = child.wait();
                     Err(e)
@@ -1088,28 +1150,120 @@ impl Executor {
     }
 }
 
-/// Terminate a task. With its own process group the whole group is signalled
-/// (politely first), otherwise only the direct child is killed.
-fn kill_task(child: &mut std::process::Child, own_group: bool) {
-    #[cfg(unix)]
-    if own_group {
-        let pgid = child.id() as libc::pid_t;
-        // SAFETY: plain signal delivery to a process group we created.
-        unsafe { libc::killpg(pgid, libc::SIGTERM) };
-        let grace = Instant::now() + Duration::from_millis(300);
-        while Instant::now() < grace {
-            if matches!(child.try_wait(), Ok(Some(_))) {
-                // The leader exited; sweep any stragglers in the group.
-                unsafe { libc::killpg(pgid, libc::SIGKILL) };
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(10));
+/// How to reach everything a task started, so that stopping it does not leave
+/// grandchildren behind.
+pub(crate) struct ProcTree {
+    /// The task leads its own process group (Unix) or console process group
+    /// (Windows) and no longer shares the terminal's Ctrl+C.
+    own_group: bool,
+    /// Windows: the Job Object holding the task's processes.
+    #[cfg(windows)]
+    job: Option<crate::winproc::Job>,
+}
+
+impl ProcTree {
+    /// Set `command` up to run in its own group when `own_group`.
+    pub(crate) fn prepare(command: &mut Command, own_group: bool) {
+        if !own_group {
+            return;
         }
-        unsafe { libc::killpg(pgid, libc::SIGKILL) };
-        let _ = child.wait();
-        return;
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // Created suspended: `attach` puts it in its Job Object and
+            // resumes it, so nothing it starts can escape the job.
+            command.creation_flags(
+                crate::winproc::CREATE_NEW_PROCESS_GROUP | crate::winproc::CREATE_SUSPENDED,
+            );
+        }
     }
-    let _ = own_group;
+
+    /// Track the freshly spawned `child`. On Windows a child with its own
+    /// group was created suspended: it joins its Job Object first and only
+    /// then starts running.
+    pub(crate) fn attach(child: &mut std::process::Child, own_group: bool) -> Result<Self> {
+        #[cfg(windows)]
+        {
+            let job = own_group
+                .then(|| crate::winproc::Job::with_child(child))
+                .flatten();
+            if own_group && !crate::winproc::resume_process(child.id()) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(Error::Execution(
+                    "Failed to start the process after creating it".to_string(),
+                ));
+            }
+            Ok(ProcTree { own_group, job })
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = child;
+            Ok(ProcTree { own_group })
+        }
+    }
+
+    /// Whether this task is cut off from the terminal's Ctrl+C.
+    pub(crate) fn is_detached(&self) -> bool {
+        self.own_group
+    }
+
+    /// Stop everything still running in the tree.
+    fn sweep(&self, #[allow(unused_variables)] child: &std::process::Child) {
+        #[cfg(unix)]
+        if self.own_group {
+            // SAFETY: plain signal delivery to a process group we created.
+            unsafe { libc::killpg(child.id() as libc::pid_t, libc::SIGKILL) };
+        }
+        #[cfg(windows)]
+        if let Some(job) = &self.job {
+            job.terminate();
+        }
+    }
+}
+
+/// Terminate a task: ask politely first (SIGTERM, or Ctrl+Break on Windows),
+/// then force it after a short grace period. With its own group the whole
+/// tree goes; otherwise only the direct child is signalled.
+fn kill_task(child: &mut std::process::Child, tree: &ProcTree) {
+    const GRACE: Duration = Duration::from_millis(300);
+
+    #[cfg(unix)]
+    {
+        let pid = child.id() as libc::pid_t;
+        // SAFETY: plain signal delivery to a process (group) we started.
+        unsafe {
+            if tree.own_group {
+                libc::killpg(pid, libc::SIGTERM);
+            } else {
+                libc::kill(pid, libc::SIGTERM);
+            }
+        }
+    }
+    #[cfg(windows)]
+    if tree.own_group {
+        // Without a console the event cannot be delivered; the forced stop
+        // below still happens.
+        crate::winproc::ctrl_break(child.id());
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = child.kill();
+
+    let grace_end = Instant::now() + GRACE;
+    while Instant::now() < grace_end {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            // The leader exited; sweep any stragglers in its tree.
+            tree.sweep(child);
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    tree.sweep(child);
     let _ = child.kill();
     let _ = child.wait();
 }
@@ -1118,7 +1272,7 @@ fn kill_task(child: &mut std::process::Child, own_group: bool) {
 pub(crate) fn wait_for(
     child: &mut std::process::Child,
     io: &TaskIo,
-    own_group: bool,
+    tree: &ProcTree,
 ) -> Result<ExitStatus> {
     let mut nap = Duration::from_millis(1);
     loop {
@@ -1132,17 +1286,20 @@ pub(crate) fn wait_for(
                 )));
             }
         }
-        // A task in its own process group no longer receives the terminal's
-        // Ctrl+C, so forward it.
-        let interrupted = own_group && crate::INTERRUPTED.load(Ordering::SeqCst);
+        // A task in its own group no longer receives the terminal's Ctrl+C,
+        // so forward it. SIGTERM/SIGHUP never reach the task at all, whether
+        // or not it has its own group, so they are always forwarded.
+        let interrupted = !io.shielded
+            && ((tree.is_detached() && crate::INTERRUPTED.load(Ordering::SeqCst))
+                || crate::signal::terminated());
         if io.cancel.load(Ordering::SeqCst) || interrupted {
-            kill_task(child, own_group);
+            kill_task(child, tree);
             return Err(Error::Cancelled);
         }
         if let Some(deadline) = io.deadline
             && Instant::now() >= deadline
         {
-            kill_task(child, own_group);
+            kill_task(child, tree);
             return Err(Error::Timeout(io.name.to_string()));
         }
         std::thread::sleep(nap);
@@ -1173,16 +1330,18 @@ fn pump<R: Read>(reader: R, stream: Stream, io: &TaskIo, keep: bool) -> String {
     kept
 }
 
-/// Sleep for `delay`, returning false early if `cancel` was raised.
-fn sleep_unless_cancelled(delay: Duration, cancel: &AtomicBool) -> bool {
+/// Sleep for `delay`, returning false early if `cancel` was raised or, when
+/// `watch_signal`, a termination signal arrived.
+fn sleep_unless_cancelled(delay: Duration, cancel: &AtomicBool, watch_signal: bool) -> bool {
+    let stopped = || cancel.load(Ordering::SeqCst) || (watch_signal && crate::signal::terminated());
     let end = Instant::now() + delay;
     while Instant::now() < end {
-        if cancel.load(Ordering::SeqCst) {
+        if stopped() {
             return false;
         }
         std::thread::sleep(Duration::from_millis(20).min(end - Instant::now()));
     }
-    !cancel.load(Ordering::SeqCst)
+    !stopped()
 }
 
 /// Whether `name` could be a parameter name (`region`, `build-type`).

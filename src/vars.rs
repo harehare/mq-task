@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::exec::{TaskIo, wait_for};
+use crate::exec::{ProcTree, TaskIo, wait_for};
 
 /// The value of a variable.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -213,11 +213,7 @@ fn run_shell(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     // Its own process group, so stopping it also stops what it started.
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
+    ProcTree::prepare(&mut cmd, true);
     if let Some(dir) = dir {
         cmd.current_dir(dir);
     }
@@ -228,13 +224,14 @@ fn run_shell(
         )
     };
     let mut child = cmd.spawn().map_err(failed)?;
+    let tree = ProcTree::attach(&mut child, true)?;
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();
 
     let (status, out, err) = std::thread::scope(|s| {
         let out = s.spawn(|| read_all(stdout.as_mut()));
         let err = s.spawn(|| read_all(stderr.as_mut()));
-        let status = wait_for(&mut child, io, cfg!(unix));
+        let status = wait_for(&mut child, io, &tree);
         (
             status,
             out.join().unwrap_or_default(),
@@ -548,6 +545,7 @@ mod tests {
             capture: false,
             cancel,
             deadline,
+            shielded: false,
         }
     }
 

@@ -15,11 +15,14 @@ pub mod graph;
 pub mod runner;
 pub mod schedule;
 pub mod section;
+pub mod signal;
 pub mod summary;
 pub mod template;
 pub mod tui;
 pub mod util;
 pub mod vars;
+#[cfg(windows)]
+pub(crate) mod winproc;
 
 pub use config::{Config, ExecutionMode};
 pub use error::{Error, Result};

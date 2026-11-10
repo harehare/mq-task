@@ -194,7 +194,8 @@ impl Config {
     pub fn validate_runtimes(&self) -> Result<()> {
         for (lang, config) in &self.runtimes {
             let cmd = config.command();
-            let binary = cmd.split_whitespace().next().unwrap_or(cmd);
+            let words = crate::util::split_command(cmd)?;
+            let binary = words.first().map(String::as_str).unwrap_or(cmd);
             if which::which(binary).is_err() {
                 return Err(Error::Config(format!(
                     "Runtime '{}' for language '{}' not found in PATH",

@@ -109,3 +109,35 @@ fn imported_tasks_point_into_their_own_file() {
     assert_eq!(out.status.code(), Some(4));
     assert!(stderr.contains("lib.md:4"), "{stderr}");
 }
+
+#[test]
+fn a_failing_defer_is_not_blamed_on_a_body_that_recovered() {
+    // The body fails once (line 12) and succeeds on retry; cleanup (line 19) fails.
+    let tasks = "\
+# Project
+
+## main
+
+```meta
+retries = 1
+retry_delay = \"10ms\"
+defer = [\"cleanup\"]
+```
+
+```bash
+if [ -f tried ]; then exit 0; fi
+touch tried
+exit 1
+```
+
+## cleanup
+
+```bash
+exit 2
+```
+";
+    let (out, _, stderr) = run(tasks, &["main"], false);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("tasks.md:19"), "{stderr}");
+    assert!(!stderr.contains("tasks.md:12"), "{stderr}");
+}

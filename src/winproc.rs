@@ -5,16 +5,54 @@
 use std::os::windows::io::AsRawHandle;
 use std::process::Child;
 
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent};
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+};
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, TerminateJobObject,
 };
+use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
 
 /// `CREATE_NEW_PROCESS_GROUP`: the task gets its own group, which does not
 /// receive the console's Ctrl+C (mq-task forwards it) and can be sent
 /// Ctrl+Break on its own.
 pub const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+
+/// `CREATE_SUSPENDED`: the process is created with its main thread stopped,
+/// so it can be put in its Job Object before it runs (and can start any
+/// descendants that would otherwise escape the job).
+pub const CREATE_SUSPENDED: u32 = 0x0000_0004;
+
+/// Let a process created with [`CREATE_SUSPENDED`] run: resume its threads
+/// (the main thread is the only one so far). Returns whether one was resumed.
+pub fn resume_process(pid: u32) -> bool {
+    // SAFETY: plain API calls; the snapshot and thread handles are closed
+    // before returning, and `entry` is initialised with its size as required.
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return false;
+        }
+        let mut entry: THREADENTRY32 = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+        let mut resumed = false;
+        let mut more = Thread32First(snapshot, &mut entry) != 0;
+        while more {
+            if entry.th32OwnerProcessID == pid {
+                let thread = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
+                if !thread.is_null() {
+                    resumed |= ResumeThread(thread) != u32::MAX;
+                    CloseHandle(thread);
+                }
+            }
+            more = Thread32Next(snapshot, &mut entry) != 0;
+        }
+        CloseHandle(snapshot);
+        resumed
+    }
+}
 
 /// A Job Object holding a task's processes.
 pub struct Job(HANDLE);

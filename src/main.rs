@@ -369,7 +369,12 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     match dispatch(cli) {
-        Ok(()) => ExitCode::SUCCESS,
+        // Ended by SIGTERM/SIGHUP even though nothing reported an error
+        // (for instance a status check that finished anyway).
+        Ok(()) => match mq_task::signal::exit_code() {
+            Some(code) => ExitCode::from(code),
+            None => ExitCode::SUCCESS,
+        },
         Err(err) => {
             // `check` and `--status` have already printed what is wrong.
             if !matches!(err, Error::CheckFailed | Error::OutOfDate(_)) {

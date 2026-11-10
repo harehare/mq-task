@@ -412,11 +412,12 @@ impl Runner {
             Some(task) => {
                 let err = err.in_task(&task);
                 // Say where in the task file the failing block is written.
-                let at = plan
-                    .nodes
-                    .iter()
-                    .find(|node| node.label == task)
-                    .and_then(|node| node.section.locate_block(self.exec.failed_block(&task)));
+                let at = self.exec.failed_location(&task).or_else(|| {
+                    plan.nodes
+                        .iter()
+                        .find(|node| node.label == task)
+                        .and_then(|node| node.section.locate_block(None))
+                });
                 match at {
                     Some(at) => err.at(at),
                     None => err,

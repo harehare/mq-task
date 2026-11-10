@@ -224,7 +224,7 @@ fn run_shell(
         )
     };
     let mut child = cmd.spawn().map_err(failed)?;
-    let tree = ProcTree::attach(&child, true);
+    let tree = ProcTree::attach(&mut child, true)?;
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();
 

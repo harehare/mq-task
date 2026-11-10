@@ -155,8 +155,9 @@ pub struct Executor {
     /// Report tasks that would run as [`Error::OutOfDate`] instead of
     /// running them (`--status`).
     pub check_only: bool,
-    /// Index of the code block that last failed, by task label.
-    failed_blocks: Arc<Mutex<HashMap<String, usize>>>,
+    /// `file:line` of the code block that failed, by task label. The body's
+    /// failure wins; a deferred task's is only kept when the body did not fail.
+    failed_blocks: Arc<Mutex<HashMap<String, String>>>,
 }
 
 impl Executor {
@@ -515,13 +516,18 @@ impl Executor {
             match output {
                 Ok(out) => captured.push_str(&out),
                 Err(e) => {
-                    // Cleanup (`defer`) runs under the parent's label with
-                    // blocks of its own, so it must not overwrite the entry.
-                    if !io.shielded && !matches!(e, Error::Cancelled) {
-                        self.failed_blocks
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .insert(io.name.to_string(), index);
+                    if !matches!(e, Error::Cancelled)
+                        && let Some(at) = section.locate_block(Some(index))
+                    {
+                        let mut map = self.failed_blocks.lock().unwrap_or_else(|p| p.into_inner());
+                        if io.shielded {
+                            // Cleanup (`defer`) runs under the parent's label
+                            // with blocks of its own: it must not overwrite
+                            // the body's failure, only the first of its own.
+                            map.entry(io.name.to_string()).or_insert(at);
+                        } else {
+                            map.insert(io.name.to_string(), at);
+                        }
                     }
                     return Err(e);
                 }
@@ -531,14 +537,14 @@ impl Executor {
         Ok(captured)
     }
 
-    /// Index (into `section.codes`) of the block that last failed in the task
-    /// run under `label`, if any did.
-    pub fn failed_block(&self, label: &str) -> Option<usize> {
+    /// `file:line` of the code block whose failure ended the task run under
+    /// `label` (its body, or else a deferred task), if one is known.
+    pub fn failed_location(&self, label: &str) -> Option<String> {
         self.failed_blocks
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .get(label)
-            .copied()
+            .cloned()
     }
 
     /// Execute one task with its full lifecycle: `if`, up-to-date check,
@@ -634,7 +640,9 @@ impl Executor {
         if self.use_cache
             && !self.dry_run
             && !section.status.is_empty()
-            && self.status_is_up_to_date(section, p.args, &task_env, dir)
+            && self
+                .status_is_up_to_date(section, p.args, &task_env, dir, io)
+                .map_err(fail)?
         {
             observer.status(
                 name,
@@ -704,6 +712,14 @@ impl Executor {
             }
             other => other,
         };
+        // A body that succeeded (after retries) or whose failure was ignored
+        // must not be blamed for a later failure in cleanup.
+        if body.is_ok() {
+            self.failed_blocks
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(name);
+        }
         // Deferred tasks run once the body is over, even when it failed.
         let deferred = if p.defers.is_empty() {
             Ok(())
@@ -760,15 +776,19 @@ impl Executor {
             .collect()
     }
 
-    /// True when every `status` command exits 0.
+    /// True when every `status` command exits 0. The commands run under the
+    /// same process control as task commands, so cancellation, the timeout
+    /// and termination signals stop them (`Err`) instead of counting as a
+    /// result.
     fn status_is_up_to_date(
         &self,
         section: &Section,
         args: &[String],
         task_env: &[(String, String)],
         dir: Option<&Path>,
-    ) -> bool {
-        section.status.iter().all(|cmd| {
+        io: &TaskIo,
+    ) -> Result<bool> {
+        for cmd in &section.status {
             #[cfg(unix)]
             let mut command = {
                 let mut c = Command::new("sh");
@@ -789,8 +809,18 @@ impl Executor {
             if let Some(dir) = dir {
                 command.current_dir(dir);
             }
-            command.status().map(|s| s.success()).unwrap_or(false)
-        })
+            let own_group = io.piped || io.deadline.is_some();
+            ProcTree::prepare(&mut command, own_group);
+            // A command that cannot start counts as out of date.
+            let Ok(mut child) = command.spawn() else {
+                return Ok(false);
+            };
+            let tree = ProcTree::attach(&mut child, own_group)?;
+            if !wait_for(&mut child, io, &tree)?.success() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Ask to confirm a task's `prompt`. Piped runs (parallel, TUI) cannot ask.
@@ -887,7 +917,7 @@ impl Executor {
                             delay,
                         },
                     );
-                    if !sleep_unless_cancelled(delay, io.cancel) {
+                    if !sleep_unless_cancelled(delay, io.cancel, !io.shielded) {
                         return Err(Error::Cancelled);
                     }
                     attempt += 1;
@@ -1067,7 +1097,7 @@ impl Executor {
             Some(lang) => Error::Execution(format!("Failed to execute {}: {}", lang, e)),
             None => Error::Execution(format!("Failed to spawn process: {}", e)),
         })?;
-        let tree = ProcTree::attach(&child, own_group);
+        let tree = ProcTree::attach(&mut child, own_group)?;
 
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
@@ -1145,20 +1175,36 @@ impl ProcTree {
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-            command.creation_flags(crate::winproc::CREATE_NEW_PROCESS_GROUP);
+            // Created suspended: `attach` puts it in its Job Object and
+            // resumes it, so nothing it starts can escape the job.
+            command.creation_flags(
+                crate::winproc::CREATE_NEW_PROCESS_GROUP | crate::winproc::CREATE_SUSPENDED,
+            );
         }
     }
 
-    /// Track the freshly spawned `child`.
-    pub(crate) fn attach(child: &std::process::Child, own_group: bool) -> Self {
-        #[cfg(not(windows))]
-        let _ = child;
-        ProcTree {
-            own_group,
-            #[cfg(windows)]
-            job: own_group
+    /// Track the freshly spawned `child`. On Windows a child with its own
+    /// group was created suspended: it joins its Job Object first and only
+    /// then starts running.
+    pub(crate) fn attach(child: &mut std::process::Child, own_group: bool) -> Result<Self> {
+        #[cfg(windows)]
+        {
+            let job = own_group
                 .then(|| crate::winproc::Job::with_child(child))
-                .flatten(),
+                .flatten();
+            if own_group && !crate::winproc::resume_process(child.id()) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(Error::Execution(
+                    "Failed to start the process after creating it".to_string(),
+                ));
+            }
+            Ok(ProcTree { own_group, job })
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = child;
+            Ok(ProcTree { own_group })
         }
     }
 
@@ -1284,16 +1330,18 @@ fn pump<R: Read>(reader: R, stream: Stream, io: &TaskIo, keep: bool) -> String {
     kept
 }
 
-/// Sleep for `delay`, returning false early if `cancel` was raised.
-fn sleep_unless_cancelled(delay: Duration, cancel: &AtomicBool) -> bool {
+/// Sleep for `delay`, returning false early if `cancel` was raised or, when
+/// `watch_signal`, a termination signal arrived.
+fn sleep_unless_cancelled(delay: Duration, cancel: &AtomicBool, watch_signal: bool) -> bool {
+    let stopped = || cancel.load(Ordering::SeqCst) || (watch_signal && crate::signal::terminated());
     let end = Instant::now() + delay;
     while Instant::now() < end {
-        if cancel.load(Ordering::SeqCst) {
+        if stopped() {
             return false;
         }
         std::thread::sleep(Duration::from_millis(20).min(end - Instant::now()));
     }
-    !cancel.load(Ordering::SeqCst)
+    !stopped()
 }
 
 /// Whether `name` could be a parameter name (`region`, `build-type`).

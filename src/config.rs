@@ -79,6 +79,14 @@ pub struct Config {
     /// Task run when mq-task is invoked with no task name and no subcommand
     #[serde(default)]
     pub default_task: Option<String>,
+    /// Language given to a code block that has none (default `sh`).
+    #[serde(default = "default_language")]
+    pub default_language: String,
+}
+
+/// The language of a fence without one: the standard POSIX shell.
+fn default_language() -> String {
+    "sh".to_string()
 }
 
 impl Default for Config {
@@ -86,6 +94,7 @@ impl Default for Config {
         Self {
             runtimes: default_runtimes(),
             default_task: None,
+            default_language: default_language(),
         }
     }
 }

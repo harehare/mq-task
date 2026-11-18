@@ -3702,3 +3702,20 @@ fn init_never_overwrites_and_accepts_another_path() {
             .contains("[runtimes")
     );
 }
+
+#[test]
+fn untagged_block_runs_in_default_shell() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("tasks.md");
+    std::fs::write(&f, "## hi\n\n```\necho untagged-ok\n```\n").unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mq-task"))
+        .arg("-f")
+        .arg(&f)
+        .arg("hi")
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("untagged-ok"),
+        "{out:?}"
+    );
+}

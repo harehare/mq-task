@@ -5,18 +5,55 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  build:
-
-    runs-on: ubuntu-latest
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    # Windows is informational until its test suite is known to pass there:
+    # many end-to-end tests drive `bash` and Unix tools.
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
     - uses: actions/checkout@v6.0.2
+      with:
+        persist-credentials: false
     - name: Build
       run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
+    - name: Unit tests
+      run: cargo test --lib --verbose
+    - name: Integration tests
+      run: cargo test --tests --verbose
+
+  lint:
+    name: Format and clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+    - uses: actions/checkout@v6.0.2
+      with:
+        persist-credentials: false
+    - uses: actions-rust-lang/setup-rust-toolchain@v1.15.4
+      with:
+        components: clippy, rustfmt
+    - name: Format
+      run: cargo fmt --check
+    - name: Clippy
+      run: cargo clippy --all-targets -- -D warnings

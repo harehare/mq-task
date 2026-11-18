@@ -22,9 +22,6 @@ jobs:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
-    # Windows is informational until its test suite is known to pass there:
-    # many end-to-end tests drive `bash` and Unix tools.
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
     strategy:
       fail-fast: false
       matrix:

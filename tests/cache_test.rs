@@ -29,7 +29,13 @@ fn write(dir: &Path, rel: &str, content: &str) -> PathBuf {
 fn names(paths: &[PathBuf], base: &Path) -> Vec<String> {
     paths
         .iter()
-        .map(|p| p.strip_prefix(base).unwrap().to_string_lossy().into_owned())
+        .map(|p| {
+            // Compare with `/` on every platform (Windows paths use `\`).
+            p.strip_prefix(base)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
         .collect()
 }
 

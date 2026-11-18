@@ -34,6 +34,13 @@ jobs:
     - uses: actions/checkout@v6.0.2
       with:
         persist-credentials: false
+    - name: Prefer Git Bash on Windows
+      # `bash` on the Windows runners resolves to System32\bash.exe, the WSL
+      # launcher, which fails with exit 1 when no distribution is installed.
+      # The tests and many tasks need a real bash.
+      if: runner.os == 'Windows'
+      shell: bash
+      run: echo 'C:\Program Files\Git\bin' >> "$GITHUB_PATH"
     - name: Build
       run: cargo build --verbose
     - name: Unit tests

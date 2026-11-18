@@ -765,14 +765,19 @@ fn the_working_directory_is_applied() {
     let n = node(&exec, &s, &[], true);
     let got = n.done().unwrap();
     if cfg!(windows) {
-        // Compare as `C:/Users/...`: no `\\?\` prefix, `/` separators, and
-        // Windows paths are case-insensitive (drive letters especially).
-        let want = canonical
-            .display()
-            .to_string()
-            .trim_start_matches(r"\\?\")
-            .replace('\\', "/");
-        assert_eq!(got.to_lowercase(), want.to_lowercase());
+        // The shell may print the 8.3 short name (`RUNNER~1`) that the
+        // temp dir is spelled with, so canonicalize what it printed too, then
+        // compare as `C:/Users/...`: no `\\?\` prefix, `/` separators, and
+        // case-insensitively (Windows paths, drive letters especially).
+        let norm = |p: &Path| {
+            p.display()
+                .to_string()
+                .trim_start_matches(r"\\?\")
+                .replace('\\', "/")
+                .to_lowercase()
+        };
+        let printed = fs::canonicalize(&got).unwrap();
+        assert_eq!(norm(&printed), norm(&canonical));
     } else {
         assert_eq!(got, canonical.display().to_string());
     }

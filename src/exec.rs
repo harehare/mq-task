@@ -1369,6 +1369,8 @@ fn write_temp_file(lang: &str, code: &str) -> Result<PathBuf> {
         "ruby" => "rb",
         "javascript" | "js" => "js",
         "typescript" | "ts" => "ts",
+        "powershell" | "pwsh" => "ps1",
+        "cmd" => "cmd",
         _ => lang,
     };
 

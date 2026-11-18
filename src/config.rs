@@ -84,9 +84,10 @@ pub struct Config {
     pub default_language: String,
 }
 
-/// The language of a fence without one: the standard POSIX shell.
+/// The language of a fence without one: the platform's standard shell
+/// (`sh`, or PowerShell on Windows where `sh` is not installed).
 fn default_language() -> String {
-    "sh".to_string()
+    if cfg!(windows) { "powershell" } else { "sh" }.to_string()
 }
 
 impl Default for Config {
@@ -232,6 +233,12 @@ fn default_runtimes() -> HashMap<String, RuntimeConfig> {
         ("js", "node"),
         ("php", "php"),
         ("perl", "perl"),
+        (
+            "powershell",
+            "powershell -NoProfile -ExecutionPolicy Bypass -File",
+        ),
+        ("pwsh", "pwsh -NoProfile -File"),
+        ("cmd", "cmd /D /Q /C"),
     ] {
         runtimes.insert(
             lang.to_string(),

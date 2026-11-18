@@ -130,7 +130,9 @@ fn exists_accepts_absolute_paths_regardless_of_directory() {
     let other = tempfile::tempdir().unwrap();
     let file = other.path().join("f");
     fs::write(&file, "x").unwrap();
-    let expr = format!(r#"exists("{}")"#, file.display());
+    // `\` starts an escape in an mq string, so spell Windows paths with `/`.
+    let path = file.display().to_string().replace('\\', "/");
+    let expr = format!(r#"exists("{path}")"#);
     assert!(eval_in(&expr, &[], Some(dir.path())).unwrap());
 }
 

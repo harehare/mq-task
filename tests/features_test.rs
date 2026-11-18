@@ -3737,6 +3737,54 @@ fn shell_blocks_share_exports_and_cd_within_a_task() {
 
 #[cfg(unix)]
 #[test]
+fn shell_state_survives_user_exit_trap() {
+    let dir = workdir("carry-trap");
+    fs::create_dir_all(dir.join("sub")).unwrap();
+    fs::write(
+        dir.join("tasks.md"),
+        "## t\n\n```bash\ntrap ':' EXIT\nexport GREETING=hello\ncd sub\n```\n\n```bash\necho \"$GREETING $(basename \"$PWD\")\"\n```\n",
+    )
+    .unwrap();
+    let out = mq_task(&dir, &["t"]);
+    assert!(text(&out).contains("hello sub"), "{out:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn shell_state_survives_restricted_path_under_set_e() {
+    let dir = workdir("carry-path");
+    fs::create_dir_all(dir.join("bin")).unwrap();
+    std::os::unix::fs::symlink("/bin/bash", dir.join("bin/bash")).unwrap();
+    fs::write(
+        dir.join("tasks.md"),
+        "## t\n\n```bash\nset -e\nexport GREETING=hi\nexport PATH=\"$PWD/bin\"\n```\n\n```bash\necho \"got $GREETING\"\n```\n",
+    )
+    .unwrap();
+    let out = mq_task(&dir, &["t"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(text(&out).contains("got hi"), "{out:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn shell_block_keeps_exit_status_and_tolerates_non_utf8_env() {
+    use std::os::unix::ffi::OsStrExt;
+    let dir = workdir("carry-nonutf8");
+    fs::write(dir.join("tasks.md"), "## t\n\n```sh\ntrue\n```\n").unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mq-task"))
+        .current_dir(&dir)
+        .env("MX_BAD", std::ffi::OsStr::from_bytes(b"a\xffb"))
+        .arg("t")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    fs::write(dir.join("tasks.md"), "## t\n\n```sh\nexit 3\n```\n").unwrap();
+    let out = mq_task(&dir, &["t"]);
+    assert_eq!(out.status.code(), Some(3), "{out:?}");
+}
+
+#[cfg(unix)]
+#[test]
 fn shell_state_carry_keeps_error_line_numbers() {
     let dir = workdir("carry-lines");
     fs::write(dir.join("tasks.md"), "## t\n\n```sh\nfalse_cmd_xyz\n```\n").unwrap();

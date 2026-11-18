@@ -99,9 +99,41 @@ fn source_items(env: &[(String, String)], source: &str) -> Vec<String> {
 /// Variable naming the file a shell block writes its final environment to.
 const STATE_FILE_VAR: &str = "MX_STATE_FILE";
 
-/// Prepended to a shell block: dumps the environment when the shell exits,
-/// however it exits.
-const STATE_TRAP: &str = "trap 'env -0 > \"$MX_STATE_FILE\" 2>/dev/null' EXIT; ";
+/// Variable holding the `env` executable, resolved before user code runs so
+/// a block that changes `PATH` cannot break the dump.
+const ENV_BIN_VAR: &str = "MX_ENV_BIN";
+
+/// Dumps the environment. `>|` survives `set -C`, `|| :` keeps a failed dump
+/// from changing the block's exit status (even under `set -e`).
+const STATE_DUMP: &str = "\"$MX_ENV_BIN\" -0 >| \"$MX_STATE_FILE\" 2>/dev/null || :";
+
+/// Prepended to a shell block: dumps the environment when the shell exits
+/// (covers `exit` and `set -e` failures).
+fn state_trap() -> String {
+    format!("trap '{}' EXIT; ", STATE_DUMP)
+}
+
+/// Appended to a shell block: dumps the environment on normal completion,
+/// before the shell runs an `EXIT` trap of the block that replaced ours.
+fn state_epilogue() -> String {
+    format!("\n__mx_status=$?; {}; exit $__mx_status\n", STATE_DUMP)
+}
+
+/// Path of the `env` executable (the standard location first: a stray `env`
+/// earlier in `PATH` may not support `-0`).
+fn find_env_bin() -> PathBuf {
+    let standard = PathBuf::from("/usr/bin/env");
+    if standard.is_file() {
+        return standard;
+    }
+    std::env::var_os("PATH")
+        .and_then(|paths| {
+            std::env::split_paths(&paths)
+                .map(|d| d.join("env"))
+                .find(|p| p.is_file())
+        })
+        .unwrap_or(standard)
+}
 
 fn is_posix_shell(lang: &str) -> bool {
     matches!(lang, "sh" | "bash" | "zsh" | "dash" | "ksh")
@@ -120,28 +152,42 @@ impl Carry {
     /// unset are not carried.)
     fn absorb(&mut self, state: &Path, baseline: &[(String, String)], dir: Option<&Path>) {
         let Ok(raw) = fs::read(state) else { return };
-        let mut before: std::collections::HashMap<String, String> = std::env::vars().collect();
-        before.extend(baseline.iter().cloned());
+        // Compare as bytes: inherited entries need not be valid UTF-8.
+        let mut before: std::collections::HashMap<Vec<u8>, Vec<u8>> = std::env::vars_os()
+            .map(|(k, v)| (k.into_encoded_bytes(), v.into_encoded_bytes()))
+            .collect();
+        before.extend(
+            baseline
+                .iter()
+                .map(|(k, v)| (k.as_bytes().to_vec(), v.as_bytes().to_vec())),
+        );
         for entry in raw.split(|b| *b == 0).filter(|e| !e.is_empty()) {
-            let entry = String::from_utf8_lossy(entry);
-            let Some((key, value)) = entry.split_once('=') else {
+            let Some(eq) = entry.iter().position(|b| *b == b'=') else {
                 continue;
             };
+            let (key, value) = (&entry[..eq], &entry[eq + 1..]);
             match key {
-                "_" | "SHLVL" | "OLDPWD" | STATE_FILE_VAR => {}
-                "PWD" => {
-                    let here = dir
-                        .map(Path::to_path_buf)
-                        .or_else(|| std::env::current_dir().ok());
-                    if here.as_deref() != Some(Path::new(value)) && Path::new(value).is_dir() {
-                        self.dir = Some(PathBuf::from(value));
-                    }
-                }
-                _ if before.get(key).map(String::as_str) != Some(value) => {
-                    self.env.retain(|(k, _)| k != key);
-                    self.env.push((key.to_string(), value.to_string()));
-                }
+                b"_" | b"SHLVL" | b"OLDPWD" => continue,
+                k if k == STATE_FILE_VAR.as_bytes() || k == ENV_BIN_VAR.as_bytes() => continue,
                 _ => {}
+            }
+            // Changed entries that are not UTF-8 cannot be carried.
+            let (Ok(key_str), Ok(value_str)) =
+                (std::str::from_utf8(key), std::str::from_utf8(value))
+            else {
+                continue;
+            };
+            if key == b"PWD" {
+                let here = dir
+                    .map(Path::to_path_buf)
+                    .or_else(|| std::env::current_dir().ok());
+                let new = Path::new(value_str);
+                if here.as_deref() != Some(new) && new.is_dir() {
+                    self.dir = Some(PathBuf::from(value_str));
+                }
+            } else if before.get(key).map(Vec::as_slice) != Some(value) {
+                self.env.retain(|(k, _)| k != key_str);
+                self.env.push((key_str.to_string(), value_str.to_string()));
             }
         }
     }
@@ -1118,9 +1164,10 @@ impl Executor {
                 let script = match &state_file {
                     Some(path) => {
                         command.env(STATE_FILE_VAR, path);
+                        command.env(ENV_BIN_VAR, find_env_bin());
                         // Same line as the first line of code, so error
                         // line numbers stay true.
-                        format!("{}{}", STATE_TRAP, code)
+                        format!("{}{}{}", state_trap(), code, state_epilogue())
                     }
                     None => code.to_string(),
                 };
@@ -1487,8 +1534,18 @@ fn write_temp_file(lang: &str, code: &str) -> Result<PathBuf> {
         file_ext
     );
     let temp_file = std::env::temp_dir().join(file_name);
-    fs::write(&temp_file, script_bytes(lang, code))
-        .map_err(|e| Error::Execution(format!("Failed to write temp file: {}", e)))?;
+    // Owner-only from creation: state files hold the whole environment.
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options
+        .open(&temp_file)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, &script_bytes(lang, code)))
+        .map_err(|e| {
+            fs::remove_file(&temp_file).ok();
+            Error::Execution(format!("Failed to write temp file: {}", e))
+        })?;
     Ok(temp_file)
 }
 

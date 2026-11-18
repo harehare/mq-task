@@ -708,15 +708,15 @@ mod tests {
     #[test]
     fn references_fall_back_to_base_then_the_process_environment() {
         let vars = run(
-            &[lit("A", "${FROM_BASE}-${HOME}")],
+            &[lit("A", "${FROM_BASE}-${PATH}")],
             &[("FROM_BASE", "b"), ("FROM_BASE", "later")],
             &[],
         )
         .unwrap();
-        let home = std::env::var("HOME").unwrap_or_default();
-        if !home.is_empty() {
-            assert_eq!(value(&vars, "A"), format!("later-{home}"));
-        }
+        // PATH exists on every platform (HOME does not on Windows).
+        let path = std::env::var("PATH").unwrap_or_default();
+        assert!(!path.is_empty(), "PATH is expected to be set");
+        assert_eq!(value(&vars, "A"), format!("later-{path}"));
     }
 
     #[test]

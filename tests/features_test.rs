@@ -3719,3 +3719,31 @@ fn untagged_block_runs_in_default_shell() {
         "{out:?}"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn shell_blocks_share_exports_and_cd_within_a_task() {
+    let dir = workdir("carry");
+    fs::create_dir_all(dir.join("sub")).unwrap();
+    fs::write(
+        dir.join("tasks.md"),
+        "## t\n\n```sh\nexport GREETING=hello\ncd sub\n```\n\n```bash\necho \"$GREETING $(basename \"$PWD\")\"\n```\n",
+    )
+    .unwrap();
+    let out = mq_task(&dir, &["t"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("hello sub"), "{out:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn shell_state_carry_keeps_error_line_numbers() {
+    let dir = workdir("carry-lines");
+    fs::write(dir.join("tasks.md"), "## t\n\n```sh\nfalse_cmd_xyz\n```\n").unwrap();
+    let out = mq_task(&dir, &["t"]);
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("line 1"),
+        "{out:?}"
+    );
+}

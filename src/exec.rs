@@ -96,6 +96,57 @@ fn source_items(env: &[(String, String)], source: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Variable naming the file a shell block writes its final environment to.
+const STATE_FILE_VAR: &str = "MX_STATE_FILE";
+
+/// Prepended to a shell block: dumps the environment when the shell exits,
+/// however it exits.
+const STATE_TRAP: &str = "trap 'env -0 > \"$MX_STATE_FILE\" 2>/dev/null' EXIT; ";
+
+fn is_posix_shell(lang: &str) -> bool {
+    matches!(lang, "sh" | "bash" | "zsh" | "dash" | "ksh")
+}
+
+/// What a shell block leaves behind for the next one in the same task.
+#[derive(Default)]
+struct Carry {
+    env: Vec<(String, String)>,
+    dir: Option<PathBuf>,
+}
+
+impl Carry {
+    /// Read the environment a block dumped and keep what it changed: new or
+    /// modified variables, and a different working directory. (Variables it
+    /// unset are not carried.)
+    fn absorb(&mut self, state: &Path, baseline: &[(String, String)], dir: Option<&Path>) {
+        let Ok(raw) = fs::read(state) else { return };
+        let mut before: std::collections::HashMap<String, String> = std::env::vars().collect();
+        before.extend(baseline.iter().cloned());
+        for entry in raw.split(|b| *b == 0).filter(|e| !e.is_empty()) {
+            let entry = String::from_utf8_lossy(entry);
+            let Some((key, value)) = entry.split_once('=') else {
+                continue;
+            };
+            match key {
+                "_" | "SHLVL" | "OLDPWD" | STATE_FILE_VAR => {}
+                "PWD" => {
+                    let here = dir
+                        .map(Path::to_path_buf)
+                        .or_else(|| std::env::current_dir().ok());
+                    if here.as_deref() != Some(Path::new(value)) && Path::new(value).is_dir() {
+                        self.dir = Some(PathBuf::from(value));
+                    }
+                }
+                _ if before.get(key).map(String::as_str) != Some(value) => {
+                    self.env.retain(|(k, _)| k != key);
+                    self.env.push((key.to_string(), value.to_string()));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 /// Print the code about to run (`-v`) on stderr, through the observer so
 /// it follows `--output` and shows in the TUI log.
 fn show_block(lang: &str, code: &str, dir: Option<&Path>, io: &TaskIo) {
@@ -493,8 +544,10 @@ impl Executor {
         task_env: &[(String, String)],
         io: &TaskIo,
     ) -> Result<String> {
-        let working_dir = self.effective_dir(section);
+        let base_dir = self.effective_dir(section);
         let mut captured = String::new();
+        // Exported variables and `cd` of one shell block carry into the next.
+        let mut carry = Carry::default();
 
         for (index, code_block) in section.codes.iter().enumerate() {
             if code_block.lang.is_empty() {
@@ -505,13 +558,16 @@ impl Executor {
             {
                 continue;
             }
-            let output = self.execute_code_with_params(
+            let env: Vec<(String, String)> = task_env.iter().chain(&carry.env).cloned().collect();
+            let dir = carry.dir.clone();
+            let output = self.run_block(
                 &code_block.lang,
                 &code_block.code,
                 args,
-                task_env,
-                working_dir,
+                &env,
+                dir.as_deref().or(base_dir),
                 io,
+                Some(&mut carry),
             );
             match output {
                 Ok(out) => captured.push_str(&out),
@@ -977,11 +1033,12 @@ impl Executor {
             deadline: None,
             shielded: false,
         };
-        self.execute_code_with_params(lang, code, args, param_env, working_dir, &io)?;
+        self.run_block(lang, code, args, param_env, working_dir, &io, None)?;
         Ok(())
     }
 
-    fn execute_code_with_params(
+    #[allow(clippy::too_many_arguments)]
+    fn run_block(
         &self,
         lang: &str,
         code: &str,
@@ -989,6 +1046,7 @@ impl Executor {
         param_env: &[(String, String)],
         working_dir: Option<&Path>,
         io: &TaskIo,
+        carry: Option<&mut Carry>,
     ) -> Result<String> {
         let runtime = self
             .config
@@ -1049,10 +1107,36 @@ impl Executor {
                 self.run_command(command, None, None, io)
             }
             ExecutionMode::File => {
-                let temp_file = write_temp_file(lang, code)?;
+                // Ask a POSIX shell to dump its environment on exit, to
+                // carry exports and `cd` into the following blocks.
+                let state_file = match carry {
+                    Some(_) if cfg!(unix) && is_posix_shell(lang) => {
+                        Some(write_temp_file("state", "")?)
+                    }
+                    _ => None,
+                };
+                let script = match &state_file {
+                    Some(path) => {
+                        command.env(STATE_FILE_VAR, path);
+                        // Same line as the first line of code, so error
+                        // line numbers stay true.
+                        format!("{}{}", STATE_TRAP, code)
+                    }
+                    None => code.to_string(),
+                };
+                let temp_file = write_temp_file(lang, &script)?;
                 command.arg(&temp_file);
                 let result = self.run_command(command, None, Some(lang), io);
                 fs::remove_file(&temp_file).ok();
+                if let Some(path) = state_file {
+                    if result.is_ok()
+                        && let Some(carry) = carry
+                    {
+                        let baseline = self.prepare_env_vars(args, param_env);
+                        carry.absorb(&path, &baseline, working_dir);
+                    }
+                    fs::remove_file(&path).ok();
+                }
                 result
             }
         }

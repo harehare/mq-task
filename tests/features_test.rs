@@ -3722,71 +3722,8 @@ fn untagged_block_runs_in_default_shell() {
 
 #[cfg(unix)]
 #[test]
-fn shell_blocks_share_exports_and_cd_within_a_task() {
-    let dir = workdir("carry");
-    fs::create_dir_all(dir.join("sub")).unwrap();
-    fs::write(
-        dir.join("tasks.md"),
-        "## t\n\n```sh\nexport GREETING=hello\ncd sub\n```\n\n```bash\necho \"$GREETING $(basename \"$PWD\")\"\n```\n",
-    )
-    .unwrap();
-    let out = mq_task(&dir, &["t"]);
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("hello sub"), "{out:?}");
-}
-
-#[cfg(unix)]
-#[test]
-fn shell_state_survives_user_exit_trap() {
-    let dir = workdir("carry-trap");
-    fs::create_dir_all(dir.join("sub")).unwrap();
-    fs::write(
-        dir.join("tasks.md"),
-        "## t\n\n```bash\ntrap ':' EXIT\nexport GREETING=hello\ncd sub\n```\n\n```bash\necho \"$GREETING $(basename \"$PWD\")\"\n```\n",
-    )
-    .unwrap();
-    let out = mq_task(&dir, &["t"]);
-    assert!(text(&out).contains("hello sub"), "{out:?}");
-}
-
-#[cfg(unix)]
-#[test]
-fn shell_state_survives_restricted_path_under_set_e() {
-    let dir = workdir("carry-path");
-    fs::create_dir_all(dir.join("bin")).unwrap();
-    std::os::unix::fs::symlink("/bin/bash", dir.join("bin/bash")).unwrap();
-    fs::write(
-        dir.join("tasks.md"),
-        "## t\n\n```bash\nset -e\nexport GREETING=hi\nexport PATH=\"$PWD/bin\"\n```\n\n```bash\necho \"got $GREETING\"\n```\n",
-    )
-    .unwrap();
-    let out = mq_task(&dir, &["t"]);
-    assert!(out.status.success(), "{out:?}");
-    assert!(text(&out).contains("got hi"), "{out:?}");
-}
-
-#[cfg(unix)]
-#[test]
-fn shell_block_keeps_exit_status_and_tolerates_non_utf8_env() {
-    use std::os::unix::ffi::OsStrExt;
-    let dir = workdir("carry-nonutf8");
-    fs::write(dir.join("tasks.md"), "## t\n\n```sh\ntrue\n```\n").unwrap();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mq-task"))
-        .current_dir(&dir)
-        .env("MX_BAD", std::ffi::OsStr::from_bytes(b"a\xffb"))
-        .arg("t")
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "{out:?}");
-    fs::write(dir.join("tasks.md"), "## t\n\n```sh\nexit 3\n```\n").unwrap();
-    let out = mq_task(&dir, &["t"]);
-    assert_eq!(out.status.code(), Some(3), "{out:?}");
-}
-
-#[cfg(unix)]
-#[test]
-fn shell_state_carry_keeps_error_line_numbers() {
-    let dir = workdir("carry-lines");
+fn shell_block_keeps_error_line_numbers_and_exit_status() {
+    let dir = workdir("shell-lines");
     fs::write(dir.join("tasks.md"), "## t\n\n```sh\nfalse_cmd_xyz\n```\n").unwrap();
     let out = mq_task(&dir, &["t"]);
     assert!(!out.status.success());
@@ -3796,6 +3733,9 @@ fn shell_state_carry_keeps_error_line_numbers() {
         stderr.contains("line 1:") || stderr.contains(".sh: 1:"),
         "{out:?}"
     );
+    fs::write(dir.join("tasks.md"), "## t\n\n```sh\nexit 3\n```\n").unwrap();
+    let out = mq_task(&dir, &["t"]);
+    assert_eq!(out.status.code(), Some(3), "{out:?}");
 }
 
 /// Windows PowerShell must read a script with non-ASCII text as UTF-8, so an
@@ -3815,12 +3755,6 @@ fn windows_powershell_reads_non_ascii_literals() {
         String::from_utf8_lossy(&out.stdout).contains("found-it"),
         "{out:?}"
     );
-}
-
-fn run_md(name: &str, md: &str, args: &[&str]) -> Output {
-    let dir = workdir(name);
-    fs::write(dir.join("tasks.md"), md).unwrap();
-    mq_task(&dir, args)
 }
 
 fn text(out: &Output) -> String {
@@ -3858,82 +3792,4 @@ fn an_unknown_default_language_is_reported_by_check() {
             || text(&out).contains("nosuchlang"),
         "{out:?}"
     );
-}
-
-#[cfg(unix)]
-mod carry {
-    use super::*;
-
-    #[test]
-    fn exit_in_a_block_still_carries_state() {
-        let out = run_md(
-            "carry-exit",
-            "## t\n\n```sh\nexport A=1\nexit 0\n```\n\n```sh\necho \"a=$A\"\n```\n",
-            &["t"],
-        );
-        assert!(text(&out).contains("a=1"), "{out:?}");
-    }
-
-    #[test]
-    fn a_failed_block_stops_the_task_and_nothing_carries() {
-        let out = run_md(
-            "carry-fail",
-            "## t\n\n```sh\nexport A=1\nexit 3\n```\n\n```sh\necho \"a=$A\"\n```\n",
-            &["t"],
-        );
-        assert_eq!(out.status.code(), Some(3), "{out:?}");
-        assert!(!text(&out).contains("a=1"), "{out:?}");
-    }
-
-    #[test]
-    fn values_with_equals_and_newlines_survive() {
-        let out = run_md(
-            "carry-values",
-            "## t\n\n```sh\nexport A='x=y'\nexport B='l1\nl2'\n```\n\n```sh\nprintf '%s|%s\\n' \"$A\" \"$B\"\n```\n",
-            &["t"],
-        );
-        assert!(text(&out).contains("x=y|l1\nl2"), "{out:?}");
-    }
-
-    #[test]
-    fn env_override_beats_a_carried_export() {
-        let out = run_md(
-            "carry-env",
-            "## t\n\n```sh\nexport A=block\n```\n\n```sh\necho \"a=$A\"\n```\n",
-            &["t", "--env", "A=cli"],
-        );
-        assert!(text(&out).contains("a=cli"), "{out:?}");
-    }
-
-    #[test]
-    fn carried_exports_reach_non_shell_blocks_as_plain_env() {
-        let out = run_md(
-            "carry-py",
-            "## t\n\n```sh\nexport A=1\n```\n\n```python\nimport os\nprint('py', os.environ.get('A'))\n```\n",
-            &["t"],
-        );
-        // Carried exports are ordinary environment variables for any later block.
-        assert!(text(&out).contains("py 1"), "{out:?}");
-    }
-
-    #[test]
-    fn state_does_not_leak_between_tasks() {
-        let out = run_md(
-            "carry-tasks",
-            "## a\n\n```sh\nexport LEAK=1\n```\n\n## b\n\n```meta\ndepends = [\"a\"]\n```\n\n```sh\necho \"leak=${LEAK:-none}\"\n```\n",
-            &["b"],
-        );
-        assert!(text(&out).contains("leak=none"), "{out:?}");
-    }
-
-    #[test]
-    fn dry_run_shows_the_original_code_only() {
-        let out = run_md(
-            "carry-dry",
-            "## t\n\n```sh\necho hi\n```\n",
-            &["t", "--dry-run"],
-        );
-        assert!(!text(&out).contains("MX_STATE_FILE"), "{out:?}");
-        assert!(text(&out).contains("echo hi"), "{out:?}");
-    }
 }

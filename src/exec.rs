@@ -96,103 +96,6 @@ fn source_items(env: &[(String, String)], source: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Variable naming the file a shell block writes its final environment to.
-const STATE_FILE_VAR: &str = "MX_STATE_FILE";
-
-/// Variable holding the `env` executable, resolved before user code runs so
-/// a block that changes `PATH` cannot break the dump.
-const ENV_BIN_VAR: &str = "MX_ENV_BIN";
-
-/// Dumps the environment. `>|` survives `set -C`, `|| :` keeps a failed dump
-/// from changing the block's exit status (even under `set -e`).
-const STATE_DUMP: &str = "\"$MX_ENV_BIN\" -0 >| \"$MX_STATE_FILE\" 2>/dev/null || :";
-
-/// Prepended to a shell block: dumps the environment when the shell exits
-/// (covers `exit` and `set -e` failures).
-fn state_trap() -> String {
-    format!("trap '{}' EXIT; ", STATE_DUMP)
-}
-
-/// Appended to a shell block: dumps the environment on normal completion,
-/// before the shell runs an `EXIT` trap of the block that replaced ours.
-fn state_epilogue() -> String {
-    format!("\n__mx_status=$?; {}; exit $__mx_status\n", STATE_DUMP)
-}
-
-/// Path of the `env` executable (the standard location first: a stray `env`
-/// earlier in `PATH` may not support `-0`).
-fn find_env_bin() -> PathBuf {
-    let standard = PathBuf::from("/usr/bin/env");
-    if standard.is_file() {
-        return standard;
-    }
-    std::env::var_os("PATH")
-        .and_then(|paths| {
-            std::env::split_paths(&paths)
-                .map(|d| d.join("env"))
-                .find(|p| p.is_file())
-        })
-        .unwrap_or(standard)
-}
-
-fn is_posix_shell(lang: &str) -> bool {
-    matches!(lang, "sh" | "bash" | "zsh" | "dash" | "ksh")
-}
-
-/// What a shell block leaves behind for the next one in the same task.
-#[derive(Default)]
-struct Carry {
-    env: Vec<(String, String)>,
-    dir: Option<PathBuf>,
-}
-
-impl Carry {
-    /// Read the environment a block dumped and keep what it changed: new or
-    /// modified variables, and a different working directory. (Variables it
-    /// unset are not carried.)
-    fn absorb(&mut self, state: &Path, baseline: &[(String, String)], dir: Option<&Path>) {
-        let Ok(raw) = fs::read(state) else { return };
-        // Compare as bytes: inherited entries need not be valid UTF-8.
-        let mut before: std::collections::HashMap<Vec<u8>, Vec<u8>> = std::env::vars_os()
-            .map(|(k, v)| (k.into_encoded_bytes(), v.into_encoded_bytes()))
-            .collect();
-        before.extend(
-            baseline
-                .iter()
-                .map(|(k, v)| (k.as_bytes().to_vec(), v.as_bytes().to_vec())),
-        );
-        for entry in raw.split(|b| *b == 0).filter(|e| !e.is_empty()) {
-            let Some(eq) = entry.iter().position(|b| *b == b'=') else {
-                continue;
-            };
-            let (key, value) = (&entry[..eq], &entry[eq + 1..]);
-            match key {
-                b"_" | b"SHLVL" | b"OLDPWD" => continue,
-                k if k == STATE_FILE_VAR.as_bytes() || k == ENV_BIN_VAR.as_bytes() => continue,
-                _ => {}
-            }
-            // Changed entries that are not UTF-8 cannot be carried.
-            let (Ok(key_str), Ok(value_str)) =
-                (std::str::from_utf8(key), std::str::from_utf8(value))
-            else {
-                continue;
-            };
-            if key == b"PWD" {
-                let here = dir
-                    .map(Path::to_path_buf)
-                    .or_else(|| std::env::current_dir().ok());
-                let new = Path::new(value_str);
-                if here.as_deref() != Some(new) && new.is_dir() {
-                    self.dir = Some(PathBuf::from(value_str));
-                }
-            } else if before.get(key).map(Vec::as_slice) != Some(value) {
-                self.env.retain(|(k, _)| k != key_str);
-                self.env.push((key_str.to_string(), value_str.to_string()));
-            }
-        }
-    }
-}
-
 /// Print the code about to run (`-v`) on stderr, through the observer so
 /// it follows `--output` and shows in the TUI log.
 fn show_block(lang: &str, code: &str, dir: Option<&Path>, io: &TaskIo) {
@@ -590,10 +493,8 @@ impl Executor {
         task_env: &[(String, String)],
         io: &TaskIo,
     ) -> Result<String> {
-        let base_dir = self.effective_dir(section);
+        let working_dir = self.effective_dir(section);
         let mut captured = String::new();
-        // Exported variables and `cd` of one shell block carry into the next.
-        let mut carry = Carry::default();
 
         for (index, code_block) in section.codes.iter().enumerate() {
             if code_block.lang.is_empty() {
@@ -604,16 +505,13 @@ impl Executor {
             {
                 continue;
             }
-            let env: Vec<(String, String)> = task_env.iter().chain(&carry.env).cloned().collect();
-            let dir = carry.dir.clone();
-            let output = self.run_block(
+            let output = self.execute_code_with_params(
                 &code_block.lang,
                 &code_block.code,
                 args,
-                &env,
-                dir.as_deref().or(base_dir),
+                task_env,
+                working_dir,
                 io,
-                Some(&mut carry),
             );
             match output {
                 Ok(out) => captured.push_str(&out),
@@ -1079,12 +977,11 @@ impl Executor {
             deadline: None,
             shielded: false,
         };
-        self.run_block(lang, code, args, param_env, working_dir, &io, None)?;
+        self.execute_code_with_params(lang, code, args, param_env, working_dir, &io)?;
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn run_block(
+    fn execute_code_with_params(
         &self,
         lang: &str,
         code: &str,
@@ -1092,7 +989,6 @@ impl Executor {
         param_env: &[(String, String)],
         working_dir: Option<&Path>,
         io: &TaskIo,
-        carry: Option<&mut Carry>,
     ) -> Result<String> {
         let runtime = self
             .config
@@ -1153,37 +1049,10 @@ impl Executor {
                 self.run_command(command, None, None, io)
             }
             ExecutionMode::File => {
-                // Ask a POSIX shell to dump its environment on exit, to
-                // carry exports and `cd` into the following blocks.
-                let state_file = match carry {
-                    Some(_) if cfg!(unix) && is_posix_shell(lang) => {
-                        Some(write_temp_file("state", "")?)
-                    }
-                    _ => None,
-                };
-                let script = match &state_file {
-                    Some(path) => {
-                        command.env(STATE_FILE_VAR, path);
-                        command.env(ENV_BIN_VAR, find_env_bin());
-                        // Same line as the first line of code, so error
-                        // line numbers stay true.
-                        format!("{}{}{}", state_trap(), code, state_epilogue())
-                    }
-                    None => code.to_string(),
-                };
-                let temp_file = write_temp_file(lang, &script)?;
+                let temp_file = write_temp_file(lang, code)?;
                 command.arg(&temp_file);
                 let result = self.run_command(command, None, Some(lang), io);
                 fs::remove_file(&temp_file).ok();
-                if let Some(path) = state_file {
-                    if result.is_ok()
-                        && let Some(carry) = carry
-                    {
-                        let baseline = self.prepare_env_vars(args, param_env);
-                        carry.absorb(&path, &baseline, working_dir);
-                    }
-                    fs::remove_file(&path).ok();
-                }
                 result
             }
         }

@@ -1015,6 +1015,7 @@ mod tests {
         assert_eq!(cache.lock().unwrap().len(), 2);
     }
 
+    #[cfg(unix)]
     fn value_of(vars: &[(String, String)], name: &str) -> String {
         value(vars, name)
     }

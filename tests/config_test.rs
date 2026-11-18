@@ -322,3 +322,27 @@ fn validate_accepts_an_empty_runtime_table() {
     .validate_runtimes()
     .unwrap();
 }
+
+#[test]
+fn default_language_is_the_platform_shell_and_can_be_overridden() {
+    let config = Config::default();
+    assert_eq!(
+        config.default_language,
+        if cfg!(windows) { "powershell" } else { "sh" }
+    );
+    assert!(config.has_runtime(&config.default_language));
+    let config: Config = toml::from_str("default_language = \"bash\"").unwrap();
+    assert_eq!(config.default_language, "bash");
+}
+
+#[test]
+fn windows_shell_runtimes_are_built_in() {
+    let config = Config::default();
+    for lang in ["powershell", "pwsh", "cmd"] {
+        assert!(config.has_runtime(lang), "{lang}");
+        assert_eq!(
+            config.get_execution_mode(lang),
+            mq_task::ExecutionMode::File
+        );
+    }
+}

@@ -3766,3 +3766,124 @@ fn windows_powershell_reads_non_ascii_literals() {
         "{out:?}"
     );
 }
+
+fn run_md(name: &str, md: &str, args: &[&str]) -> Output {
+    let dir = workdir(name);
+    fs::write(dir.join("tasks.md"), md).unwrap();
+    mq_task(&dir, args)
+}
+
+fn text(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn default_language_is_configurable_and_data_fences_still_skip() {
+    let dir = workdir("deflang");
+    fs::write(dir.join("mq-task.toml"), "default_language = \"bash\"\n").unwrap();
+    fs::write(
+        dir.join("tasks.md"),
+        "## t\n\n```\necho \"${BASH_VERSION:+bash}\"\n```\n\n```text\nnot-run-output\n```\n",
+    )
+    .unwrap();
+    let out = mq_task(&dir, &["t"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(text(&out).contains("bash"), "{out:?}");
+    assert!(!text(&out).contains("not-run-output"), "{out:?}");
+}
+
+#[test]
+fn an_unknown_default_language_is_reported_by_check() {
+    let dir = workdir("deflang-bad");
+    fs::write(
+        dir.join("mq-task.toml"),
+        "default_language = \"nosuchlang\"\n",
+    )
+    .unwrap();
+    fs::write(dir.join("tasks.md"), "## t\n\n```\necho hi\n```\n").unwrap();
+    let out = mq_task(&dir, &["check"]);
+    assert!(!out.status.success(), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("nosuchlang")
+            || text(&out).contains("nosuchlang"),
+        "{out:?}"
+    );
+}
+
+#[cfg(unix)]
+mod carry {
+    use super::*;
+
+    #[test]
+    fn exit_in_a_block_still_carries_state() {
+        let out = run_md(
+            "carry-exit",
+            "## t\n\n```sh\nexport A=1\nexit 0\n```\n\n```sh\necho \"a=$A\"\n```\n",
+            &["t"],
+        );
+        assert!(text(&out).contains("a=1"), "{out:?}");
+    }
+
+    #[test]
+    fn a_failed_block_stops_the_task_and_nothing_carries() {
+        let out = run_md(
+            "carry-fail",
+            "## t\n\n```sh\nexport A=1\nexit 3\n```\n\n```sh\necho \"a=$A\"\n```\n",
+            &["t"],
+        );
+        assert_eq!(out.status.code(), Some(3), "{out:?}");
+        assert!(!text(&out).contains("a=1"), "{out:?}");
+    }
+
+    #[test]
+    fn values_with_equals_and_newlines_survive() {
+        let out = run_md(
+            "carry-values",
+            "## t\n\n```sh\nexport A='x=y'\nexport B='l1\nl2'\n```\n\n```sh\nprintf '%s|%s\\n' \"$A\" \"$B\"\n```\n",
+            &["t"],
+        );
+        assert!(text(&out).contains("x=y|l1\nl2"), "{out:?}");
+    }
+
+    #[test]
+    fn env_override_beats_a_carried_export() {
+        let out = run_md(
+            "carry-env",
+            "## t\n\n```sh\nexport A=block\n```\n\n```sh\necho \"a=$A\"\n```\n",
+            &["t", "--env", "A=cli"],
+        );
+        assert!(text(&out).contains("a=cli"), "{out:?}");
+    }
+
+    #[test]
+    fn carried_exports_reach_non_shell_blocks_as_plain_env() {
+        let out = run_md(
+            "carry-py",
+            "## t\n\n```sh\nexport A=1\n```\n\n```python\nimport os\nprint('py', os.environ.get('A'))\n```\n",
+            &["t"],
+        );
+        // Carried exports are ordinary environment variables for any later block.
+        assert!(text(&out).contains("py 1"), "{out:?}");
+    }
+
+    #[test]
+    fn state_does_not_leak_between_tasks() {
+        let out = run_md(
+            "carry-tasks",
+            "## a\n\n```sh\nexport LEAK=1\n```\n\n## b\n\n```meta\ndepends = [\"a\"]\n```\n\n```sh\necho \"leak=${LEAK:-none}\"\n```\n",
+            &["b"],
+        );
+        assert!(text(&out).contains("leak=none"), "{out:?}");
+    }
+
+    #[test]
+    fn dry_run_shows_the_original_code_only() {
+        let out = run_md(
+            "carry-dry",
+            "## t\n\n```sh\necho hi\n```\n",
+            &["t", "--dry-run"],
+        );
+        assert!(!text(&out).contains("MX_STATE_FILE"), "{out:?}");
+        assert!(text(&out).contains("echo hi"), "{out:?}");
+    }
+}

@@ -135,6 +135,7 @@ fn toml_errors(#[case] toml: &str) {
 fn serialization_round_trips() {
     let config = Config {
         default_task: Some("ci".into()),
+        default_language: "sh".into(),
         ..Default::default()
     };
     let text = toml::to_string(&config).unwrap();
@@ -265,7 +266,7 @@ proptest! {
             Just(ExecutionMode::Stdin), Just(ExecutionMode::File), Just(ExecutionMode::Arg)
         ]),
     ) {
-        let mut config = Config { runtimes: HashMap::new(), default_task: None };
+        let mut config = Config { runtimes: HashMap::new(), default_task: None, default_language: "sh".into() };
         config
             .apply_runtime_overrides(&[format!("{lang}:{command}")], mode.clone())
             .unwrap();
@@ -285,6 +286,7 @@ fn only(lang: &str, command: &str) -> Config {
     Config {
         runtimes: HashMap::from([(lang.to_string(), RuntimeConfig::Simple(command.into()))]),
         default_task: None,
+        default_language: "sh".into(),
     }
 }
 
@@ -315,7 +317,32 @@ fn validate_accepts_an_empty_runtime_table() {
     Config {
         runtimes: HashMap::new(),
         default_task: None,
+        default_language: "sh".into(),
     }
     .validate_runtimes()
     .unwrap();
+}
+
+#[test]
+fn default_language_is_the_platform_shell_and_can_be_overridden() {
+    let config = Config::default();
+    assert_eq!(
+        config.default_language,
+        if cfg!(windows) { "powershell" } else { "sh" }
+    );
+    assert!(config.has_runtime(&config.default_language));
+    let config: Config = toml::from_str("default_language = \"bash\"").unwrap();
+    assert_eq!(config.default_language, "bash");
+}
+
+#[test]
+fn windows_shell_runtimes_are_built_in() {
+    let config = Config::default();
+    for lang in ["powershell", "pwsh", "cmd"] {
+        assert!(config.has_runtime(lang), "{lang}");
+        assert_eq!(
+            config.get_execution_mode(lang),
+            mq_task::ExecutionMode::File
+        );
+    }
 }

@@ -394,6 +394,13 @@ impl Runner {
             .into_iter()
             .zip(all_lines)
             .filter(|(c, _)| c.lang != "meta")
+            .map(|(mut c, l)| {
+                // A fence without a language runs in the default shell.
+                if c.lang.is_empty() {
+                    c.lang = self.exec.config.default_language.clone();
+                }
+                (c, l)
+            })
             .filter(|(c, _)| {
                 self.exec.config.has_runtime(&c.lang) || !DATA_LANGUAGES.contains(&c.lang.as_str())
             })

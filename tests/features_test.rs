@@ -3702,3 +3702,94 @@ fn init_never_overwrites_and_accepts_another_path() {
             .contains("[runtimes")
     );
 }
+
+#[test]
+fn untagged_block_runs_in_default_shell() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = dir.path().join("tasks.md");
+    std::fs::write(&f, "## hi\n\n```\necho untagged-ok\n```\n").unwrap();
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_mq-task"))
+        .arg("-f")
+        .arg(&f)
+        .arg("hi")
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("untagged-ok"),
+        "{out:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn shell_block_keeps_error_line_numbers_and_exit_status() {
+    let dir = workdir("shell-lines");
+    fs::write(dir.join("tasks.md"), "## t\n\n```sh\nfalse_cmd_xyz\n```\n").unwrap();
+    let out = mq_task(&dir, &["t"]);
+    assert!(!out.status.success());
+    // bash reports "line 1:", dash reports "<file>: 1:".
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("line 1:") || stderr.contains(".sh: 1:"),
+        "{out:?}"
+    );
+    fs::write(dir.join("tasks.md"), "## t\n\n```sh\nexit 3\n```\n").unwrap();
+    let out = mq_task(&dir, &["t"]);
+    assert_eq!(out.status.code(), Some(3), "{out:?}");
+}
+
+/// Windows PowerShell must read a script with non-ASCII text as UTF-8, so an
+/// untagged block can use a file whose name has non-ASCII characters.
+#[cfg(windows)]
+#[test]
+fn windows_powershell_reads_non_ascii_literals() {
+    let dir = workdir("ps-utf8");
+    fs::write(dir.join("café.txt"), "found-it").unwrap();
+    fs::write(
+        dir.join("tasks.md"),
+        "## t\n\n```\nGet-Content './café.txt'\n```\n",
+    )
+    .unwrap();
+    let out = mq_task(&dir, &["t"]);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("found-it"),
+        "{out:?}"
+    );
+}
+
+fn text(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn default_language_is_configurable_and_data_fences_still_skip() {
+    let dir = workdir("deflang");
+    fs::write(dir.join("mq-task.toml"), "default_language = \"bash\"\n").unwrap();
+    fs::write(
+        dir.join("tasks.md"),
+        "## t\n\n```\necho \"${BASH_VERSION:+bash}\"\n```\n\n```text\nnot-run-output\n```\n",
+    )
+    .unwrap();
+    let out = mq_task(&dir, &["t"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(text(&out).contains("bash"), "{out:?}");
+    assert!(!text(&out).contains("not-run-output"), "{out:?}");
+}
+
+#[test]
+fn an_unknown_default_language_is_reported_by_check() {
+    let dir = workdir("deflang-bad");
+    fs::write(
+        dir.join("mq-task.toml"),
+        "default_language = \"nosuchlang\"\n",
+    )
+    .unwrap();
+    fs::write(dir.join("tasks.md"), "## t\n\n```\necho hi\n```\n").unwrap();
+    let out = mq_task(&dir, &["check"]);
+    assert!(!out.status.success(), "{out:?}");
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("nosuchlang")
+            || text(&out).contains("nosuchlang"),
+        "{out:?}"
+    );
+}

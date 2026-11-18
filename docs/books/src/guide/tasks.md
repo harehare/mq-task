@@ -23,7 +23,7 @@ When the task file is a `README.md`, sections often hold examples next to the co
 
 - A block whose info string contains `no-run` is never run: ```` ```bash no-run ````.
 - A block in a data or output language (`text`, `console`, `output`, `log`, `json`, `yaml`, `toml`, `xml`, `html`, `css`, `csv`, `diff`, `ini`, `markdown`, `mermaid`, `dockerfile`, ...) is skipped, unless the language has a runtime under `[runtimes]` (then it runs, e.g. a `json` block for a `jq` runtime). Other languages without a runtime are still an error, so a typo such as `pyhton` is caught.
-- A block without a language is skipped.
+- A block without a language runs in the default shell: `sh`, or `powershell` on Windows. Set `default_language` in `mq-task.toml` to change it (e.g. `default_language = "bash"`); mark output-only fences with `text` to keep them from running.
 
 A section whose blocks are all skipped is not a task: it is not listed and `check` ignores it.
 

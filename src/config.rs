@@ -79,6 +79,15 @@ pub struct Config {
     /// Task run when mq-task is invoked with no task name and no subcommand
     #[serde(default)]
     pub default_task: Option<String>,
+    /// Language given to a code block that has none (default `sh`).
+    #[serde(default = "default_language")]
+    pub default_language: String,
+}
+
+/// The language of a fence without one: the platform's standard shell
+/// (`sh`, or PowerShell on Windows where `sh` is not installed).
+fn default_language() -> String {
+    if cfg!(windows) { "powershell" } else { "sh" }.to_string()
 }
 
 impl Default for Config {
@@ -86,6 +95,7 @@ impl Default for Config {
         Self {
             runtimes: default_runtimes(),
             default_task: None,
+            default_language: default_language(),
         }
     }
 }
@@ -223,6 +233,12 @@ fn default_runtimes() -> HashMap<String, RuntimeConfig> {
         ("js", "node"),
         ("php", "php"),
         ("perl", "perl"),
+        (
+            "powershell",
+            "powershell -NoProfile -ExecutionPolicy Bypass -File",
+        ),
+        ("pwsh", "pwsh -NoProfile -File"),
+        ("cmd", "cmd /D /Q /C"),
     ] {
         runtimes.insert(
             lang.to_string(),

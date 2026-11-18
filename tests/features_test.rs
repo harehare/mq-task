@@ -3747,3 +3747,22 @@ fn shell_state_carry_keeps_error_line_numbers() {
         "{out:?}"
     );
 }
+
+/// Windows PowerShell must read a script with non-ASCII text as UTF-8, so an
+/// untagged block can use a file whose name has non-ASCII characters.
+#[cfg(windows)]
+#[test]
+fn windows_powershell_reads_non_ascii_literals() {
+    let dir = workdir("ps-utf8");
+    fs::write(dir.join("café.txt"), "found-it").unwrap();
+    fs::write(
+        dir.join("tasks.md"),
+        "## t\n\n```\nGet-Content './café.txt'\n```\n",
+    )
+    .unwrap();
+    let out = mq_task(&dir, &["t"]);
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("found-it"),
+        "{out:?}"
+    );
+}

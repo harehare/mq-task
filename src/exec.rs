@@ -1446,6 +1446,18 @@ fn is_retriable(e: &Error) -> bool {
     )
 }
 
+/// The bytes written for a script. Windows PowerShell reads a file without a
+/// byte-order mark in the system ANSI code page, which corrupts non-ASCII
+/// text, so its scripts get a UTF-8 BOM. Other interpreters are unchanged.
+fn script_bytes(lang: &str, code: &str) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(code.len() + 3);
+    if lang == "powershell" {
+        bytes.extend_from_slice(b"\xEF\xBB\xBF");
+    }
+    bytes.extend_from_slice(code.as_bytes());
+    bytes
+}
+
 fn write_temp_file(lang: &str, code: &str) -> Result<PathBuf> {
     let file_ext = match lang {
         "go" | "golang" => "go",
@@ -1475,7 +1487,26 @@ fn write_temp_file(lang: &str, code: &str) -> Result<PathBuf> {
         file_ext
     );
     let temp_file = std::env::temp_dir().join(file_name);
-    fs::write(&temp_file, code)
+    fs::write(&temp_file, script_bytes(lang, code))
         .map_err(|e| Error::Execution(format!("Failed to write temp file: {}", e)))?;
     Ok(temp_file)
+}
+
+#[cfg(test)]
+mod script_bytes_tests {
+    use super::script_bytes;
+
+    #[test]
+    fn windows_powershell_scripts_start_with_a_utf8_bom() {
+        let bytes = script_bytes("powershell", "Get-Content './café.txt'");
+        assert_eq!(&bytes[..3], b"\xEF\xBB\xBF");
+        assert_eq!(&bytes[3..], "Get-Content './café.txt'".as_bytes());
+    }
+
+    #[test]
+    fn other_interpreters_are_written_unchanged() {
+        for lang in ["sh", "bash", "pwsh", "cmd", "python"] {
+            assert_eq!(script_bytes(lang, "é"), "é".as_bytes(), "{lang}");
+        }
+    }
 }

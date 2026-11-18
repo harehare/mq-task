@@ -3742,8 +3742,10 @@ fn shell_state_carry_keeps_error_line_numbers() {
     fs::write(dir.join("tasks.md"), "## t\n\n```sh\nfalse_cmd_xyz\n```\n").unwrap();
     let out = mq_task(&dir, &["t"]);
     assert!(!out.status.success());
+    // bash reports "line 1:", dash reports "<file>: 1:".
+    let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        String::from_utf8_lossy(&out.stderr).contains("line 1"),
+        stderr.contains("line 1:") || stderr.contains(".sh: 1:"),
         "{out:?}"
     );
 }

@@ -759,9 +759,23 @@ fn the_working_directory_is_applied() {
     let canonical = fs::canonicalize(dir.path()).unwrap();
     let mut exec = executor();
     exec.working_dir = Some(dir.path().to_path_buf());
-    let s = bash("t", &[], "pwd -P");
+    // Git Bash's `pwd -P` prints an MSYS path (`/c/Users/...`); `pwd -W`
+    // prints the Windows one.
+    let s = bash("t", &[], if cfg!(windows) { "pwd -W" } else { "pwd -P" });
     let n = node(&exec, &s, &[], true);
-    assert_eq!(n.done().unwrap(), canonical.display().to_string());
+    let got = n.done().unwrap();
+    if cfg!(windows) {
+        // Compare as `C:/Users/...`: no `\\?\` prefix, `/` separators, and
+        // Windows paths are case-insensitive (drive letters especially).
+        let want = canonical
+            .display()
+            .to_string()
+            .trim_start_matches(r"\\?\")
+            .replace('\\', "/");
+        assert_eq!(got.to_lowercase(), want.to_lowercase());
+    } else {
+        assert_eq!(got, canonical.display().to_string());
+    }
 }
 
 #[rstest]

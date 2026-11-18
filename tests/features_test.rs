@@ -36,6 +36,31 @@ fn stderr(o: &Output) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
 }
 
+/// A shell command that prints the working directory. Git Bash's plain `pwd`
+/// prints an MSYS path (`/c/Users/...`) on Windows; `pwd -W` the Windows one.
+fn pwd_cmd() -> &'static str {
+    if cfg!(windows) { "pwd -W" } else { "pwd" }
+}
+
+/// Whether `line`, printed by `pwd_cmd`, names the directory `expected`
+/// (already canonical). On Windows both are normalized: the shell may print
+/// an 8.3 short name, and paths differ in `\?\` prefix, separators and case.
+fn is_dir(line: &str, expected: &Path) -> bool {
+    let line = line.trim();
+    if cfg!(windows) {
+        let norm = |p: &Path| {
+            p.display()
+                .to_string()
+                .trim_start_matches(r"\\?\")
+                .replace('\\', "/")
+                .to_lowercase()
+        };
+        fs::canonicalize(line).is_ok_and(|p| norm(&p) == norm(expected))
+    } else {
+        Path::new(line) == expected
+    }
+}
+
 fn write(dir: &Path, name: &str, content: &str) -> PathBuf {
     let p = dir.join(name);
     fs::write(&p, content).unwrap();
@@ -967,7 +992,8 @@ echo
     );
     let out = mq_task(&dir, &["-f", "tasks.md", "all"]);
     assert!(out.status.success(), "{}", stderr(&out));
-    let text = stdout(&out);
+    // Glob items use the platform's separator.
+    let text = stdout(&out).replace('\\', "/");
     assert!(text.contains("build linux-x64"), "{}", text);
     assert!(text.contains("build mac-x64"), "{}", text);
     assert!(text.contains("pkg pkgs/one"), "{}", text);
@@ -2516,7 +2542,11 @@ fn the_readme_is_the_fallback_task_file() {
 fn tasks_are_found_from_a_subdirectory_and_run_in_the_project_root() {
     let dir = workdir("discover-up");
     git_root(&dir);
-    write(&dir, "tasks.md", "## where\n\n```bash\npwd\n```\n");
+    write(
+        &dir,
+        "tasks.md",
+        &format!("## where\n\n```bash\n{}\n```\n", pwd_cmd()),
+    );
     let sub = dir.join("a/b");
     fs::create_dir_all(&sub).unwrap();
 
@@ -2524,7 +2554,7 @@ fn tasks_are_found_from_a_subdirectory_and_run_in_the_project_root() {
     assert!(out.status.success(), "{}", stderr(&out));
     let root = dir.canonicalize().unwrap();
     assert!(
-        stdout(&out).lines().any(|l| Path::new(l.trim()) == root),
+        stdout(&out).lines().any(|l| is_dir(l, &root)),
         "{}",
         stdout(&out)
     );
@@ -2535,7 +2565,11 @@ fn tasks_are_found_from_a_subdirectory_and_run_in_the_project_root() {
 fn relative_options_keep_pointing_at_the_invocation_directory() {
     let dir = workdir("discover-relative");
     git_root(&dir);
-    write(&dir, "tasks.md", "## where\n\n```bash\npwd\n```\n");
+    write(
+        &dir,
+        "tasks.md",
+        &format!("## where\n\n```bash\n{}\n```\n", pwd_cmd()),
+    );
     let sub = dir.join("sub");
     fs::create_dir_all(sub.join("work")).unwrap();
 
@@ -2543,9 +2577,7 @@ fn relative_options_keep_pointing_at_the_invocation_directory() {
     assert!(out.status.success(), "{}", stderr(&out));
     let expected = sub.join("work").canonicalize().unwrap();
     assert!(
-        stdout(&out)
-            .lines()
-            .any(|l| Path::new(l.trim()) == expected),
+        stdout(&out).lines().any(|l| is_dir(l, &expected)),
         "{}",
         stdout(&out)
     );
@@ -2556,19 +2588,23 @@ fn an_explicit_file_is_not_searched_for_and_keeps_the_directory() {
     let dir = workdir("discover-explicit");
     git_root(&dir);
     write(&dir, "tasks.md", "## from-tasks\n\n```bash\necho t\n```\n");
-    write(&dir, "other.md", "## from-other\n\n```bash\npwd\n```\n");
+    write(
+        &dir,
+        "other.md",
+        &format!("## from-other\n\n```bash\n{}\n```\n", pwd_cmd()),
+    );
     let sub = dir.join("sub");
     fs::create_dir_all(&sub).unwrap();
-    write(&sub, "mine.md", "## mine\n\n```bash\npwd\n```\n");
+    write(
+        &sub,
+        "mine.md",
+        &format!("## mine\n\n```bash\n{}\n```\n", pwd_cmd()),
+    );
 
     let out = mq_task(&sub, &["-f", "mine.md", "mine"]);
     assert!(out.status.success(), "{}", stderr(&out));
     let expected = sub.canonicalize().unwrap();
-    assert!(
-        stdout(&out)
-            .lines()
-            .any(|l| Path::new(l.trim()) == expected)
-    );
+    assert!(stdout(&out).lines().any(|l| is_dir(l, &expected)));
     assert!(!stderr(&out).contains("using"));
 }
 
@@ -2830,6 +2866,8 @@ sleep 5
     assert!(!stderr(&out).contains("(in task"), "{}", stderr(&out));
 }
 
+// Computed vars run through `cmd /C` on Windows; this uses POSIX `sh` syntax.
+#[cfg(unix)]
 #[test]
 fn vars_share_fixed_and_computed_values_between_tasks() {
     let dir = workdir("vars-basic");
@@ -3008,6 +3046,8 @@ echo hi
     assert!(!dir.join("side-effect").exists());
 }
 
+// Computed vars run through `cmd /C` on Windows; this uses POSIX `sh` syntax.
+#[cfg(unix)]
 #[test]
 fn vars_can_use_the_items_of_a_for_from_loop() {
     let dir = workdir("vars-for-from");
@@ -3057,6 +3097,8 @@ echo "dest=$DEST both=$BOTH label=$LABEL"
     assert_eq!(runs.lines().count(), 1, "{}", runs);
 }
 
+// Computed vars run through `cmd /C` on Windows; this uses POSIX `sh` syntax.
+#[cfg(unix)]
 #[test]
 fn a_computed_var_is_not_shared_between_tasks_with_different_env() {
     let dir = workdir("vars-env-cache");
@@ -3125,6 +3167,8 @@ echo "version=$VERSION"
     assert!(stderr(&out).contains("timed out"), "{}", stderr(&out));
 }
 
+// Computed vars run through `cmd /C` on Windows; this uses POSIX `sh` syntax.
+#[cfg(unix)]
 #[test]
 fn vars_are_visible_to_conditions_requires_and_status() {
     let dir = workdir("vars-checks");
@@ -3169,6 +3213,8 @@ echo ran-off
     assert!(!stdout(&off).contains("ran-off"));
 }
 
+// Computed vars run through `cmd /C` on Windows; this uses POSIX `sh` syntax.
+#[cfg(unix)]
 #[test]
 fn a_computed_var_runs_once_for_the_whole_run() {
     let dir = workdir("vars-once");
@@ -3272,6 +3318,8 @@ echo "generating $VERSION"
     assert!(stdout(&mq_task(&dir, &["gen"])).contains("generating 2"));
 }
 
+// Computed vars run through `cmd /C` on Windows; this uses POSIX `sh` syntax.
+#[cfg(unix)]
 #[test]
 fn vars_errors_are_clear_and_stop_the_task() {
     let dir = workdir("vars-errors");

@@ -759,9 +759,28 @@ fn the_working_directory_is_applied() {
     let canonical = fs::canonicalize(dir.path()).unwrap();
     let mut exec = executor();
     exec.working_dir = Some(dir.path().to_path_buf());
-    let s = bash("t", &[], "pwd -P");
+    // Git Bash's `pwd -P` prints an MSYS path (`/c/Users/...`); `pwd -W`
+    // prints the Windows one.
+    let s = bash("t", &[], if cfg!(windows) { "pwd -W" } else { "pwd -P" });
     let n = node(&exec, &s, &[], true);
-    assert_eq!(n.done().unwrap(), canonical.display().to_string());
+    let got = n.done().unwrap();
+    if cfg!(windows) {
+        // The shell may print the 8.3 short name (`RUNNER~1`) that the
+        // temp dir is spelled with, so canonicalize what it printed too, then
+        // compare as `C:/Users/...`: no `\\?\` prefix, `/` separators, and
+        // case-insensitively (Windows paths, drive letters especially).
+        let norm = |p: &Path| {
+            p.display()
+                .to_string()
+                .trim_start_matches(r"\\?\")
+                .replace('\\', "/")
+                .to_lowercase()
+        };
+        let printed = fs::canonicalize(&got).unwrap();
+        assert_eq!(norm(&printed), norm(&canonical));
+    } else {
+        assert_eq!(got, canonical.display().to_string());
+    }
 }
 
 #[rstest]

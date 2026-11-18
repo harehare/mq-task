@@ -85,8 +85,11 @@ fn test_env_override_and_working_dir() {
     runner.set_env_overrides(vec![("MX_TEST_VAR".to_string(), "hello".to_string())]);
     runner.set_working_dir(Some(work_dir.clone()));
 
+    // Git Bash's plain `pwd` prints an MSYS path (`/c/Users/...`) that
+    // `canonicalize` cannot open; `pwd -W` prints the Windows path.
+    let pwd = if cfg!(windows) { "pwd -W" } else { "pwd" };
     let code = format!(
-        r#"echo "$MX_TEST_VAR" > "{}"; pwd >> "{}""#,
+        r#"echo "$MX_TEST_VAR" > "{}"; {pwd} >> "{}""#,
         output_file.display(),
         output_file.display()
     );

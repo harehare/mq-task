@@ -8,6 +8,7 @@ workflows:
         - 'actions/checkout@v7.0.1'
         - 'rust-lang/crates-io-auth-action@v1.0.6'
     '.github/workflows/ci.yml':
+        - 'actions-rust-lang/setup-rust-toolchain@v1.15.4'
         - 'actions/checkout@v6.0.2'
     '.github/workflows/pages.yml':
         - 'actions/checkout@v7.0.1'

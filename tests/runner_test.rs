@@ -851,6 +851,10 @@ fn dotenv_watch_targets_are_literal_paths() {
 
 #[test]
 fn computed_vars_are_evaluated_again_on_every_run() {
+    // Forward slashes: a Windows path would be read as TOML/shell escapes.
+    fn slash(p: &std::path::Path) -> String {
+        p.display().to_string().replace('\\', "/")
+    }
     // `--watch` re-runs a task on one runner, so values must not go stale.
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("out.txt");
@@ -860,8 +864,8 @@ fn computed_vars_are_evaluated_again_on_every_run() {
         "t.md",
         &format!(
             "## t\n\n```meta\nvars = {{ V = {{ sh = \"cat {}\" }} }}\n```\n\n```bash\necho \"$V\" >> {}\n```\n",
-            src.display(),
-            out.display()
+            slash(&src),
+            slash(&out)
         ),
     );
     let mut r = runner();

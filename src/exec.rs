@@ -96,6 +96,20 @@ fn source_items(env: &[(String, String)], source: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The program to start for a runtime's command. On Windows `Command` looks in
+/// the system directories before `PATH`, so `bash` would start System32's WSL
+/// launcher even when Git Bash comes first on `PATH`; resolving it through
+/// `PATH` honors the order the user set up. Elsewhere, and when the name is
+/// not found, it is used as given (a spawn error then names it).
+fn resolve_program(name: &str) -> std::ffi::OsString {
+    if cfg!(windows)
+        && let Ok(path) = which::which(name)
+    {
+        return path.into_os_string();
+    }
+    name.into()
+}
+
 /// Print the code about to run (`-v`) on stderr, through the observer so
 /// it follows `--output` and shows in the TUI log.
 fn show_block(lang: &str, code: &str, dir: Option<&Path>, io: &TaskIo) {
@@ -1035,7 +1049,7 @@ impl Executor {
             return Ok(String::new());
         }
 
-        let mut command = Command::new(&parts[0]);
+        let mut command = Command::new(resolve_program(&parts[0]));
         command.args(&parts[1..]);
         command.envs(self.prepare_env_vars(args, param_env));
         if let Some(dir) = working_dir {
@@ -1434,5 +1448,25 @@ mod script_bytes_tests {
         for lang in ["sh", "bash", "pwsh", "cmd", "python"] {
             assert_eq!(script_bytes(lang, "é"), "é".as_bytes(), "{lang}");
         }
+    }
+}
+
+#[cfg(test)]
+mod resolve_program_tests {
+    use super::resolve_program;
+
+    #[test]
+    fn an_unknown_program_is_used_as_given() {
+        assert_eq!(
+            resolve_program("mq-task-no-such-binary-xyz"),
+            std::ffi::OsString::from("mq-task-no-such-binary-xyz")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn on_windows_a_known_program_resolves_to_its_path_on_path() {
+        let found = which::which("cmd").unwrap();
+        assert_eq!(resolve_program("cmd"), found.into_os_string());
     }
 }
